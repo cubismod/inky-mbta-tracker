@@ -24,26 +24,25 @@ class TypeAndID(BaseModel):
 
 
 class ScheduleRelationship(BaseModel):
-    links: ScheduleRelationshipLinks
-    data: Optional[TypeAndID]
+    data: Optional[TypeAndID] = None
 
 
 class ScheduleRelationships(BaseModel):
     trip: ScheduleRelationship
     stop: ScheduleRelationship
-    route: ScheduleRelationship
-    prediction: ScheduleRelationship
+    route: Optional[ScheduleRelationship] = None
+    prediction: Optional[ScheduleRelationship] = None
 
 
 class ScheduleAttributes(BaseModel):
-    timepoint: bool
+    timepoint: Optional[bool] = None
     stop_sequence: int
-    stop_headsign: Optional[str]
-    pickup_type: int
-    drop_off_type: int
+    stop_headsign: Optional[str] = None
+    pickup_type: Optional[int] = None
+    drop_off_type: Optional[int] = None
     direction_id: int
-    departure_time: Optional[str]
-    arrival_time: Optional[str]
+    departure_time: Optional[str] = None
+    arrival_time: Optional[str] = None
 
 
 class ScheduleResource(BaseModel):
@@ -64,9 +63,9 @@ class RouteLinks(BaseModel):
 
 class RouteAttributes(BaseModel):
     color: str
-    direction_destinations: Optional[list[str]]
+    direction_destinations: Optional[list[str]] = None
     fare_class: str
-    direction_names: Optional[list[str]]
+    direction_names: Optional[list[str]] = None
     sort_order: int
     short_name: str
     long_name: str
@@ -84,9 +83,7 @@ class RouteResource(BaseModel):
 
 
 class Route(BaseModel):
-    links: RouteLinks
-    included: list[TypeAndID]
-    data: RouteResource
+    data: list[RouteResource]
 
 
 class SelfAndRelated(BaseModel):
@@ -164,24 +161,19 @@ class TripGeneric(BaseModel):
 
 class TripAttributes(BaseModel):
     wheelchair_accessible: int
-    revenue_status: str
+    revenue_status: Optional[str] = None
     name: str
     headsign: str
     direction_id: int
     block_id: str
-    bikes_allowed: str
+    bikes_allowed: Optional[int] = None
 
 
 class TripResource(BaseModel):
     type: str
-    relationships: TripGeneric
-    service: TripGeneric
-    route_pattern: TripGeneric
-    route: TripGeneric
-    occupancy: TripGeneric
+    relationships: dict
     attributes: TripAttributes
 
 
 class Trips(BaseModel):
-    links: PageLinks
     data: list[TripResource]

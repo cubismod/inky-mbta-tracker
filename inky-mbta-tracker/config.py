@@ -3,13 +3,13 @@ import os
 import pathlib
 from typing import Optional
 
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, ValidationError, Field
 
 
 class StopSetup(BaseModel):
     stop_id: str
-    route_filter: Optional[str]
-    direction_filter: Optional[str]
+    route_filter: str = Field(default="")
+    direction_filter: str = Field(default="")
 
 
 class Config(BaseModel):

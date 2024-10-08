@@ -1,6 +1,8 @@
+import concurrent.futures
 import logging
 import os
 import sys
+import time
 from concurrent.futures.thread import ThreadPoolExecutor
 from queue import Queue
 from schedule_tracker import ScheduleEvent
@@ -9,13 +11,22 @@ from pydantic import ValidationError
 from config import load_config
 from mbta_client import watch_station
 
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+def queue_watcher(queue: Queue[ScheduleEvent]):
+    while True:
+        item = queue.get()
+        logging.info(item)
+        time.sleep(10)
+
 
 def __main__():
     load_dotenv()
 
     try:
         config = load_config()
-        workers = os.getenv("IMT_WORKERS", "4")
+        workers = os.getenv("IMT_WORKERS", "16")
 
         queue = Queue[ScheduleEvent]()
 
@@ -31,9 +42,11 @@ def __main__():
                 for stop in config.stops
             }
 
+            for future in concurrent.futures.as_completed(future_results):
+                logging.info(f"thread finished with: {future.result()}")
 
     except ValidationError as err:
-        logging.error(f"Unable to load the configuration file, {err}")
+        logger.error(f"Unable to load the configuration file, {err}")
         sys.exit(1)
 
 
