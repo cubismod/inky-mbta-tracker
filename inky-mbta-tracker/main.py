@@ -5,14 +5,18 @@ import sys
 import time
 from concurrent.futures.thread import ThreadPoolExecutor
 from queue import Queue
-from schedule_tracker import ScheduleEvent
-from dotenv import load_dotenv
-from pydantic import ValidationError
+
 from config import load_config
+from dotenv import load_dotenv
 from mbta_client import watch_station
+from pydantic import ValidationError
+from schedule_tracker import ScheduleEvent, process_queue
+
+load_dotenv()
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
 
 def queue_watcher(queue: Queue[ScheduleEvent]):
     while True:
@@ -22,25 +26,30 @@ def queue_watcher(queue: Queue[ScheduleEvent]):
 
 
 def __main__():
-    load_dotenv()
 
     try:
         config = load_config()
-        workers = os.getenv("IMT_WORKERS", "16")
+        workers = os.getenv("IMT_WORKERS", len(config.stops) + 2)
 
         queue = Queue[ScheduleEvent]()
 
         with ThreadPoolExecutor(max_workers=int(workers)) as executor:
-            future_results = {
+            future_results = [
                 executor.submit(
                     watch_station,
                     stop.stop_id,
                     stop.route_filter,
                     stop.direction_filter,
                     queue,
-                ): stop
-                for stop in config.stops
-            }
+                ) for stop in config.stops
+            ]
+
+            result = executor.submit(
+                process_queue,
+                queue
+            )
+
+            future_results.append(result)
 
             for future in concurrent.futures.as_completed(future_results):
                 logging.info(f"thread finished with: {future.result()}")

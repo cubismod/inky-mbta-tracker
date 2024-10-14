@@ -60,7 +60,12 @@ class Schedules(BaseModel):
 class RouteLinks(BaseModel):
     self: str
 
-
+# About RouteAttributes.type:
+# 0	Light Rail
+# 1	Heavy Rail
+# 2	Commuter
+# 3	Bus
+# 4	Ferry
 class RouteAttributes(BaseModel):
     color: str
     direction_destinations: Optional[list[str]] = None
@@ -177,3 +182,38 @@ class TripResource(BaseModel):
 
 class Trips(BaseModel):
     data: list[TripResource]
+
+
+class StopRelationship(BaseModel):
+    parent_station: dict
+
+# Value	Type	Description
+# 0	Stop	A location where passengers board or disembark from a transit vehicle.
+# 1	Station	A physical structure or area that contains one or more stops.
+# 2	Station Entrance/Exit	A location where passengers can enter or exit a station from the street. The stop entry must also specify a parent_station value referencing the stop ID of the parent station for the entrance.
+# 3	Generic Node	A location within a station, not matching any other location_type, which can be used to link together pathways defined in pathways.txt.
+
+class StopAttributes(BaseModel):
+    on_street: Optional[str] = None
+    location_type: int
+    name: str
+    latitude: float
+    vehicle_type: Optional[int] = None
+    at_street: Optional[str] = None
+    longitude: float
+    wheelchair_boarding: int
+    address: Optional[str] = None
+    platform: Optional[str] = None
+    platform_code: Optional[str] = None
+    municipality: Optional[str] = None
+    description: Optional[str] = None
+
+class StopResource(BaseModel):
+    type: str
+    relationships: StopRelationship
+    attributes: StopAttributes
+
+
+class Stop(BaseModel):
+    data: StopResource
+    links: Optional[dict] = None

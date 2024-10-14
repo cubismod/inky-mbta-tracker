@@ -1,9 +1,7 @@
-import logging
 import os
 import pathlib
-from typing import Optional
 
-from pydantic import BaseModel, ValidationError, Field
+from pydantic import BaseModel, Field
 
 
 class StopSetup(BaseModel):

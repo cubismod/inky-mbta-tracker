@@ -2,6 +2,8 @@
 import json
 import logging
 import os
+import re
+import time
 from datetime import datetime
 from queue import Queue
 
@@ -15,9 +17,9 @@ from mbta_responses import (
     RouteResource,
     ScheduleAttributes,
     ScheduleResource,
-    Schedules,
     TripResource,
     Trips,
+    Stop
 )
 from pydantic import ValidationError, TypeAdapter
 from schedule_tracker import ScheduleEvent
@@ -26,6 +28,7 @@ auth_token = os.environ.get("AUTH_TOKEN")
 mbta_v3 = "https://api-v3.mbta.com"
 thirty_hours = 108000
 logger = logging.getLogger(__name__)
+logging.getLogger('httpx').setLevel(logging.WARN)
 
 
 def with_httpx(url, headers):
@@ -45,14 +48,15 @@ class Watcher:
     trips: ExpiringDict[str, TripResource]
     predictions: ExpiringDict[str, ScheduleResource]
     routes: dict[str, RouteResource]
+    stop: Stop
 
     def __init__(self, stop_id: str, route: str | None, direction: int | None):
         self.stop_id = stop_id
         self.route = route
         self.direction = direction
-        self.trips = ExpiringDict[str, TripResource](thirty_hours)
-        self.predictions = ExpiringDict[str, ScheduleResource](thirty_hours)
-        self.routes = dict[str, RouteResource]()
+        self.trips = ExpiringDict(thirty_hours)
+        self.predictions = ExpiringDict(thirty_hours)
+        self.routes = dict()
 
     @staticmethod
     def determine_time(attributes: ScheduleAttributes) -> datetime:
@@ -95,19 +99,27 @@ class Watcher:
                 schedule_time = self.determine_time(item.attributes)
                 route_id = item.relationships.route.data.id
                 headsign = self.get_headsign(item.relationships.trip.data.id)
+                route_type = self.routes[route_id].attributes.type
+                prediction = False
 
                 if item.relationships.prediction.data is not None:
                     prediction = self.predictions[item.relationships.prediction.data.id]
                     schedule_time = self.determine_time(prediction.attributes)
-                queue.put(
-                    ScheduleEvent(
+                    prediction = True
+                event = ScheduleEvent(
                         action=event_type,
                         time=schedule_time,
                         route_id=route_id,
+                        route_type=route_type,
                         headsign=headsign,
+                        prediction=prediction,
+                        id=item.id,
+                        stop=self.stop.data.attributes.name
                     )
+                queue.put(
+                    event
                 )
-                logger.info(f"PUTing new schedule entry, action:{event_type}, time:{schedule_time}, route_id:{route_id}, headsign:{headsign}")
+                logger.info(f"PUTing new schedule entry: {event}")
 
         except ValidationError as err:
             logger.error(f"Unable to parse schedule, {err}")
@@ -141,12 +153,24 @@ class Watcher:
         except ValidationError as err:
             logger.error(f"Unable to parse route, {err}")
 
+    @retry(wait=wait_exponential(multiplier=1, min=1, max=10), retry=retry_if_exception_type(httpx.RequestError))
+    def save_stop(self):
+        try:
+            response = httpx.get(
+                f"{mbta_v3}/stops/{self.stop_id}?api_key={auth_token}"
+            )
+
+            self.stop = Stop.model_validate_json(response.text, strict=False)
+        except ValidationError as err:
+            logger.error(f"Unable to parse stop, {err}")
+
 @retry(wait=wait_random_exponential(multiplier=1, max=200), before=before_log(logger, logging.WARN))
 def watch_server_side_events(watcher: Watcher, endpoint: str, headers: dict[str, str], queue: Queue[ScheduleEvent]):
     response = with_httpx(endpoint, headers)
     client = sseclient.SSEClient(response)
     for event in client.events():
         watcher.parse_station_response(event.data, event.event, queue)
+        time.sleep(20)
 
 def watch_station(
     stop_id: str, route: str | None, direction: int | None, queue: Queue[ScheduleEvent]
@@ -159,5 +183,5 @@ def watch_station(
         endpoint += f"&filter[direction_id]={direction}"
     headers = {"accept": "text/event-stream"}
     watcher = Watcher(stop_id, route, direction)
-
+    watcher.save_stop()
     watch_server_side_events(watcher, endpoint, headers, queue)
