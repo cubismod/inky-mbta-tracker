@@ -51,11 +51,12 @@ class ScheduleResource(BaseModel):
     id: str
     attributes: ScheduleAttributes
 
+# https://www.mbta.com/developers/v3-api/streaming
+class AddUpdateSchedule(BaseModel):
+    data: ScheduleResource
 
-class Schedules(BaseModel):
-    links: PageLinks
-    data: list[ScheduleResource]
-
+class RemoveSchedule(BaseModel):
+    data: TypeAndID
 
 class RouteLinks(BaseModel):
     self: str

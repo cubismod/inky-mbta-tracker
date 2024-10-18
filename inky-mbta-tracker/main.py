@@ -14,7 +14,7 @@ from schedule_tracker import ScheduleEvent, process_queue
 
 load_dotenv()
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 logger = logging.getLogger(__name__)
 
 

@@ -1,9 +1,11 @@
 import contextlib
 import logging
+import os
 import time
 from asyncio import QueueEmpty
 from datetime import datetime, timedelta, tzinfo
 from queue import Queue
+from typing import Optional
 
 from prettytable import PrettyTable
 from pydantic import BaseModel
@@ -24,11 +26,11 @@ class ScheduleEvent(BaseModel):
 
 class Tracker:
     all_events: SortedDict[str, ScheduleEvent]
-    displayed_events: list[ScheduleEvent]
+    current_display: Optional[str]
 
     def __init__(self):
         self.all_events = SortedDict()
-        self.displayed_events = list()
+        self.current_display = None
 
     @staticmethod
     def __calculate_timestamp(event: ScheduleEvent):
@@ -42,6 +44,7 @@ class Tracker:
 
     def __add(self, event: ScheduleEvent):
         self.all_events[self.__calculate_timestamp(event)] = event
+        logger.info(f"added event {event}")
 
     def __update(self, event: ScheduleEvent):
         timestamp = self.__find_timestamp(event.id)
@@ -50,11 +53,14 @@ class Tracker:
         else:
             self.__add(event)
 
+        logging.info(f"updated event {event}")
+
     def __rm(self, event: ScheduleEvent):
         timestamp = self.__find_timestamp(event.id)
         if timestamp:
             with contextlib.suppress(KeyError):
                 self.all_events.pop(timestamp)
+                logging.info(f"removed event {event}")
 
     @staticmethod
     def prediction_display(event: ScheduleEvent):
@@ -72,26 +78,31 @@ class Tracker:
     def display_cli(self):
         table = PrettyTable()
         table.field_names = ["Stop", "Route", "Headsign", "Departure Min", "Departure Time"]
-        for event in self.displayed_events:
+        for _, event in self.all_events.items():
             table.add_row([event.stop, event.route_id, event.headsign, self.prediction_display(event), event.time.strftime("%X")])
+            if len(table.rows) > 8:
+                break
 
+        if self.current_display and table.get_string() == self.current_display:
+            return
+
+        self.current_display = table.get_string()
+        print(f"Current time: {datetime.now().strftime("%X")}")
         print(table)
 
-    def generate_display(self):
-        self.displayed_events.clear()
+    def prune_entries(self):
         for event in self.all_events.items():
             if float(event[0]) < (datetime.now() - timedelta(minutes=2)).timestamp():
                 self.__rm(event[1])
                 continue
-            if len(self.displayed_events) > 8:
+            else:
                 break
-            self.displayed_events.append(event[1])
-
-        self.display_cli()
 
     def process_schedule_event(self, event: ScheduleEvent):
         match event.action:
             case 'reset':
+                self.__add(event)
+            case 'add':
                 self.__add(event)
             case 'update':
                 self.__update(event)
@@ -101,13 +112,12 @@ class Tracker:
 def process_queue(queue: Queue[ScheduleEvent]):
     tracker = Tracker()
     while True:
-        logger.info("waiting on queue")
-        time.sleep(20)
+        time.sleep(15)
         while queue.qsize() != 0:
             try:
                 schedule_event = queue.get()
                 tracker.process_schedule_event(schedule_event)
             except QueueEmpty:
                 break
-        tracker.generate_display()
-
+        tracker.prune_entries()
+        tracker.display_cli()
