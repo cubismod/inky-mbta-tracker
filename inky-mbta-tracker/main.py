@@ -14,7 +14,7 @@ from schedule_tracker import ScheduleEvent, process_queue
 
 load_dotenv()
 
-logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
+logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"), filename='imt.log')
 logger = logging.getLogger(__name__)
 
 
@@ -26,7 +26,6 @@ def queue_watcher(queue: Queue[ScheduleEvent]):
 
 
 def __main__():
-
     try:
         config = load_config()
         workers = os.getenv("IMT_WORKERS", len(config.stops) + 2)
@@ -41,13 +40,11 @@ def __main__():
                     stop.route_filter,
                     stop.direction_filter,
                     queue,
-                ) for stop in config.stops
+                )
+                for stop in config.stops
             ]
 
-            result = executor.submit(
-                process_queue,
-                queue
-            )
+            result = executor.submit(process_queue, queue)
 
             future_results.append(result)
 

@@ -1,8 +1,6 @@
 # client that keeps track of events on the stops specified
-import json
 import logging
 import os
-import re
 import time
 from datetime import datetime
 from queue import Queue
@@ -10,26 +8,31 @@ from queue import Queue
 import httpx
 import sseclient
 from expiring_dict import ExpiringDict
-from tenacity import retry, wait_exponential, retry_if_exception_type, wait_random_exponential, before_log
-
 from mbta_responses import (
     Route,
     RouteResource,
     ScheduleAttributes,
     ScheduleResource,
+    Stop,
     TripResource,
     Trips,
-    Stop,
     TypeAndID,
 )
-from pydantic import ValidationError, TypeAdapter
+from pydantic import TypeAdapter, ValidationError
 from schedule_tracker import ScheduleEvent
+from tenacity import (
+    before_log,
+    retry,
+    retry_if_exception_type,
+    wait_exponential,
+    wait_random_exponential,
+)
 
 auth_token = os.environ.get("AUTH_TOKEN")
 mbta_v3 = "https://api-v3.mbta.com"
 thirty_hours = 108000
 logger = logging.getLogger(__name__)
-logging.getLogger('httpx').setLevel(logging.WARN)
+logging.getLogger("httpx").setLevel(logging.WARN)
 
 
 def with_httpx(url, headers):
@@ -77,34 +80,43 @@ class Watcher:
         # https://www.mbta.com/developers/v3-api/streaming
         try:
             match event_type:
-                case 'reset':
+                case "reset":
                     ta = TypeAdapter(list[ScheduleResource])
                     schedule = ta.validate_json(data, strict=False)
                     for item in schedule:
                         self.save_trip(item)
                         self.save_route(item)
-                        if item.type == 'prediction':
+                        if item.type == "prediction":
                             self.predictions[item.id] = item
                         else:
-                            self.queue_schedule_event(item, 'reset', queue)
-                case 'add':
+                            self.queue_schedule_event(item, "reset", queue)
+                case "add":
                     schedule = ScheduleResource.model_validate_json(data, strict=False)
                     self.save_trip(schedule)
                     self.save_route(schedule)
-                    if schedule.type == 'prediction':
+                    if schedule.type == "prediction":
                         self.predictions[schedule.id] = schedule
                     else:
-                        self.queue_schedule_event(schedule, 'add', queue)
-                case 'update':
+                        self.queue_schedule_event(schedule, "add", queue)
+                case "update":
                     schedule = ScheduleResource.model_validate_json(data, strict=False)
-                    if schedule.type == 'prediction':
+                    if schedule.type == "prediction":
                         self.predictions[schedule.id] = schedule
                     else:
-                        self.queue_schedule_event(schedule, 'update', queue)
-                case 'remove':
+                        self.queue_schedule_event(schedule, "update", queue)
+                case "remove":
                     schedule = TypeAndID.model_validate_json(data, strict=False)
                     # directly interact with the queue here to use a dummy object
-                    event = ScheduleEvent(action='remove', headsign='nowhere', prediction=False, route_id='Green Line A Branch', route_type=1, id=schedule.data.id, stop='Boston 2', time=datetime.now())
+                    event = ScheduleEvent(
+                        action="remove",
+                        headsign="nowhere",
+                        prediction=False,
+                        route_id="Green Line A Branch",
+                        route_type=1,
+                        id=schedule.id,
+                        stop="Boston 2",
+                        time=datetime.now(),
+                    )
                     queue.put(event)
 
         except ValidationError as err:
@@ -112,7 +124,9 @@ class Watcher:
         except KeyError as err:
             logger.error(f"Could not find prediction, {err}")
 
-    def queue_schedule_event(self, item: ScheduleResource, event_type: str, queue: Queue[ScheduleEvent]):
+    def queue_schedule_event(
+        self, item: ScheduleResource, event_type: str, queue: Queue[ScheduleEvent]
+    ):
         schedule_time = self.determine_time(item.attributes)
         route_id = item.relationships.route.data.id
         headsign = self.get_headsign(item.relationships.trip.data.id)
@@ -131,14 +145,15 @@ class Watcher:
             headsign=headsign,
             prediction=prediction,
             id=item.id,
-            stop=self.stop.data.attributes.name
+            stop=self.stop.data.attributes.name,
         )
-        queue.put(
-            event
-        )
+        queue.put(event)
         logger.info(f"PUTing new schedule entry: {event}")
 
-    @retry(wait=wait_exponential(multiplier=1, min=1, max=10), retry=retry_if_exception_type(httpx.RequestError))
+    @retry(
+        wait=wait_exponential(multiplier=1, min=1, max=10),
+        retry=retry_if_exception_type(httpx.RequestError),
+    )
     def save_trip(self, schedule: ScheduleResource):
         trip_id = schedule.relationships.trip.data.id
         if trip_id not in self.trips:
@@ -154,7 +169,10 @@ class Watcher:
             except ValidationError as err:
                 logger.error(f"Unable to parse trip, {err}")
 
-    @retry(wait=wait_exponential(multiplier=1, min=1, max=10), retry=retry_if_exception_type(httpx.RequestError))
+    @retry(
+        wait=wait_exponential(multiplier=1, min=1, max=10),
+        retry=retry_if_exception_type(httpx.RequestError),
+    )
     def save_route(self, schedule: ScheduleResource):
         route_id = schedule.relationships.route.data.id
         if route_id not in self.routes:
@@ -169,24 +187,36 @@ class Watcher:
             except ValidationError as err:
                 logger.error(f"Unable to parse route, {err}")
 
-    @retry(wait=wait_exponential(multiplier=1, min=1, max=10), retry=retry_if_exception_type(httpx.RequestError))
+    @retry(
+        wait=wait_exponential(multiplier=1, min=1, max=10),
+        retry=retry_if_exception_type(httpx.RequestError),
+    )
     def save_stop(self):
         try:
-            response = httpx.get(
-                f"{mbta_v3}/stops/{self.stop_id}?api_key={auth_token}"
-            )
+            response = httpx.get(f"{mbta_v3}/stops/{self.stop_id}?api_key={auth_token}")
 
             self.stop = Stop.model_validate_json(response.text, strict=False)
+            logger.info("saved stop")
         except ValidationError as err:
             logger.error(f"Unable to parse stop, {err}")
 
-@retry(wait=wait_random_exponential(multiplier=1, max=200), before=before_log(logger, logging.WARN))
-def watch_server_side_events(watcher: Watcher, endpoint: str, headers: dict[str, str], queue: Queue[ScheduleEvent]):
+
+@retry(
+    wait=wait_random_exponential(multiplier=1, max=200),
+    before=before_log(logger, logging.WARN),
+)
+def watch_server_side_events(
+    watcher: Watcher,
+    endpoint: str,
+    headers: dict[str, str],
+    queue: Queue[ScheduleEvent],
+):
     response = with_httpx(endpoint, headers)
     client = sseclient.SSEClient(response)
     for event in client.events():
         watcher.parse_schedule_response(event.data, event.event, queue)
         time.sleep(20)
+
 
 def watch_station(
     stop_id: str, route: str | None, direction: int | None, queue: Queue[ScheduleEvent]

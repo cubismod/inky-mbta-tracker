@@ -51,15 +51,19 @@ class ScheduleResource(BaseModel):
     id: str
     attributes: ScheduleAttributes
 
+
 # https://www.mbta.com/developers/v3-api/streaming
 class AddUpdateSchedule(BaseModel):
     data: ScheduleResource
 
+
 class RemoveSchedule(BaseModel):
     data: TypeAndID
 
+
 class RouteLinks(BaseModel):
     self: str
+
 
 # About RouteAttributes.type:
 # 0	Light Rail
@@ -188,33 +192,37 @@ class Trips(BaseModel):
 class StopRelationship(BaseModel):
     parent_station: dict
 
+
 # Value	Type	Description
 # 0	Stop	A location where passengers board or disembark from a transit vehicle.
 # 1	Station	A physical structure or area that contains one or more stops.
 # 2	Station Entrance/Exit	A location where passengers can enter or exit a station from the street. The stop entry must also specify a parent_station value referencing the stop ID of the parent station for the entrance.
 # 3	Generic Node	A location within a station, not matching any other location_type, which can be used to link together pathways defined in pathways.txt.
 
+
 class StopAttributes(BaseModel):
-    on_street: Optional[str] = None
-    location_type: int
-    name: str
-    latitude: float
-    vehicle_type: Optional[int] = None
-    at_street: Optional[str] = None
-    longitude: float
-    wheelchair_boarding: int
     address: Optional[str] = None
-    platform: Optional[str] = None
-    platform_code: Optional[str] = None
-    municipality: Optional[str] = None
+    at_street: Optional[str] = None
     description: Optional[str] = None
+    latitude: float
+    location_type: int
+    longitude: float
+    municipality: Optional[str] = None
+    name: str
+    on_street: Optional[str] = None
+    platform_code: Optional[str] = None
+    platform_name: Optional[str] = None
+    vehicle_type: Optional[int] = None
+    wheelchair_boarding: int
+
 
 class StopResource(BaseModel):
     type: str
-    relationships: StopRelationship
+    relationships: dict
     attributes: StopAttributes
+    id: str
+    links: Optional[dict] = None
 
 
 class Stop(BaseModel):
     data: StopResource
-    links: Optional[dict] = None

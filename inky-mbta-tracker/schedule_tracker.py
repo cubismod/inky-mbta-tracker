@@ -1,17 +1,21 @@
 import contextlib
 import logging
-import os
 import time
 from asyncio import QueueEmpty
-from datetime import datetime, timedelta, tzinfo
+from datetime import datetime, timedelta
 from queue import Queue
 from typing import Optional
 
 from prettytable import PrettyTable
 from pydantic import BaseModel
+from rich.console import Console
+from rich.style import Style
+from rich.table import Table
+from rich.live import Live
 from sortedcontainers import SortedDict
 
-logger = logging.getLogger('schedule_tracker')
+logger = logging.getLogger("schedule_tracker")
+
 
 class ScheduleEvent(BaseModel):
     action: str
@@ -30,7 +34,6 @@ class Tracker:
 
     def __init__(self):
         self.all_events = SortedDict()
-        self.current_display = None
 
     @staticmethod
     def __calculate_timestamp(event: ScheduleEvent):
@@ -44,7 +47,6 @@ class Tracker:
 
     def __add(self, event: ScheduleEvent):
         self.all_events[self.__calculate_timestamp(event)] = event
-        logger.info(f"added event {event}")
 
     def __update(self, event: ScheduleEvent):
         timestamp = self.__find_timestamp(event.id)
@@ -53,46 +55,76 @@ class Tracker:
         else:
             self.__add(event)
 
-        logging.info(f"updated event {event}")
 
     def __rm(self, event: ScheduleEvent):
         timestamp = self.__find_timestamp(event.id)
         if timestamp:
             with contextlib.suppress(KeyError):
                 self.all_events.pop(timestamp)
-                logging.info(f"removed event {event}")
+
+    @staticmethod
+    def __determine_color(event: ScheduleEvent):
+        if event.route_id == 'Red':
+            return '#DA291C'
+        if event.route_id.startswith('Green'):
+            return '#00843D'
+        if event.route_id == 'Orange':
+            return '#ED8B00'
+        if event.route_id == 'Blue':
+            return '#003DA5'
+        if event.route_id.startswith("SL"):
+            return '#7C878E'
+        if event.route_id.startswith("CR"):
+            return '#80276C'
+        return 'black'
 
     @staticmethod
     def prediction_display(event: ScheduleEvent):
-        prediction_indicator = ''
+        prediction_indicator = ""
         if event.prediction:
-            prediction_indicator = '📶'
+            prediction_indicator = "📶"
 
         rounded_time = round((event.time.timestamp() - datetime.now().timestamp()) / 60)
         if rounded_time > 0:
-            return f"{prediction_indicator}{rounded_time} min"
-        if rounded_time <= 0:
-            return f"{prediction_indicator}BRD"
+            return f"{prediction_indicator} {rounded_time} min"
+        if rounded_time == 0:
+            return f"{prediction_indicator} BRD"
+        if rounded_time < 0:
+            return f"{prediction_indicator} DEP"
 
+    def generate_table(self):
+        table = Table(title="Departures")
+        table.add_column("Stop")
+        table.add_column("Route")
+        table.add_column("Headsign")
+        table.add_column("Departure Min", justify="center")
+        table.add_column("Departure Time", justify="center")
 
-    def display_cli(self):
-        table = PrettyTable()
-        table.field_names = ["Stop", "Route", "Headsign", "Departure Min", "Departure Time"]
+        table.field_names = [
+            "Stop",
+            "Route",
+            "Headsign",
+            "Departure Min",
+            "Departure Time",
+        ]
         for _, event in self.all_events.items():
-            table.add_row([event.stop, event.route_id, event.headsign, self.prediction_display(event), event.time.strftime("%X")])
-            if len(table.rows) > 8:
+            table.add_row(
+                    event.stop,
+                    event.route_id,
+                    event.headsign,
+                    self.prediction_display(event),
+                    event.time.strftime("%X"),
+                    style=Style(color=self.__determine_color(event), bgcolor="white")
+            )
+            if len(table.rows) > 15:
                 break
 
-        if self.current_display and table.get_string() == self.current_display:
-            return
 
-        self.current_display = table.get_string()
-        print(f"Current time: {datetime.now().strftime("%X")}")
-        print(table)
+        return table
 
     def prune_entries(self):
         for event in self.all_events.items():
-            if float(event[0]) < (datetime.now() - timedelta(minutes=2)).timestamp():
+            if float(event[0]) < (datetime.now() - timedelta(seconds=30)).timestamp():
                 self.__rm(event[1])
                 continue
             else:
@@ -100,24 +132,27 @@ class Tracker:
 
     def process_schedule_event(self, event: ScheduleEvent):
         match event.action:
-            case 'reset':
+            case "reset":
                 self.__add(event)
-            case 'add':
+            case "add":
                 self.__add(event)
-            case 'update':
+            case "update":
                 self.__update(event)
-            case 'remove':
+            case "remove":
                 self.__rm(event)
+
 
 def process_queue(queue: Queue[ScheduleEvent]):
     tracker = Tracker()
-    while True:
-        time.sleep(15)
-        while queue.qsize() != 0:
-            try:
-                schedule_event = queue.get()
-                tracker.process_schedule_event(schedule_event)
-            except QueueEmpty:
-                break
-        tracker.prune_entries()
-        tracker.display_cli()
+    console = Console()
+    with Live(console=console, renderable=tracker.generate_table(), refresh_per_second=1, screen=True) as live:
+        while True:
+            time.sleep(15)
+            while queue.qsize() != 0:
+                try:
+                    schedule_event = queue.get()
+                    tracker.process_schedule_event(schedule_event)
+                except QueueEmpty:
+                    break
+            tracker.prune_entries()
+            live.update(tracker.generate_table())
