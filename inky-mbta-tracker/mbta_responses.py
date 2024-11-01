@@ -175,7 +175,7 @@ class TripAttributes(BaseModel):
     name: str
     headsign: str
     direction_id: int
-    block_id: str
+    block_id: Optional[str] = None
     bikes_allowed: Optional[int] = None
 
 
@@ -226,3 +226,39 @@ class StopResource(BaseModel):
 
 class Stop(BaseModel):
     data: StopResource
+
+
+class LinksAndData(BaseModel):
+    links: Optional[SelfAndRelated] = None
+    data: Optional[TypeAndID] = None
+
+
+class PredictionRelationships(BaseModel):
+    vehicle: LinksAndData
+    trip: LinksAndData
+    stop: LinksAndData
+    schedule: Optional[LinksAndData] = None
+    route: LinksAndData
+    alerts: Optional[LinksAndData] = None
+
+
+class PredictionAttributes(BaseModel):
+    schedule_relationship: Optional[str] = None
+    departure_uncertainty: Optional[int] = None
+    arrival_uncertainty: Optional[int] = None
+    update_type: Optional[str] = None
+    status: Optional[str] = None
+    arrival_time: Optional[str] = None
+    revenue: str
+    departure_time: Optional[str] = None
+    direction_id: int
+    last_trip: Optional[bool] = None
+    stop_sequence: Optional[int] = None
+
+
+class PredictionResource(BaseModel):
+    type: str
+    relationships: PredictionRelationships
+    links: Optional[dict] = None
+    id: str
+    attributes: PredictionAttributes

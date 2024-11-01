@@ -6,12 +6,11 @@ from datetime import datetime, timedelta
 from queue import Queue
 from typing import Optional
 
-from prettytable import PrettyTable
 from pydantic import BaseModel
 from rich.console import Console
+from rich.live import Live
 from rich.style import Style
 from rich.table import Table
-from rich.live import Live
 from sortedcontainers import SortedDict
 
 logger = logging.getLogger("schedule_tracker")
@@ -23,7 +22,6 @@ class ScheduleEvent(BaseModel):
     route_id: str
     route_type: int
     headsign: str
-    prediction: bool
     stop: str
     id: str
 
@@ -55,7 +53,6 @@ class Tracker:
         else:
             self.__add(event)
 
-
     def __rm(self, event: ScheduleEvent):
         timestamp = self.__find_timestamp(event.id)
         if timestamp:
@@ -64,25 +61,23 @@ class Tracker:
 
     @staticmethod
     def __determine_color(event: ScheduleEvent):
-        if event.route_id == 'Red':
-            return '#DA291C'
-        if event.route_id.startswith('Green'):
-            return '#00843D'
-        if event.route_id == 'Orange':
-            return '#ED8B00'
-        if event.route_id == 'Blue':
-            return '#003DA5'
+        if event.route_id == "Red":
+            return "#DA291C"
+        if event.route_id.startswith("Green"):
+            return "#00843D"
+        if event.route_id == "Orange":
+            return "#ED8B00"
+        if event.route_id == "Blue":
+            return "#003DA5"
         if event.route_id.startswith("SL"):
-            return '#7C878E'
+            return "#7C878E"
         if event.route_id.startswith("CR"):
-            return '#80276C'
-        return 'black'
+            return "#80276C"
+        return "black"
 
     @staticmethod
     def prediction_display(event: ScheduleEvent):
         prediction_indicator = ""
-        if event.prediction:
-            prediction_indicator = "📶"
 
         rounded_time = round((event.time.timestamp() - datetime.now().timestamp()) / 60)
         if rounded_time > 0:
@@ -109,16 +104,15 @@ class Tracker:
         ]
         for _, event in self.all_events.items():
             table.add_row(
-                    event.stop,
-                    event.route_id,
-                    event.headsign,
-                    self.prediction_display(event),
-                    event.time.strftime("%X"),
-                    style=Style(color=self.__determine_color(event), bgcolor="white")
+                event.stop,
+                event.route_id,
+                event.headsign,
+                self.prediction_display(event),
+                event.time.strftime("%X"),
+                style=Style(color=self.__determine_color(event), bgcolor="white"),
             )
             if len(table.rows) > 15:
                 break
-
 
         return table
 
@@ -145,7 +139,12 @@ class Tracker:
 def process_queue(queue: Queue[ScheduleEvent]):
     tracker = Tracker()
     console = Console()
-    with Live(console=console, renderable=tracker.generate_table(), refresh_per_second=1, screen=True) as live:
+    with Live(
+        console=console,
+        renderable=tracker.generate_table(),
+        refresh_per_second=1,
+        screen=True,
+    ) as live:
         while True:
             time.sleep(15)
             while queue.qsize() != 0:

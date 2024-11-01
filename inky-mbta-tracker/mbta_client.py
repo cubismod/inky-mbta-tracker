@@ -9,9 +9,10 @@ import httpx
 import sseclient
 from expiring_dict import ExpiringDict
 from mbta_responses import (
+    PredictionAttributes,
+    PredictionResource,
     Route,
     RouteResource,
-    ScheduleAttributes,
     ScheduleResource,
     Stop,
     TripResource,
@@ -50,7 +51,6 @@ class Watcher:
     route: str | None
     direction: int | None
     trips: ExpiringDict[str, TripResource]
-    predictions: ExpiringDict[str, ScheduleResource]
     routes: dict[str, RouteResource]
     stop: Stop
 
@@ -59,11 +59,10 @@ class Watcher:
         self.route = route
         self.direction = direction
         self.trips = ExpiringDict(thirty_hours)
-        self.predictions = ExpiringDict(thirty_hours)
         self.routes = dict()
 
     @staticmethod
-    def determine_time(attributes: ScheduleAttributes) -> datetime:
+    def determine_time(attributes: PredictionAttributes) -> datetime:
         if attributes.arrival_time:
             return datetime.fromisoformat(attributes.arrival_time)
         elif attributes.departure_time:
@@ -81,36 +80,27 @@ class Watcher:
         try:
             match event_type:
                 case "reset":
-                    ta = TypeAdapter(list[ScheduleResource])
-                    schedule = ta.validate_json(data, strict=False)
-                    for item in schedule:
+                    ta = TypeAdapter(list[PredictionResource])
+                    prediction = ta.validate_json(data, strict=False)
+                    for item in prediction:
                         self.save_trip(item)
                         self.save_route(item)
-                        if item.type == "prediction":
-                            self.predictions[item.id] = item
-                        else:
-                            self.queue_schedule_event(item, "reset", queue)
+                        self.queue_schedule_event(item, "reset", queue)
                 case "add":
-                    schedule = ScheduleResource.model_validate_json(data, strict=False)
-                    self.save_trip(schedule)
-                    self.save_route(schedule)
-                    if schedule.type == "prediction":
-                        self.predictions[schedule.id] = schedule
-                    else:
-                        self.queue_schedule_event(schedule, "add", queue)
+                    prediction = PredictionResource.model_validate_json(
+                        data, strict=False
+                    )
+                    self.save_trip(prediction)
+                    self.save_route(prediction)
+                    self.queue_schedule_event(prediction, "add", queue)
                 case "update":
                     schedule = ScheduleResource.model_validate_json(data, strict=False)
-                    if schedule.type == "prediction":
-                        self.predictions[schedule.id] = schedule
-                    else:
-                        self.queue_schedule_event(schedule, "update", queue)
                 case "remove":
                     schedule = TypeAndID.model_validate_json(data, strict=False)
                     # directly interact with the queue here to use a dummy object
                     event = ScheduleEvent(
                         action="remove",
                         headsign="nowhere",
-                        prediction=False,
                         route_id="Green Line A Branch",
                         route_type=1,
                         id=schedule.id,
@@ -125,25 +115,19 @@ class Watcher:
             logger.error(f"Could not find prediction, {err}")
 
     def queue_schedule_event(
-        self, item: ScheduleResource, event_type: str, queue: Queue[ScheduleEvent]
+        self, item: PredictionResource, event_type: str, queue: Queue[ScheduleEvent]
     ):
         schedule_time = self.determine_time(item.attributes)
         route_id = item.relationships.route.data.id
         headsign = self.get_headsign(item.relationships.trip.data.id)
         route_type = self.routes[route_id].attributes.type
-        prediction = False
 
-        if item.relationships.prediction.data is not None:
-            prediction = self.predictions[item.relationships.prediction.data.id]
-            schedule_time = self.determine_time(prediction.attributes)
-            prediction = True
         event = ScheduleEvent(
             action=event_type,
             time=schedule_time,
             route_id=route_id,
             route_type=route_type,
             headsign=headsign,
-            prediction=prediction,
             id=item.id,
             stop=self.stop.data.attributes.name,
         )
@@ -154,9 +138,9 @@ class Watcher:
         wait=wait_exponential(multiplier=1, min=1, max=10),
         retry=retry_if_exception_type(httpx.RequestError),
     )
-    def save_trip(self, schedule: ScheduleResource):
-        trip_id = schedule.relationships.trip.data.id
-        if trip_id not in self.trips:
+    def save_trip(self, prediction: PredictionResource):
+        trip_id = prediction.relationships.trip.data.id
+        if trip_id and trip_id not in self.trips:
             try:
                 response = httpx.get(
                     f"{mbta_v3}/trips?filter[id]={trip_id}&api_key={auth_token}"
@@ -173,8 +157,8 @@ class Watcher:
         wait=wait_exponential(multiplier=1, min=1, max=10),
         retry=retry_if_exception_type(httpx.RequestError),
     )
-    def save_route(self, schedule: ScheduleResource):
-        route_id = schedule.relationships.route.data.id
+    def save_route(self, prediction: PredictionResource):
+        route_id = prediction.relationships.route.data.id
         if route_id not in self.routes:
             try:
                 response = httpx.get(
@@ -221,8 +205,9 @@ def watch_server_side_events(
 def watch_station(
     stop_id: str, route: str | None, direction: int | None, queue: Queue[ScheduleEvent]
 ):
-    now = datetime.now()
-    endpoint = f"{mbta_v3}/schedules?include=prediction&filter[min_time]={now.strftime("%H:%M")}&filter[stop]={stop_id}&sort=time&api_key={auth_token}"
+    endpoint = (
+        f"{mbta_v3}/predictions?filter[stop]={stop_id}&sort=time&api_key={auth_token}"
+    )
     if route != "":
         endpoint += f"&filter[route]={route}"
     if direction != "":

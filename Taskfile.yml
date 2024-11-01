@@ -1,0 +1,15 @@
+version: '3'
+
+tasks:
+  check:
+    cmds:
+      - ruff check --fix inky-mbta-tracker
+  format:
+    cmds:
+      - ruff format inky-mbta-tracker
+  run:
+    cmds:
+      - export $(cat .env | xargs) && python3 inky-mbta-tracker/main.py
+  logs:
+    cmds:
+      - tail -f imt.log
