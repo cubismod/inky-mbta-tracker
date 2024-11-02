@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Setup Task
-        uses: illbjorn/setup-taskfile@main
+        uses: Illbjorn/setup-taskfile@main
       - name: Lint Task
         shell: bash
         run: task check
