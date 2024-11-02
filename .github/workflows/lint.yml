@@ -1,0 +1,17 @@
+name: Lint
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+
+jobs:
+  demo:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup Task
+        uses: illbjorn/setup-taskfile@main
+      - name: Lint Task
+        shell: bash
+        run: task check

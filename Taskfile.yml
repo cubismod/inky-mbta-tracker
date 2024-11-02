@@ -5,6 +5,10 @@ dotenv: ['.env']
 tasks:
   check:
     cmds:
+      - ruff check inky-mbta-tracker
+
+  fix:
+    cmds:
       - ruff check --fix inky-mbta-tracker
   format:
     cmds:
