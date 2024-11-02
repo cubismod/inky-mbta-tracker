@@ -1,13 +1,16 @@
 import contextlib
 import logging
 import os
-import threading
 import time
 from asyncio import QueueEmpty
 from datetime import datetime, timedelta
+from os import environ
 from queue import Queue
 
+import redis
 from pydantic import BaseModel
+from redis import Redis, ResponseError
+from redis.client import Pipeline
 from rich.console import Console
 from rich.live import Live
 from rich.style import Style
@@ -34,13 +37,29 @@ class ScheduleEvent(BaseModel):
 
 class Tracker:
     all_events: SortedDict[str, ScheduleEvent]
+    redis: Redis
 
     def __init__(self):
         self.all_events = SortedDict()
+        r = redis.Redis(
+            host=environ.get("IMT_REDIS_ENDPOINT"),
+            port=os.environ.get("IMT_REDIS_PORT", "6379"),
+            password=os.environ.get("IMT_REDIS_PASSWORD"),
+        )
+        self.redis = r
 
     @staticmethod
     def __calculate_timestamp(event: ScheduleEvent):
         return str(event.time.timestamp())
+
+    @staticmethod
+    def __calculate_time_diff(event: ScheduleEvent):
+        ts = event.time.timestamp()
+        diff = ts - datetime.now().timestamp()
+        if diff > 0:
+            return round(diff)
+        else:
+            return 200
 
     def __find_timestamp(self, prediction_id: str):
         for _, item in self.all_events.items():
@@ -48,15 +67,19 @@ class Tracker:
                 return self.__calculate_timestamp(item)
         return None
 
-    def __add(self, event: ScheduleEvent):
+    def __add(self, event: ScheduleEvent, pipeline: Pipeline):
         self.all_events[self.__calculate_timestamp(event)] = event
+        pipeline.set(
+            event.id, event.model_dump_json(), ex=self.__calculate_time_diff(event)
+        )
+        pipeline.zadd("time", {event.id: self.__calculate_timestamp(event)})
 
-    def __update(self, event: ScheduleEvent):
+    def __update(self, event: ScheduleEvent, pipeline: Pipeline):
         existing_timestamp = self.__find_timestamp(event.id)
         if existing_timestamp and existing_timestamp != str(event.time.timestamp()):
             # remove old predictions
             self.all_events.pop(existing_timestamp)
-        self.__add(event)
+        self.__add(event, pipeline)
 
     def __rm(self, event: ScheduleEvent):
         timestamp = self.__find_timestamp(event.id)
@@ -122,46 +145,55 @@ class Tracker:
         return table
 
     def prune_entries(self):
-        for event in self.all_events.items():
-            if float(event[0]) < (datetime.now() - timedelta(seconds=30)).timestamp():
-                self.__rm(event[1])
+        for k, event in self.all_events.items():
+            if float(k) < (datetime.now() - timedelta(seconds=30)).timestamp():
+                self.__rm(event)
                 continue
             else:
                 break
 
-    def process_schedule_event(self, event: ScheduleEvent):
+    def process_schedule_event(self, event: ScheduleEvent, pipeline: Pipeline):
         match event.action:
             case "reset":
-                self.__add(event)
+                self.__add(event, pipeline)
             case "add":
-                self.__add(event)
+                self.__add(event, pipeline)
             case "update":
-                self.__update(event)
+                self.__update(event, pipeline)
             case "remove":
                 self.__rm(event)
 
 
-def process_queue(queue: Queue[ScheduleEvent], exit_event: threading.Event):
+def __run(tracker: Tracker, queue: Queue[ScheduleEvent]):
+    time.sleep(15)
+    pipeline = tracker.redis.pipeline()
+    while queue.qsize() != 0:
+        try:
+            schedule_event = queue.get()
+            tracker.process_schedule_event(schedule_event, pipeline)
+        except QueueEmpty:
+            return
+    tracker.prune_entries()
+    try:
+        pipeline.execute()
+    except ResponseError as err:
+        logger.error(f"Unable to communicate with Redis: {err}")
+
+
+def process_queue(queue: Queue[ScheduleEvent]):
     tracker = Tracker()
-    console = Console()
-    with Live(
-        console=console,
-        renderable=tracker.generate_table(),
-        refresh_per_second=1,
-        screen=True,
-        transient=True,
-    ) as live:
+    if os.environ.get("IMT_CONSOLE", "false") == "true":
+        console = Console()
+        with Live(
+            console=console,
+            renderable=tracker.generate_table(),
+            refresh_per_second=1,
+            screen=True,
+            transient=True,
+        ) as live:
+            while True:
+                __run(tracker, queue)
+                live.update(tracker.generate_table())
+    else:
         while True:
-            time.sleep(15)
-            while queue.qsize() != 0:
-                try:
-                    schedule_event = queue.get()
-                    tracker.process_schedule_event(schedule_event)
-                except QueueEmpty:
-                    break
-            tracker.prune_entries()
-            live.update(tracker.generate_table())
-            if exit_event.is_set():
-                logger.info("bye bye")
-                live.stop()
-                break
+            __run(tracker, queue)

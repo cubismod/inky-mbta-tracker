@@ -1,11 +1,8 @@
 # client that keeps track of events on the stops specified
-import contextlib
 import logging
 import os
 import random
-import threading
 import time
-from asyncio import QueueEmpty
 from datetime import datetime
 from queue import Queue
 
@@ -25,11 +22,12 @@ from mbta_responses import (
 from pydantic import TypeAdapter, ValidationError
 from schedule_tracker import ScheduleEvent
 from tenacity import (
+    after_log,
     before_log,
     retry,
     retry_if_exception_type,
     wait_exponential,
-    wait_random_exponential, after_log,
+    wait_random_exponential,
 )
 
 auth_token = os.environ.get("AUTH_TOKEN")
@@ -63,6 +61,9 @@ class Watcher:
         self.direction = direction
         self.trips = ExpiringDict(thirty_hours)
         self.routes = dict()
+        logger.info(
+            f"Init mbta_client for stop={stop_id}, route={route}, direction={direction}"
+        )
 
     @staticmethod
     def determine_time(attributes: PredictionAttributes) -> datetime:
@@ -202,23 +203,19 @@ class Watcher:
 @retry(
     wait=wait_random_exponential(multiplier=1, max=200),
     before=before_log(logger, logging.INFO),
-    after=after_log(logger, logging.WARN)
+    after=after_log(logger, logging.WARN),
 )
 def watch_server_side_events(
     watcher: Watcher,
     endpoint: str,
     headers: dict[str, str],
     queue: Queue[ScheduleEvent],
-    exit_event: threading.Event
 ):
     response = with_httpx(endpoint, headers)
     client = sseclient.SSEClient(response)
     for event in client.events():
-        if exit_event.is_set():
-            logger.info("bye bye")
-            break
         watcher.parse_schedule_response(event.data, event.event, queue)
-        time.sleep(random.randint(1, 4))
+        time.sleep(random.randint(1, 30))
 
 
 def watch_station(
@@ -226,7 +223,6 @@ def watch_station(
     route: str | None,
     direction: int | None,
     queue: Queue[ScheduleEvent],
-    exit_event: threading.Event,
 ):
     endpoint = (
         f"{mbta_v3}/predictions?filter[stop]={stop_id}&sort=time&api_key={auth_token}"
@@ -238,4 +234,4 @@ def watch_station(
     headers = {"accept": "text/event-stream"}
     watcher = Watcher(stop_id, route, direction)
     watcher.save_stop()
-    watch_server_side_events(watcher, endpoint, headers, queue, exit_event)
+    watch_server_side_events(watcher, endpoint, headers, queue)
