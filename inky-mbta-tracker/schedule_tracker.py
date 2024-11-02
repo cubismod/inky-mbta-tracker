@@ -1,10 +1,11 @@
 import contextlib
 import logging
+import os
+import threading
 import time
 from asyncio import QueueEmpty
 from datetime import datetime, timedelta
 from queue import Queue
-from typing import Optional
 
 from pydantic import BaseModel
 from rich.console import Console
@@ -16,6 +17,11 @@ from sortedcontainers import SortedDict
 logger = logging.getLogger("schedule_tracker")
 
 
+# actions:
+# add
+# update
+# remove
+# quit
 class ScheduleEvent(BaseModel):
     action: str
     time: datetime
@@ -28,7 +34,6 @@ class ScheduleEvent(BaseModel):
 
 class Tracker:
     all_events: SortedDict[str, ScheduleEvent]
-    current_display: Optional[str]
 
     def __init__(self):
         self.all_events = SortedDict()
@@ -37,21 +42,21 @@ class Tracker:
     def __calculate_timestamp(event: ScheduleEvent):
         return str(event.time.timestamp())
 
-    def __find_timestamp(self, schedule_id: str):
-        for item in self.all_events.items():
-            if item[1].id == schedule_id:
-                return self.__calculate_timestamp(item[1])
+    def __find_timestamp(self, prediction_id: str):
+        for _, item in self.all_events.items():
+            if item.id == prediction_id:
+                return self.__calculate_timestamp(item)
         return None
 
     def __add(self, event: ScheduleEvent):
         self.all_events[self.__calculate_timestamp(event)] = event
 
     def __update(self, event: ScheduleEvent):
-        timestamp = self.__find_timestamp(event.id)
-        if timestamp:
-            self.all_events[timestamp] = event
-        else:
-            self.__add(event)
+        existing_timestamp = self.__find_timestamp(event.id)
+        if existing_timestamp and existing_timestamp != str(event.time.timestamp()):
+            # remove old predictions
+            self.all_events.pop(existing_timestamp)
+        self.__add(event)
 
     def __rm(self, event: ScheduleEvent):
         timestamp = self.__find_timestamp(event.id)
@@ -111,7 +116,7 @@ class Tracker:
                 event.time.strftime("%X"),
                 style=Style(color=self.__determine_color(event), bgcolor="white"),
             )
-            if len(table.rows) > 15:
+            if len(table.rows) > int(os.getenv("IMT_ROWS", 15)):
                 break
 
         return table
@@ -136,7 +141,7 @@ class Tracker:
                 self.__rm(event)
 
 
-def process_queue(queue: Queue[ScheduleEvent]):
+def process_queue(queue: Queue[ScheduleEvent], exit_event: threading.Event):
     tracker = Tracker()
     console = Console()
     with Live(
@@ -144,6 +149,7 @@ def process_queue(queue: Queue[ScheduleEvent]):
         renderable=tracker.generate_table(),
         refresh_per_second=1,
         screen=True,
+        transient=True,
     ) as live:
         while True:
             time.sleep(15)
@@ -155,3 +161,7 @@ def process_queue(queue: Queue[ScheduleEvent]):
                     break
             tracker.prune_entries()
             live.update(tracker.generate_table())
+            if exit_event.is_set():
+                logger.info("bye bye")
+                live.stop()
+                break

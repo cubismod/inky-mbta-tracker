@@ -1,7 +1,11 @@
 # client that keeps track of events on the stops specified
+import contextlib
 import logging
 import os
+import random
+import threading
 import time
+from asyncio import QueueEmpty
 from datetime import datetime
 from queue import Queue
 
@@ -13,7 +17,6 @@ from mbta_responses import (
     PredictionResource,
     Route,
     RouteResource,
-    ScheduleResource,
     Stop,
     TripResource,
     Trips,
@@ -26,7 +29,7 @@ from tenacity import (
     retry,
     retry_if_exception_type,
     wait_exponential,
-    wait_random_exponential,
+    wait_random_exponential, after_log,
 )
 
 auth_token = os.environ.get("AUTH_TOKEN")
@@ -94,7 +97,10 @@ class Watcher:
                     self.save_route(prediction)
                     self.queue_schedule_event(prediction, "add", queue)
                 case "update":
-                    schedule = ScheduleResource.model_validate_json(data, strict=False)
+                    prediction = PredictionResource.model_validate_json(
+                        data, strict=False
+                    )
+                    self.queue_schedule_event(prediction, "update", queue)
                 case "remove":
                     schedule = TypeAndID.model_validate_json(data, strict=False)
                     # directly interact with the queue here to use a dummy object
@@ -108,16 +114,24 @@ class Watcher:
                         time=datetime.now(),
                     )
                     queue.put(event)
+                    self.log_prediction(event)
 
         except ValidationError as err:
             logger.error(f"Unable to parse schedule, {err}")
         except KeyError as err:
             logger.error(f"Could not find prediction, {err}")
 
+    @staticmethod
+    def log_prediction(event: ScheduleEvent):
+        logger.info(
+            f"PUTing new prediction entry: action={event.action} time={event.time.strftime("%X")} route_id={event.route_id} route_type={event.route_type} headsign={event.headsign} stop={event.stop} id={event.id}"
+        )
+
     def queue_schedule_event(
         self, item: PredictionResource, event_type: str, queue: Queue[ScheduleEvent]
     ):
         schedule_time = self.determine_time(item.attributes)
+        self.save_route(item)
         route_id = item.relationships.route.data.id
         headsign = self.get_headsign(item.relationships.trip.data.id)
         route_type = self.routes[route_id].attributes.type
@@ -132,7 +146,7 @@ class Watcher:
             stop=self.stop.data.attributes.name,
         )
         queue.put(event)
-        logger.info(f"PUTing new schedule entry: {event}")
+        self.log_prediction(event)
 
     @retry(
         wait=wait_exponential(multiplier=1, min=1, max=10),
@@ -187,23 +201,32 @@ class Watcher:
 
 @retry(
     wait=wait_random_exponential(multiplier=1, max=200),
-    before=before_log(logger, logging.WARN),
+    before=before_log(logger, logging.INFO),
+    after=after_log(logger, logging.WARN)
 )
 def watch_server_side_events(
     watcher: Watcher,
     endpoint: str,
     headers: dict[str, str],
     queue: Queue[ScheduleEvent],
+    exit_event: threading.Event
 ):
     response = with_httpx(endpoint, headers)
     client = sseclient.SSEClient(response)
     for event in client.events():
+        if exit_event.is_set():
+            logger.info("bye bye")
+            break
         watcher.parse_schedule_response(event.data, event.event, queue)
-        time.sleep(20)
+        time.sleep(random.randint(1, 4))
 
 
 def watch_station(
-    stop_id: str, route: str | None, direction: int | None, queue: Queue[ScheduleEvent]
+    stop_id: str,
+    route: str | None,
+    direction: int | None,
+    queue: Queue[ScheduleEvent],
+    exit_event: threading.Event,
 ):
     endpoint = (
         f"{mbta_v3}/predictions?filter[stop]={stop_id}&sort=time&api_key={auth_token}"
@@ -215,4 +238,4 @@ def watch_station(
     headers = {"accept": "text/event-stream"}
     watcher = Watcher(stop_id, route, direction)
     watcher.save_stop()
-    watch_server_side_events(watcher, endpoint, headers, queue)
+    watch_server_side_events(watcher, endpoint, headers, queue, exit_event)
