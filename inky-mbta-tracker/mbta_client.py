@@ -125,7 +125,7 @@ class Watcher:
     @staticmethod
     def log_prediction(event: ScheduleEvent):
         logger.info(
-            f"PUTing new prediction entry: action={event.action} time={event.time.strftime("%X")} route_id={event.route_id} route_type={event.route_type} headsign={event.headsign} stop={event.stop} id={event.id}"
+            f"action={event.action} time={event.time.strftime("%X")} route_id={event.route_id} route_type={event.route_type} headsign={event.headsign} stop={event.stop} id={event.id}"
         )
 
     def queue_schedule_event(
