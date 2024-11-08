@@ -34,7 +34,13 @@ def __main__():
     for stop in config.stops:
         thr = threading.Thread(
             target=watch_station,
-            args=(stop.stop_id, stop.route_filter, stop.direction_filter, queue),
+            args=(
+                stop.stop_id,
+                stop.route_filter,
+                stop.direction_filter,
+                queue,
+                stop.transit_time_min,
+            ),
             daemon=True,
         )
         threads.append(thr)

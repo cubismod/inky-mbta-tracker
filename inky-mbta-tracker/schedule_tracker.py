@@ -33,6 +33,7 @@ class ScheduleEvent(BaseModel):
     headsign: str
     stop: str
     id: str
+    transit_time_min: int
 
 
 class Tracker:

@@ -22,8 +22,8 @@ from mbta_responses import (
 from pydantic import TypeAdapter, ValidationError
 from schedule_tracker import ScheduleEvent
 from tenacity import (
-    after_log,
     before_log,
+    before_sleep_log,
     retry,
     retry_if_exception_type,
     wait_exponential,
@@ -78,7 +78,11 @@ class Watcher:
         return ""
 
     def parse_schedule_response(
-        self, data: str, event_type: str, queue: Queue[ScheduleEvent]
+        self,
+        data: str,
+        event_type: str,
+        queue: Queue[ScheduleEvent],
+        transit_time_min: int,
     ):
         # https://www.mbta.com/developers/v3-api/streaming
         try:
@@ -89,19 +93,25 @@ class Watcher:
                     for item in prediction:
                         self.save_trip(item)
                         self.save_route(item)
-                        self.queue_schedule_event(item, "reset", queue)
+                        self.queue_schedule_event(
+                            item, "reset", queue, transit_time_min
+                        )
                 case "add":
                     prediction = PredictionResource.model_validate_json(
                         data, strict=False
                     )
                     self.save_trip(prediction)
                     self.save_route(prediction)
-                    self.queue_schedule_event(prediction, "add", queue)
+                    self.queue_schedule_event(
+                        prediction, "add", queue, transit_time_min
+                    )
                 case "update":
                     prediction = PredictionResource.model_validate_json(
                         data, strict=False
                     )
-                    self.queue_schedule_event(prediction, "update", queue)
+                    self.queue_schedule_event(
+                        prediction, "update", queue, transit_time_min
+                    )
                 case "remove":
                     schedule = TypeAndID.model_validate_json(data, strict=False)
                     # directly interact with the queue here to use a dummy object
@@ -113,6 +123,7 @@ class Watcher:
                         id=schedule.id,
                         stop="Boston 2",
                         time=datetime.now(),
+                        transit_time_min=transit_time_min,
                     )
                     queue.put(event)
                     self.log_prediction(event)
@@ -125,11 +136,15 @@ class Watcher:
     @staticmethod
     def log_prediction(event: ScheduleEvent):
         logger.info(
-            f"action={event.action} time={event.time.strftime("%X")} route_id={event.route_id} route_type={event.route_type} headsign={event.headsign} stop={event.stop} id={event.id}"
+            f"action={event.action} time={event.time.strftime("%X")} route_id={event.route_id} route_type={event.route_type} headsign={event.headsign} stop={event.stop} id={event.id}, transit_time_min={event.transit_time_min}"
         )
 
     def queue_schedule_event(
-        self, item: PredictionResource, event_type: str, queue: Queue[ScheduleEvent]
+        self,
+        item: PredictionResource,
+        event_type: str,
+        queue: Queue[ScheduleEvent],
+        transit_time_min: int,
     ):
         schedule_time = self.determine_time(item.attributes)
         self.save_route(item)
@@ -145,6 +160,7 @@ class Watcher:
             headsign=headsign,
             id=item.id,
             stop=self.stop.data.attributes.name,
+            transit_time_min=transit_time_min,
         )
         queue.put(event)
         self.log_prediction(event)
@@ -152,6 +168,7 @@ class Watcher:
     @retry(
         wait=wait_exponential(multiplier=1, min=1, max=10),
         retry=retry_if_exception_type(httpx.RequestError),
+        before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
     )
     def save_trip(self, prediction: PredictionResource):
         trip_id = prediction.relationships.trip.data.id
@@ -171,6 +188,7 @@ class Watcher:
     @retry(
         wait=wait_exponential(multiplier=1, min=1, max=10),
         retry=retry_if_exception_type(httpx.RequestError),
+        before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
     )
     def save_route(self, prediction: PredictionResource):
         route_id = prediction.relationships.route.data.id
@@ -189,6 +207,7 @@ class Watcher:
     @retry(
         wait=wait_exponential(multiplier=1, min=1, max=10),
         retry=retry_if_exception_type(httpx.RequestError),
+        before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
     )
     def save_stop(self):
         try:
@@ -197,24 +216,27 @@ class Watcher:
             self.stop = Stop.model_validate_json(response.text, strict=False)
             logger.info("saved stop")
         except ValidationError as err:
-            logger.error(f"Unable to parse stop, {err}")
+            logger.error("Unable to parse stop", exc_info=err)
 
 
 @retry(
     wait=wait_random_exponential(multiplier=1, max=200),
     before=before_log(logger, logging.INFO),
-    after=after_log(logger, logging.WARN),
+    before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
 )
 def watch_server_side_events(
     watcher: Watcher,
     endpoint: str,
     headers: dict[str, str],
     queue: Queue[ScheduleEvent],
+    transit_time_min: int,
 ):
     response = with_httpx(endpoint, headers)
     client = sseclient.SSEClient(response)
     for event in client.events():
-        watcher.parse_schedule_response(event.data, event.event, queue)
+        watcher.parse_schedule_response(
+            event.data, event.event, queue, transit_time_min
+        )
         time.sleep(random.randint(1, 30))
 
 
@@ -223,6 +245,7 @@ def watch_station(
     route: str | None,
     direction: int | None,
     queue: Queue[ScheduleEvent],
+    transit__time_min: int,
 ):
     endpoint = (
         f"{mbta_v3}/predictions?filter[stop]={stop_id}&sort=time&api_key={auth_token}"
@@ -234,4 +257,4 @@ def watch_station(
     headers = {"accept": "text/event-stream"}
     watcher = Watcher(stop_id, route, direction)
     watcher.save_stop()
-    watch_server_side_events(watcher, endpoint, headers, queue)
+    watch_server_side_events(watcher, endpoint, headers, queue, transit__time_min)
