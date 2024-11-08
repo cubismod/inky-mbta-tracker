@@ -163,3 +163,4 @@ config.json
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 .idea/
 config_*.json
+.DS_Store
