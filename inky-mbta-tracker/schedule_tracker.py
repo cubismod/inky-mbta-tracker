@@ -82,11 +82,19 @@ class Tracker:
             self.all_events.pop(existing_timestamp)
         self.__add(event, pipeline)
 
-    def __rm(self, event: ScheduleEvent):
+    # cleans up the ordered set from time to time
+    def cleanup_set(self):
+        try:
+            self.redis.zremrangebyscore("time", "0", str(datetime.now().timestamp()))
+        except ResponseError as err:
+            logger.error("Unable to communicate with redis", exc_info=err)
+
+    def __rm(self, event: ScheduleEvent, pipeline: Pipeline):
         timestamp = self.__find_timestamp(event.id)
         if timestamp:
             with contextlib.suppress(KeyError):
                 self.all_events.pop(timestamp)
+            pipeline.zrem("time", self.__calculate_timestamp(event))
 
     @staticmethod
     def __determine_color(event: ScheduleEvent):
@@ -145,10 +153,10 @@ class Tracker:
 
         return table
 
-    def prune_entries(self):
+    def prune_entries(self, pipeline: Pipeline):
         for k, event in self.all_events.items():
             if float(k) < (datetime.now() - timedelta(seconds=30)).timestamp():
-                self.__rm(event)
+                self.__rm(event, pipeline)
                 continue
             else:
                 break
@@ -162,7 +170,7 @@ class Tracker:
             case "update":
                 self.__update(event, pipeline)
             case "remove":
-                self.__rm(event)
+                self.__rm(event, pipeline)
 
 
 def __run(tracker: Tracker, queue: Queue[ScheduleEvent]):
@@ -174,11 +182,12 @@ def __run(tracker: Tracker, queue: Queue[ScheduleEvent]):
             tracker.process_schedule_event(schedule_event, pipeline)
         except QueueEmpty:
             return
-    tracker.prune_entries()
+    tracker.prune_entries(pipeline)
     try:
         pipeline.execute()
     except ResponseError as err:
         logger.error(f"Unable to communicate with Redis: {err}")
+    tracker.cleanup_set()
 
 
 def process_queue(queue: Queue[ScheduleEvent]):
