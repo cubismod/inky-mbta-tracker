@@ -3,7 +3,7 @@ import logging
 import os
 import time
 from asyncio import QueueEmpty
-from datetime import datetime, timedelta
+from datetime import datetime
 from os import environ
 from queue import Queue
 
@@ -69,11 +69,13 @@ class Tracker:
         return None
 
     def __add(self, event: ScheduleEvent, pipeline: Pipeline):
-        self.all_events[self.__calculate_timestamp(event)] = event
-        pipeline.set(
-            event.id, event.model_dump_json(), ex=self.__calculate_time_diff(event)
-        )
-        pipeline.zadd("time", {event.id: self.__calculate_timestamp(event)})
+        # only add events in the future
+        if event.time.timestamp() > datetime.now().timestamp():
+            self.all_events[self.__calculate_timestamp(event)] = event
+            pipeline.set(
+                event.id, event.model_dump_json(), ex=self.__calculate_time_diff(event)
+            )
+            pipeline.zadd("time", {event.id: self.__calculate_timestamp(event)})
 
     def __update(self, event: ScheduleEvent, pipeline: Pipeline):
         existing_timestamp = self.__find_timestamp(event.id)
@@ -153,14 +155,6 @@ class Tracker:
 
         return table
 
-    def prune_entries(self, pipeline: Pipeline):
-        for k, event in self.all_events.items():
-            if float(k) < (datetime.now() - timedelta(seconds=30)).timestamp():
-                self.__rm(event, pipeline)
-                continue
-            else:
-                break
-
     def process_schedule_event(self, event: ScheduleEvent, pipeline: Pipeline):
         match event.action:
             case "reset":
@@ -182,11 +176,10 @@ def __run(tracker: Tracker, queue: Queue[ScheduleEvent]):
             tracker.process_schedule_event(schedule_event, pipeline)
         except QueueEmpty:
             return
-    tracker.prune_entries(pipeline)
     try:
         pipeline.execute()
     except ResponseError as err:
-        logger.error(f"Unable to communicate with Redis: {err}")
+        logger.error("Unable to communicate with Redis", exc_info=err)
     tracker.cleanup_set()
 
 
