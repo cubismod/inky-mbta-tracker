@@ -57,6 +57,10 @@ class AddUpdateSchedule(BaseModel):
     data: ScheduleResource
 
 
+class Schedules(BaseModel):
+    data: list[ScheduleResource]
+
+
 class RemoveSchedule(BaseModel):
     data: TypeAndID
 

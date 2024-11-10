@@ -9,6 +9,7 @@ class StopSetup(BaseModel):
     route_filter: str = Field(default="")
     direction_filter: str = Field(default="")
     transit_time_min: int
+    schedule_only: bool = Field(default=False)
 
 
 class Config(BaseModel):

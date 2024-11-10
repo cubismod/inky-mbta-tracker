@@ -6,7 +6,7 @@ from queue import Queue
 
 from config import load_config
 from dotenv import load_dotenv
-from mbta_client import watch_station
+from mbta_client import watch_static_schedule, watch_station
 from schedule_tracker import ScheduleEvent, process_queue
 
 load_dotenv()
@@ -32,17 +32,31 @@ def __main__():
 
     threads = list()
     for stop in config.stops:
-        thr = threading.Thread(
-            target=watch_station,
-            args=(
-                stop.stop_id,
-                stop.route_filter,
-                stop.direction_filter,
-                queue,
-                stop.transit_time_min,
-            ),
-            daemon=True,
-        )
+        thr = None
+        if stop.schedule_only:
+            thr = threading.Thread(
+                target=watch_static_schedule,
+                args=(
+                    stop.stop_id,
+                    stop.route_filter,
+                    stop.direction_filter,
+                    queue,
+                    stop.transit_time_min,
+                ),
+                daemon=True,
+            )
+        else:
+            thr = threading.Thread(
+                target=watch_station,
+                args=(
+                    stop.stop_id,
+                    stop.route_filter,
+                    stop.direction_filter,
+                    queue,
+                    stop.transit_time_min,
+                ),
+                daemon=True,
+            )
         threads.append(thr)
         thr.start()
 

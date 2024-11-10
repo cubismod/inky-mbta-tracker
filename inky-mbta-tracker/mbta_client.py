@@ -14,6 +14,8 @@ from mbta_responses import (
     PredictionResource,
     Route,
     RouteResource,
+    ScheduleResource,
+    Schedules,
     Stop,
     TripResource,
     Trips,
@@ -54,16 +56,25 @@ class Watcher:
     trips: ExpiringDict[str, TripResource]
     routes: dict[str, RouteResource]
     stop: Stop
+    schedule_only: bool
 
-    def __init__(self, stop_id: str, route: str | None, direction: int | None):
+    def __init__(
+        self,
+        stop_id: str,
+        route: str | None,
+        direction: int | None,
+        schedule_only=False,
+    ):
         self.stop_id = stop_id
         self.route = route
+        self.stop = self.save_stop()
         self.direction = direction
         self.trips = ExpiringDict(thirty_hours)
         self.routes = dict()
         logger.info(
             f"Init mbta_client for stop={stop_id}, route={route}, direction={direction}"
         )
+        self.schedule_only = schedule_only
 
     @staticmethod
     def determine_time(attributes: PredictionAttributes) -> datetime:
@@ -141,7 +152,7 @@ class Watcher:
 
     def queue_schedule_event(
         self,
-        item: PredictionResource,
+        item: PredictionResource | ScheduleResource,
         event_type: str,
         queue: Queue[ScheduleEvent],
         transit_time_min: int,
@@ -170,7 +181,7 @@ class Watcher:
         retry=retry_if_exception_type(httpx.RequestError),
         before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
     )
-    def save_trip(self, prediction: PredictionResource):
+    def save_trip(self, prediction: PredictionResource | ScheduleResource):
         trip_id = prediction.relationships.trip.data.id
         if trip_id and trip_id not in self.trips:
             try:
@@ -190,7 +201,7 @@ class Watcher:
         retry=retry_if_exception_type(httpx.RequestError),
         before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
     )
-    def save_route(self, prediction: PredictionResource):
+    def save_route(self, prediction: PredictionResource | ScheduleResource):
         route_id = prediction.relationships.route.data.id
         if route_id not in self.routes:
             try:
@@ -209,12 +220,36 @@ class Watcher:
         retry=retry_if_exception_type(httpx.RequestError),
         before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
     )
+    def save_schedule(self, transit_time_min: int, queue: Queue[ScheduleEvent]):
+        try:
+            endpoint = f"{mbta_v3}/schedules?filter[stop]={self.stop_id}&sort=time&api_key={auth_token}"
+            if self.route != "":
+                endpoint += f"&filter[route]={self.route}"
+            if self.direction != "":
+                endpoint += f"&filter[direction_id]={self.direction}"
+
+            response = httpx.get(endpoint)
+            schedules = Schedules.model_validate_json(
+                strict=False, json_data=response.text
+            )
+
+            for item in schedules.data:
+                self.save_trip(item)
+                self.save_route(item)
+                self.queue_schedule_event(item, "add", queue, transit_time_min)
+        except ValidationError as err:
+            logger.error("Unable to parse schedule", exc_info=err)
+
+    @retry(
+        wait=wait_exponential(multiplier=1, min=1, max=10),
+        retry=retry_if_exception_type(httpx.RequestError),
+        before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
+    )
     def save_stop(self):
         try:
             response = httpx.get(f"{mbta_v3}/stops/{self.stop_id}?api_key={auth_token}")
-
-            self.stop = Stop.model_validate_json(response.text, strict=False)
             logger.info("saved stop")
+            return Stop.model_validate_json(response.text, strict=False)
         except ValidationError as err:
             logger.error("Unable to parse stop", exc_info=err)
 
@@ -240,6 +275,20 @@ def watch_server_side_events(
         time.sleep(random.randint(1, 30))
 
 
+def watch_static_schedule(
+    stop_id: str,
+    route: str | None,
+    direction: int | None,
+    queue: Queue[ScheduleEvent],
+    transit_time_min: int,
+):
+    while True:
+        watcher = Watcher(stop_id, route, direction, schedule_only=True)
+
+        watcher.save_schedule(transit_time_min, queue)
+        time.sleep(10800)  # 3 hours
+
+
 def watch_station(
     stop_id: str,
     route: str | None,
@@ -256,5 +305,4 @@ def watch_station(
         endpoint += f"&filter[direction_id]={direction}"
     headers = {"accept": "text/event-stream"}
     watcher = Watcher(stop_id, route, direction)
-    watcher.save_stop()
     watch_server_side_events(watcher, endpoint, headers, queue, transit__time_min)
