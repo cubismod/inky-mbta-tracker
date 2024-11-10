@@ -236,7 +236,7 @@ class Watcher:
             for item in schedules.data:
                 self.save_trip(item)
                 self.save_route(item)
-                self.queue_schedule_event(item, "add", queue, transit_time_min)
+                self.queue_schedule_event(item, "reset", queue, transit_time_min)
         except ValidationError as err:
             logger.error("Unable to parse schedule", exc_info=err)
 
