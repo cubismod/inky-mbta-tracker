@@ -222,7 +222,7 @@ class Watcher:
     )
     def save_schedule(self, transit_time_min: int, queue: Queue[ScheduleEvent]):
         try:
-            endpoint = f"{mbta_v3}/schedules?filter[stop]={self.stop_id}&sort=time&api_key={auth_token}"
+            endpoint = f"{mbta_v3}/schedules?filter[stop]={self.stop_id}&sort=time&api_key={auth_token}&filter[date]={datetime.now().date().isoformat()}"
             if self.route != "":
                 endpoint += f"&filter[route]={self.route}"
             if self.direction != "":
