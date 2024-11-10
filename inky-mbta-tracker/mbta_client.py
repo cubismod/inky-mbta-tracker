@@ -255,7 +255,7 @@ class Watcher:
 
 
 @retry(
-    wait=wait_random_exponential(multiplier=1, max=200),
+    wait=wait_random_exponential(multiplier=1),
     before=before_log(logger, logging.INFO),
     before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
 )
@@ -294,15 +294,13 @@ def watch_station(
     route: str | None,
     direction: int | None,
     queue: Queue[ScheduleEvent],
-    transit__time_min: int,
+    transit_time_min: int,
 ):
-    endpoint = (
-        f"{mbta_v3}/predictions?filter[stop]={stop_id}&sort=time&api_key={auth_token}"
-    )
+    endpoint = f"{mbta_v3}/predictions?filter[stop]={stop_id}&api_key={auth_token}"
     if route != "":
         endpoint += f"&filter[route]={route}"
     if direction != "":
         endpoint += f"&filter[direction_id]={direction}"
     headers = {"accept": "text/event-stream"}
     watcher = Watcher(stop_id, route, direction)
-    watch_server_side_events(watcher, endpoint, headers, queue, transit__time_min)
+    watch_server_side_events(watcher, endpoint, headers, queue, transit_time_min)
