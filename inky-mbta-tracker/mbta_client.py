@@ -268,13 +268,14 @@ def watch_server_side_events(
 ):
     response = with_httpx(endpoint, headers)
     start_time = datetime.now()
+    offset = random.randint(100, 1000)
     client = sseclient.SSEClient(response)
     for event in client.events():
         watcher.parse_schedule_response(
             event.data, event.event, queue, transit_time_min
         )
         time.sleep(random.randint(1, 30))
-        if (datetime.now() - start_time).seconds > random.randint(100, 1000) + 10800:
+        if (datetime.now() - start_time).seconds > offset + 10800:
             # I really hate to do this, but I have observed stability issues
             # with the API after a day or so each thread will restart occasionally
             # and be caught by the retry handler
