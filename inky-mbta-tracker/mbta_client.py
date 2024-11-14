@@ -77,11 +77,13 @@ class Watcher:
         self.schedule_only = schedule_only
 
     @staticmethod
-    def determine_time(attributes: PredictionAttributes) -> datetime:
+    def determine_time(attributes: PredictionAttributes) -> datetime | None:
         if attributes.arrival_time:
             return datetime.fromisoformat(attributes.arrival_time)
         elif attributes.departure_time:
             return datetime.fromisoformat(attributes.departure_time)
+        else:
+            return None
 
     def get_headsign(self, trip_id: str):
         if trip_id in self.trips:
@@ -140,14 +142,14 @@ class Watcher:
                     self.log_prediction(event)
 
         except ValidationError as err:
-            logger.error(f"Unable to parse schedule, {err}")
+            logger.error("Unable to parse schedule", exc_info=err)
         except KeyError as err:
-            logger.error(f"Could not find prediction, {err}")
+            logger.error("Could not find prediction", exc_info=err)
 
     @staticmethod
     def log_prediction(event: ScheduleEvent):
         logger.info(
-            f"action={event.action} time={event.time.strftime("%X")} route_id={event.route_id} route_type={event.route_type} headsign={event.headsign} stop={event.stop} id={event.id}, transit_time_min={event.transit_time_min}"
+            f"action={event.action} time={event.time.strftime("%c")} route_id={event.route_id} route_type={event.route_type} headsign={event.headsign} stop={event.stop} id={event.id}, transit_time_min={event.transit_time_min}"
         )
 
     def queue_schedule_event(
@@ -158,6 +160,9 @@ class Watcher:
         transit_time_min: int,
     ):
         schedule_time = self.determine_time(item.attributes)
+        if not schedule_time:
+            logger.warning(f"no time associated with event {item.id}, skipping")
+            return
         self.save_route(item)
         route_id = item.relationships.route.data.id
         headsign = self.get_headsign(item.relationships.trip.data.id)
