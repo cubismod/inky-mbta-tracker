@@ -3,11 +3,13 @@ import logging
 import os
 import time
 from asyncio import QueueEmpty
-from datetime import datetime
+from datetime import datetime, timedelta
 from os import environ
 from queue import Queue
 
+import humanize
 import redis
+from paho.mqtt import MQTTException, publish
 from pydantic import BaseModel
 from redis import Redis, ResponseError
 from redis.client import Pipeline
@@ -24,7 +26,6 @@ logger = logging.getLogger("schedule_tracker")
 # add
 # update
 # remove
-# quit
 class ScheduleEvent(BaseModel):
     action: str
     time: datetime
@@ -114,13 +115,41 @@ class Tracker:
             return "#80276C"
         return "black"
 
+    def send_mqtt(self):
+        msgs = list()
+        for i, event in enumerate(self.all_events.items()):
+            if len(msgs) > 4:
+                break
+            topic = f"imt/departure_time{i}"
+            payload = self.prediction_display(event[1])
+            msgs.append({"topic": topic, "payload": payload})
+
+            topic = f"imt/destination_and_stop{i}"
+            payload = (
+                f"|{event[1].route_id}| to: {event[1].headsign}, from: {event[1].stop}"
+            )
+            msgs.append({"topic": topic, "payload": payload})
+        if len(msgs) > 0:
+            try:
+                publish.multiple(
+                    msgs,
+                    hostname=os.getenv("IMT_MQTT_HOST", ""),
+                    port=int(os.getenv("IMT_MQTT_PORT", "1883")),
+                    auth={
+                        "username": os.getenv("IMT_MQTT_USER", ""),
+                        "password": os.getenv("IMT_MQTT_PASS", ""),
+                    },
+                )
+            except MQTTException as err:
+                logger.error("unable to send messages to MQTT", exc_info=err)
+
     @staticmethod
     def prediction_display(event: ScheduleEvent):
         prediction_indicator = ""
 
-        rounded_time = round((event.time.timestamp() - datetime.now().timestamp()) / 60)
+        rounded_time = round((event.time.timestamp() - datetime.now().timestamp()))
         if rounded_time > 0:
-            return f"{prediction_indicator} {rounded_time} min"
+            return humanize.naturaldelta(timedelta(seconds=rounded_time))
         if rounded_time == 0:
             return f"{prediction_indicator} BRD"
         if rounded_time < 0:
@@ -181,6 +210,7 @@ def run(tracker: Tracker, queue: Queue[ScheduleEvent]):
     except ResponseError as err:
         logger.error("Unable to communicate with Redis", exc_info=err)
     tracker.cleanup_set()
+    tracker.send_mqtt()
 
 
 def process_queue(queue: Queue[ScheduleEvent]):
