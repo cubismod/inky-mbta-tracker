@@ -118,7 +118,7 @@ class Tracker:
     def send_mqtt(self):
         msgs = list()
         for i, event in enumerate(self.all_events.items()):
-            if len(msgs) > 4:
+            if len(msgs) > 5:
                 break
             topic = f"imt/departure_time{i}"
             payload = self.prediction_display(event[1])
