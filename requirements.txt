@@ -10,6 +10,7 @@ idna==3.10
 loggingredactor==0.0.1
 markdown-it-py==3.0.0
 mdurl==0.1.2
+paho-mqtt==2.1.0
 prettytable==3.11.0
 pydantic==2.9.2
 pydantic_core==2.23.4

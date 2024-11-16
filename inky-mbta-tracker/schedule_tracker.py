@@ -167,7 +167,7 @@ class Tracker:
                 self.__rm(event, pipeline)
 
 
-def __run(tracker: Tracker, queue: Queue[ScheduleEvent]):
+def run(tracker: Tracker, queue: Queue[ScheduleEvent]):
     time.sleep(15)
     pipeline = tracker.redis.pipeline()
     while queue.qsize() != 0:
@@ -175,7 +175,7 @@ def __run(tracker: Tracker, queue: Queue[ScheduleEvent]):
             schedule_event = queue.get()
             tracker.process_schedule_event(schedule_event, pipeline)
         except QueueEmpty:
-            return
+            break
     try:
         pipeline.execute()
     except ResponseError as err:
@@ -195,8 +195,8 @@ def process_queue(queue: Queue[ScheduleEvent]):
             transient=True,
         ) as live:
             while True:
-                __run(tracker, queue)
+                run(tracker, queue)
                 live.update(tracker.generate_table())
     else:
         while True:
-            __run(tracker, queue)
+            run(tracker, queue)
