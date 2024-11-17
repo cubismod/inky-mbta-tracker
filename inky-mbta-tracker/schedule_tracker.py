@@ -10,6 +10,7 @@ from queue import Queue
 import humanize
 import redis
 from paho.mqtt import MQTTException, publish
+from prometheus import api_events
 from pydantic import BaseModel
 from redis import Redis, ResponseError
 from redis.client import Pipeline
@@ -76,7 +77,7 @@ class Tracker:
             else:
                 break
 
-    def add(self, event: ScheduleEvent, pipeline: Pipeline):
+    def add(self, event: ScheduleEvent, pipeline: Pipeline, action: str):
         # only add events in the future
         if event.time.timestamp() > datetime.now().timestamp():
             self.all_events[self.str_timestamp(event)] = event
@@ -84,13 +85,14 @@ class Tracker:
                 event.id, event.model_dump_json(), ex=self.calculate_time_diff(event)
             )
             pipeline.zadd("time", {event.id: self.str_timestamp(event)})
+            api_events.labels(action, event.route_id, event.stop).inc()
 
     def update(self, event: ScheduleEvent, pipeline: Pipeline):
         existing_timestamp = self.find_timestamp(event.id)
         if existing_timestamp and existing_timestamp != str(event.time.timestamp()):
             # remove old predictions
             self.all_events.pop(existing_timestamp)
-        self.add(event, pipeline)
+        self.add(event, pipeline, "update")
 
     def rm(self, event: ScheduleEvent, pipeline: Pipeline):
         timestamp = self.find_timestamp(event.id)
@@ -98,6 +100,7 @@ class Tracker:
             with contextlib.suppress(KeyError):
                 self.all_events.pop(timestamp)
             pipeline.zrem("time", self.str_timestamp(event))
+            api_events.labels("remove", event.route_id, event.stop).inc()
 
     @staticmethod
     def __determine_color(event: ScheduleEvent):
@@ -186,13 +189,15 @@ class Tracker:
     def process_schedule_event(self, event: ScheduleEvent, pipeline: Pipeline):
         match event.action:
             case "reset":
-                self.add(event, pipeline)
+                self.add(event, pipeline, "reset")
             case "add":
-                self.add(event, pipeline)
+                self.add(event, pipeline, "add")
             case "update":
                 self.update(event, pipeline)
             case "remove":
-                self.rm(event, pipeline)
+                # get the actual event based on the ID here
+                full_event = self.all_events.get(self.find_timestamp(event.id))
+                self.rm(full_event, pipeline)
 
 
 def run(tracker: Tracker, queue: Queue[ScheduleEvent]):

@@ -7,6 +7,7 @@ from queue import Queue
 from config import load_config
 from dotenv import load_dotenv
 from mbta_client import watch_static_schedule, watch_station
+from prometheus_client import start_http_server
 from schedule_tracker import ScheduleEvent, process_queue
 
 load_dotenv()
@@ -31,6 +32,7 @@ def __main__():
     queue = Queue[ScheduleEvent]()
 
     threads = list()
+    start_http_server(int(os.getenv("IMT_PROM_PORT", "8000")))
     for stop in config.stops:
         thr = None
         if stop.schedule_only:
