@@ -40,6 +40,7 @@ class ScheduleEvent(BaseModel):
 class Tracker:
     all_events: SortedDict[str, ScheduleEvent]
     redis: Redis
+    next_cleanup_time: datetime
 
     def __init__(self):
         self.all_events = SortedDict()
@@ -49,13 +50,14 @@ class Tracker:
             password=os.environ.get("IMT_REDIS_PASSWORD"),
         )
         self.redis = r
+        self.next_cleanup_time = datetime.now() + timedelta(minutes=30)
 
     @staticmethod
-    def __calculate_timestamp(event: ScheduleEvent):
+    def str_timestamp(event: ScheduleEvent):
         return str(event.time.timestamp())
 
     @staticmethod
-    def __calculate_time_diff(event: ScheduleEvent):
+    def calculate_time_diff(event: ScheduleEvent):
         ts = event.time.timestamp()
         diff = ts - datetime.now().timestamp()
         if diff > 0:
@@ -63,41 +65,41 @@ class Tracker:
         else:
             return 200
 
-    def __find_timestamp(self, prediction_id: str):
+    def find_timestamp(self, prediction_id: str):
         for _, item in self.all_events.items():
             if item.id == prediction_id:
-                return self.__calculate_timestamp(item)
+                return self.str_timestamp(item)
         return None
 
-    def __add(self, event: ScheduleEvent, pipeline: Pipeline):
+    def cleanup(self, pipeline: Pipeline):
+        if datetime.now() > self.next_cleanup_time:
+            for _, v in self.all_events.items():
+                if v.time.timestamp() < datetime.now().timestamp():
+                    self.rm(v, pipeline)
+            self.next_cleanup_time = datetime.now() + timedelta(minutes=30)
+
+    def add(self, event: ScheduleEvent, pipeline: Pipeline):
         # only add events in the future
         if event.time.timestamp() > datetime.now().timestamp():
-            self.all_events[self.__calculate_timestamp(event)] = event
+            self.all_events[self.str_timestamp(event)] = event
             pipeline.set(
-                event.id, event.model_dump_json(), ex=self.__calculate_time_diff(event)
+                event.id, event.model_dump_json(), ex=self.calculate_time_diff(event)
             )
-            pipeline.zadd("time", {event.id: self.__calculate_timestamp(event)})
+            pipeline.zadd("time", {event.id: self.str_timestamp(event)})
 
-    def __update(self, event: ScheduleEvent, pipeline: Pipeline):
-        existing_timestamp = self.__find_timestamp(event.id)
+    def update(self, event: ScheduleEvent, pipeline: Pipeline):
+        existing_timestamp = self.find_timestamp(event.id)
         if existing_timestamp and existing_timestamp != str(event.time.timestamp()):
             # remove old predictions
             self.all_events.pop(existing_timestamp)
-        self.__add(event, pipeline)
+        self.add(event, pipeline)
 
-    # cleans up the ordered set from time to time
-    def cleanup_set(self):
-        try:
-            self.redis.zremrangebyscore("time", "0", str(datetime.now().timestamp()))
-        except ResponseError as err:
-            logger.error("Unable to communicate with redis", exc_info=err)
-
-    def __rm(self, event: ScheduleEvent, pipeline: Pipeline):
-        timestamp = self.__find_timestamp(event.id)
+    def rm(self, event: ScheduleEvent, pipeline: Pipeline):
+        timestamp = self.find_timestamp(event.id)
         if timestamp:
             with contextlib.suppress(KeyError):
                 self.all_events.pop(timestamp)
-            pipeline.zrem("time", self.__calculate_timestamp(event))
+            pipeline.zrem("time", self.str_timestamp(event))
 
     @staticmethod
     def __determine_color(event: ScheduleEvent):
@@ -116,32 +118,31 @@ class Tracker:
         return "black"
 
     def send_mqtt(self):
-        msgs = list()
-        for i, event in enumerate(self.all_events.items()):
-            if len(msgs) > 12:
-                break
-            topic = f"imt/departure_time{i}"
-            payload = self.prediction_display(event[1])
-            msgs.append({"topic": topic, "payload": payload})
+        if os.getenv("IMT_ENABLE_MQTT", "true") == "true":
+            msgs = list()
+            for i, event in enumerate(self.all_events.items()):
+                if len(msgs) > 12:
+                    break
+                topic = f"imt/departure_time{i}"
+                payload = self.prediction_display(event[1])
+                msgs.append({"topic": topic, "payload": payload})
 
-            topic = f"imt/destination_and_stop{i}"
-            payload = (
-                f"|{event[1].route_id}| to: {event[1].headsign}, from: {event[1].stop}"
-            )
-            msgs.append({"topic": topic, "payload": payload})
-        if len(msgs) > 0:
-            try:
-                publish.multiple(
-                    msgs,
-                    hostname=os.getenv("IMT_MQTT_HOST", ""),
-                    port=int(os.getenv("IMT_MQTT_PORT", "1883")),
-                    auth={
-                        "username": os.getenv("IMT_MQTT_USER", ""),
-                        "password": os.getenv("IMT_MQTT_PASS", ""),
-                    },
-                )
-            except MQTTException as err:
-                logger.error("unable to send messages to MQTT", exc_info=err)
+                topic = f"imt/destination_and_stop{i}"
+                payload = f"|{event[1].route_id}| to: {event[1].headsign}, from: {event[1].stop}"
+                msgs.append({"topic": topic, "payload": payload})
+            if len(msgs) > 0:
+                try:
+                    publish.multiple(
+                        msgs,
+                        hostname=os.getenv("IMT_MQTT_HOST", ""),
+                        port=int(os.getenv("IMT_MQTT_PORT", "1883")),
+                        auth={
+                            "username": os.getenv("IMT_MQTT_USER", ""),
+                            "password": os.getenv("IMT_MQTT_PASS", ""),
+                        },
+                    )
+                except MQTTException as err:
+                    logger.error("unable to send messages to MQTT", exc_info=err)
 
     @staticmethod
     def prediction_display(event: ScheduleEvent):
@@ -187,17 +188,17 @@ class Tracker:
     def process_schedule_event(self, event: ScheduleEvent, pipeline: Pipeline):
         match event.action:
             case "reset":
-                self.__add(event, pipeline)
+                self.add(event, pipeline)
             case "add":
-                self.__add(event, pipeline)
+                self.add(event, pipeline)
             case "update":
-                self.__update(event, pipeline)
+                self.update(event, pipeline)
             case "remove":
-                self.__rm(event, pipeline)
+                self.rm(event, pipeline)
 
 
 def run(tracker: Tracker, queue: Queue[ScheduleEvent]):
-    time.sleep(15)
+    time.sleep(7)
     pipeline = tracker.redis.pipeline()
     while queue.qsize() != 0:
         try:
@@ -205,11 +206,11 @@ def run(tracker: Tracker, queue: Queue[ScheduleEvent]):
             tracker.process_schedule_event(schedule_event, pipeline)
         except QueueEmpty:
             break
+    tracker.cleanup(pipeline)
     try:
         pipeline.execute()
     except ResponseError as err:
         logger.error("Unable to communicate with Redis", exc_info=err)
-    tracker.cleanup_set()
     tracker.send_mqtt()
 
 
