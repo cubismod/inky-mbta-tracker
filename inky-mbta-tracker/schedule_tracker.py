@@ -19,6 +19,7 @@ from rich.live import Live
 from rich.style import Style
 from rich.table import Table
 from sortedcontainers import SortedDict
+from tenacity import before_sleep_log, retry, wait_exponential
 
 logger = logging.getLogger("schedule_tracker")
 
@@ -197,9 +198,16 @@ class Tracker:
             case "remove":
                 # get the actual event based on the ID here
                 full_event = self.all_events.get(self.find_timestamp(event.id))
-                self.rm(full_event, pipeline)
+                if full_event:
+                    self.rm(full_event, pipeline)
+                else:
+                    self.rm(event, pipeline)
 
 
+@retry(
+    wait=wait_exponential(multiplier=1, min=1, max=10),
+    before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
+)
 def run(tracker: Tracker, queue: Queue[ScheduleEvent]):
     time.sleep(7)
     pipeline = tracker.redis.pipeline()
