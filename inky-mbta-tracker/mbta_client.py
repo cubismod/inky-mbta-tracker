@@ -21,6 +21,7 @@ from mbta_responses import (
     Trips,
     TypeAndID,
 )
+from prometheus import mbta_api_requests
 from pydantic import TypeAdapter, ValidationError
 from schedule_tracker import ScheduleEvent
 from tenacity import (
@@ -31,7 +32,6 @@ from tenacity import (
     wait_exponential,
     wait_random_exponential,
 )
-from prometheus import mbta_api_requests
 
 auth_token = os.environ.get("AUTH_TOKEN")
 mbta_v3 = "https://api-v3.mbta.com"
