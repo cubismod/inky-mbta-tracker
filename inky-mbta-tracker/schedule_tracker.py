@@ -40,7 +40,6 @@ class ScheduleEvent(BaseModel):
 class Tracker:
     all_events: SortedDict[str, ScheduleEvent]
     redis: Redis
-    next_cleanup_time: datetime
 
     def __init__(self):
         self.all_events = SortedDict()
@@ -50,7 +49,6 @@ class Tracker:
             password=os.environ.get("IMT_REDIS_PASSWORD"),
         )
         self.redis = r
-        self.next_cleanup_time = datetime.now() + timedelta(minutes=30)
 
     @staticmethod
     def str_timestamp(event: ScheduleEvent):
@@ -72,11 +70,11 @@ class Tracker:
         return None
 
     def cleanup(self, pipeline: Pipeline):
-        if datetime.now() > self.next_cleanup_time:
-            for _, v in self.all_events.items():
-                if v.time.timestamp() < datetime.now().timestamp():
-                    self.rm(v, pipeline)
-            self.next_cleanup_time = datetime.now() + timedelta(minutes=30)
+        for _, v in self.all_events.items():
+            if v.time.timestamp() < datetime.now().timestamp():
+                self.rm(v, pipeline)
+            else:
+                break
 
     def add(self, event: ScheduleEvent, pipeline: Pipeline):
         # only add events in the future
