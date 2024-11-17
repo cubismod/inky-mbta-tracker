@@ -10,7 +10,7 @@ from queue import Queue
 import humanize
 import redis
 from paho.mqtt import MQTTException, publish
-from prometheus import schedule_events
+from prometheus import schedule_events, tracked_events
 from pydantic import BaseModel
 from redis import Redis, ResponseError
 from redis.client import Pipeline
@@ -123,7 +123,7 @@ class Tracker:
         if os.getenv("IMT_ENABLE_MQTT", "true") == "true":
             msgs = list()
             for i, event in enumerate(self.all_events.items()):
-                if len(msgs) > 12:
+                if len(msgs) > 20:
                     break
                 topic = f"imt/departure_time{i}"
                 payload = self.prediction_display(event[1])
@@ -219,6 +219,7 @@ def run(tracker: Tracker, queue: Queue[ScheduleEvent]):
     except ResponseError as err:
         logger.error("Unable to communicate with Redis", exc_info=err)
     tracker.send_mqtt()
+    tracked_events.set(len(tracker.all_events))
 
 
 @retry(
