@@ -10,7 +10,7 @@ from queue import Queue
 import humanize
 import redis
 from paho.mqtt import MQTTException, publish
-from prometheus import api_events
+from prometheus import schedule_events
 from pydantic import BaseModel
 from redis import Redis, ResponseError
 from redis.client import Pipeline
@@ -85,7 +85,7 @@ class Tracker:
                 event.id, event.model_dump_json(), ex=self.calculate_time_diff(event)
             )
             pipeline.zadd("time", {event.id: self.str_timestamp(event)})
-            api_events.labels(action, event.route_id, event.stop).inc()
+            schedule_events.labels(action, event.route_id, event.stop).inc()
 
     def update(self, event: ScheduleEvent, pipeline: Pipeline):
         existing_timestamp = self.find_timestamp(event.id)
@@ -100,7 +100,7 @@ class Tracker:
             with contextlib.suppress(KeyError):
                 self.all_events.pop(timestamp)
             pipeline.zrem("time", self.str_timestamp(event))
-            api_events.labels("remove", event.route_id, event.stop).inc()
+            schedule_events.labels("remove", event.route_id, event.stop).inc()
 
     @staticmethod
     def __determine_color(event: ScheduleEvent):

@@ -31,6 +31,7 @@ from tenacity import (
     wait_exponential,
     wait_random_exponential,
 )
+from prometheus import mbta_api_requests
 
 auth_token = os.environ.get("AUTH_TOKEN")
 mbta_v3 = "https://api-v3.mbta.com"
@@ -193,6 +194,7 @@ class Watcher:
                 response = httpx.get(
                     f"{mbta_v3}/trips?filter[id]={trip_id}&api_key={auth_token}"
                 )
+                mbta_api_requests.labels("trips").inc()
 
                 trip = Trips.model_validate_json(response.text, strict=False)
                 for tr in trip.data:
@@ -213,6 +215,7 @@ class Watcher:
                 response = httpx.get(
                     f"{mbta_v3}/routes?filter[id]={route_id}&api_key={auth_token}"
                 )
+                mbta_api_requests.labels("routes").inc()
 
                 route = Route.model_validate_json(response.text, strict=False)
                 for rd in route.data:
@@ -228,6 +231,7 @@ class Watcher:
     def save_schedule(self, transit_time_min: int, queue: Queue[ScheduleEvent]):
         try:
             endpoint = f"{mbta_v3}/schedules?filter[stop]={self.stop_id}&sort=time&api_key={auth_token}&filter[date]={datetime.now().date().isoformat()}"
+            mbta_api_requests.labels("schedules").inc()
             if self.route != "":
                 endpoint += f"&filter[route]={self.route}"
             if self.direction != "":
@@ -253,6 +257,7 @@ class Watcher:
     def save_stop(self):
         try:
             response = httpx.get(f"{mbta_v3}/stops/{self.stop_id}?api_key={auth_token}")
+            mbta_api_requests.labels("stops").inc()
             logger.info("saved stop")
             return Stop.model_validate_json(response.text, strict=False)
         except ValidationError as err:
@@ -302,6 +307,7 @@ def watch_station(
     transit_time_min: int,
 ):
     endpoint = f"{mbta_v3}/predictions?filter[stop]={stop_id}&api_key={auth_token}"
+    mbta_api_requests.labels("predictions").inc()
     if route != "":
         endpoint += f"&filter[route]={route}"
     if direction != "":
