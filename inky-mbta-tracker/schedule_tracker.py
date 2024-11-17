@@ -204,10 +204,6 @@ class Tracker:
                     self.rm(event, pipeline)
 
 
-@retry(
-    wait=wait_exponential(multiplier=1, min=1, max=10),
-    before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
-)
 def run(tracker: Tracker, queue: Queue[ScheduleEvent]):
     time.sleep(7)
     pipeline = tracker.redis.pipeline()
@@ -225,6 +221,10 @@ def run(tracker: Tracker, queue: Queue[ScheduleEvent]):
     tracker.send_mqtt()
 
 
+@retry(
+    wait=wait_exponential(multiplier=1, min=1, max=10),
+    before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
+)
 def process_queue(queue: Queue[ScheduleEvent]):
     tracker = Tracker()
     if os.environ.get("IMT_CONSOLE", "false") == "true":
