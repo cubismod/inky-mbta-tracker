@@ -3,7 +3,7 @@ import logging
 import os
 import random
 from asyncio import CancelledError, sleep
-from datetime import datetime
+from datetime import UTC, datetime
 from queue import Queue
 from typing import Optional
 
@@ -70,9 +70,9 @@ class Watcher:
     @staticmethod
     def determine_time(attributes: PredictionAttributes) -> datetime | None:
         if attributes.arrival_time:
-            return datetime.fromisoformat(attributes.arrival_time)
+            return datetime.fromisoformat(attributes.arrival_time).astimezone(UTC)
         elif attributes.departure_time:
-            return datetime.fromisoformat(attributes.departure_time)
+            return datetime.fromisoformat(attributes.departure_time).astimezone(UTC)
         else:
             return None
 
@@ -125,7 +125,7 @@ class Watcher:
                         route_type=1,
                         id=schedule.id,
                         stop="Boston 2",
-                        time=datetime.now(),
+                        time=datetime.now(UTC),
                         transit_time_min=transit_time_min,
                     )
                     queue.put(event)
@@ -144,25 +144,26 @@ class Watcher:
         session: ClientSession,
     ):
         schedule_time = self.determine_time(item.attributes)
-        if not schedule_time:
-            logger.warning(f"no time associated with event {item.id}, skipping")
-            return
-        await self.save_route(item, session)
-        route_id = item.relationships.route.data.id
-        headsign = self.get_headsign(item.relationships.trip.data.id)
-        route_type = self.routes[route_id].attributes.type
+        if schedule_time > datetime.now().astimezone(UTC):
+            if not schedule_time:
+                logger.warning(f"no time associated with event {item.id}, skipping")
+                return
+            await self.save_route(item, session)
+            route_id = item.relationships.route.data.id
+            headsign = self.get_headsign(item.relationships.trip.data.id)
+            route_type = self.routes[route_id].attributes.type
 
-        event = ScheduleEvent(
-            action=event_type,
-            time=schedule_time,
-            route_id=route_id,
-            route_type=route_type,
-            headsign=headsign,
-            id=item.id,
-            stop=self.stop.data.attributes.name,
-            transit_time_min=transit_time_min,
-        )
-        queue.put(event)
+            event = ScheduleEvent(
+                action=event_type,
+                time=schedule_time,
+                route_id=route_id,
+                route_type=route_type,
+                headsign=headsign,
+                id=item.id,
+                stop=self.stop.data.attributes.name,
+                transit_time_min=transit_time_min,
+            )
+            queue.put(event)
 
     @retry(
         wait=wait_exponential(multiplier=1, min=1, max=10),

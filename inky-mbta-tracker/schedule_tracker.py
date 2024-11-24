@@ -3,7 +3,7 @@ import logging
 import os
 import time
 from asyncio import QueueEmpty
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from os import environ
 from queue import Queue
 
@@ -24,6 +24,7 @@ from tenacity import (
     retry,
     wait_exponential,
 )
+from zoneinfo import ZoneInfo
 
 logger = logging.getLogger("schedule_tracker")
 
@@ -62,17 +63,12 @@ class Tracker:
 
     @staticmethod
     def calculate_time_diff(event: ScheduleEvent):
-        ts = event.time.timestamp()
-        diff = ts - datetime.now().timestamp()
-        if diff > 0:
-            return round(diff)
-        else:
-            return 200
+        return event.time - datetime.now().astimezone(UTC)
 
     @staticmethod
     def log_prediction(event: ScheduleEvent):
         logger.info(
-            f"action={event.action} time={event.time.strftime("%c")} route_id={event.route_id} route_type={event.route_type} headsign={event.headsign} stop={event.stop} id={event.id}, transit_time_min={event.transit_time_min}"
+            f"action={event.action} time={event.time.astimezone(ZoneInfo("US/Eastern")).strftime("%c")} route_id={event.route_id} route_type={event.route_type} headsign={event.headsign} stop={event.stop} id={event.id}, transit_time_min={event.transit_time_min}"
         )
 
     def find_timestamp(self, prediction_id: str):
@@ -83,14 +79,14 @@ class Tracker:
 
     def cleanup(self, pipeline: Pipeline):
         for _, v in self.all_events.items():
-            if v.time.timestamp() < datetime.now().timestamp():
+            if v.time < datetime.now().astimezone(UTC):
                 self.rm(v, pipeline)
             else:
                 break
 
     def add(self, event: ScheduleEvent, pipeline: Pipeline, action: str):
         # only add events in the future
-        if event.time.timestamp() > datetime.now().timestamp():
+        if event.time > datetime.now().astimezone(UTC):
             self.all_events[self.str_timestamp(event)] = event
             pipeline.set(
                 event.id, event.model_dump_json(), ex=self.calculate_time_diff(event)
@@ -160,7 +156,9 @@ class Tracker:
     def prediction_display(event: ScheduleEvent):
         prediction_indicator = ""
 
-        rounded_time = round((event.time.timestamp() - datetime.now().timestamp()))
+        rounded_time = round(
+            (event.time.timestamp() - datetime.now().astimezone(UTC).timestamp())
+        )
         if rounded_time > 0:
             return humanize.naturaldelta(timedelta(seconds=rounded_time))
         if rounded_time == 0:
@@ -189,7 +187,7 @@ class Tracker:
                 event.route_id,
                 event.headsign,
                 self.prediction_display(event),
-                event.time.strftime("%X"),
+                event.time.astimezone(ZoneInfo("US/Eastern")).strftime("%X"),
                 style=Style(color=self.__determine_color(event), bgcolor="white"),
             )
             if len(table.rows) > int(os.getenv("IMT_ROWS", 15)):
@@ -226,6 +224,7 @@ def run(tracker: Tracker, queue: Queue[ScheduleEvent]):
     tracker.cleanup(pipeline)
     try:
         pipeline.execute()
+        tracker.redis.zremrangebyscore("time", "-inf", str(datetime.now().timestamp()))
     except ResponseError as err:
         logger.error("Unable to communicate with Redis", exc_info=err)
     tracker.send_mqtt()

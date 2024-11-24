@@ -3,7 +3,7 @@ import os
 import threading
 import time
 from asyncio import Runner, Task, TaskGroup, sleep
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from queue import Queue
 from random import randint
 from typing import Optional
@@ -80,7 +80,7 @@ async def __main__():
                 tasks.add(
                     TaskTracker(
                         task=task,
-                        expiration_time=datetime.now()
+                        expiration_time=datetime.now().astimezone(UTC)
                         + timedelta(minutes=randint(60, 120)),
                         stop=stop,
                     )
@@ -89,7 +89,10 @@ async def __main__():
     while True:
         await sleep(30)
         for task in tasks:
-            if task.expiration_time and datetime.now() > task.expiration_time:
+            if (
+                task.expiration_time
+                and datetime.now().astimezone(UTC) > task.expiration_time
+            ):
                 # restart the task
                 task.task.cancel()
                 await task.task
@@ -106,7 +109,7 @@ async def __main__():
                 tasks.add(
                     TaskTracker(
                         task=new_task,
-                        expiration_time=datetime.now()
+                        expiration_time=datetime.now().astimezone(UTC)
                         + timedelta(minutes=randint(60, 120)),
                         stop=task.stop,
                     )
