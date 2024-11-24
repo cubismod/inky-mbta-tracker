@@ -2,7 +2,7 @@ import logging
 import os
 import threading
 import time
-from asyncio import Runner, Task, TaskGroup, sleep
+from asyncio import CancelledError, Runner, Task, TaskGroup, sleep
 from datetime import UTC, datetime, timedelta
 from queue import Queue
 from random import randint
@@ -21,6 +21,9 @@ logging.basicConfig(
     format="%(levelname)-8s %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+MIN_TASK_RESTART_MINS = 60
+MAX_TASK_RESTART_MINS = 180
 
 
 class TaskTracker:
@@ -81,39 +84,50 @@ async def __main__():
                     TaskTracker(
                         task=task,
                         expiration_time=datetime.now().astimezone(UTC)
-                        + timedelta(minutes=randint(60, 120)),
+                        + timedelta(
+                            minutes=randint(
+                                MIN_TASK_RESTART_MINS, MAX_TASK_RESTART_MINS
+                            )
+                        ),
                         stop=stop,
                     )
                 )
 
-    while True:
-        await sleep(30)
-        for task in tasks:
-            if (
-                task.expiration_time
-                and datetime.now().astimezone(UTC) > task.expiration_time
-            ):
-                # restart the task
-                task.task.cancel()
-                await task.task
-                new_task = tg.create_task(
-                    watch_station(
-                        task.stop.stop_id,
-                        task.stop.route_filter,
-                        task.stop.direction_filter,
-                        queue,
-                        task.stop.transit_time_min,
-                    )
-                )
-                tasks.remove(task)
-                tasks.add(
-                    TaskTracker(
-                        task=new_task,
-                        expiration_time=datetime.now().astimezone(UTC)
-                        + timedelta(minutes=randint(60, 120)),
-                        stop=task.stop,
-                    )
-                )
+        while True:
+            await sleep(30)
+            for task in tasks:
+                if (
+                    task.expiration_time
+                    and datetime.now().astimezone(UTC) > task.expiration_time
+                ):
+                    try:
+                        logger.info(f"Restarting task for {task.stop}")
+                        # restart the task
+                        task.task.cancel()
+                        await task.task
+                    except CancelledError:
+                        new_task = tg.create_task(
+                            watch_station(
+                                task.stop.stop_id,
+                                task.stop.route_filter,
+                                task.stop.direction_filter,
+                                queue,
+                                task.stop.transit_time_min,
+                            )
+                        )
+                        tasks.remove(task)
+                        tasks.add(
+                            TaskTracker(
+                                task=new_task,
+                                expiration_time=datetime.now().astimezone(UTC)
+                                + timedelta(
+                                    minutes=randint(
+                                        MIN_TASK_RESTART_MINS, MAX_TASK_RESTART_MINS
+                                    )
+                                ),
+                                stop=task.stop,
+                            )
+                        )
 
 
 if __name__ == "__main__":
