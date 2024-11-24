@@ -1,9 +1,9 @@
-FROM python:3.12 AS builder
+FROM python:3.13 AS builder
 
 COPY requirements.txt .
 RUN pip install --user -r requirements.txt
 
-FROM python:3.12-slim as main
+FROM python:3.13-slim as main
 
 WORKDIR /app
 COPY --from=builder /root/.local /root/.local
