@@ -100,6 +100,8 @@ class Watcher:
                         await self.queue_schedule_event(
                             item, "reset", queue, transit_time_min, session
                         )
+                    if len(prediction) == 0:
+                        await self.save_schedule(transit_time_min, queue, session)
                 case "add":
                     prediction = PredictionResource.model_validate_json(
                         data, strict=False
