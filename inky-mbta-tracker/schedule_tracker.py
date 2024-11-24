@@ -19,7 +19,11 @@ from rich.live import Live
 from rich.style import Style
 from rich.table import Table
 from sortedcontainers import SortedDict
-from tenacity import before_sleep_log, retry, wait_exponential
+from tenacity import (
+    before_sleep_log,
+    retry,
+    wait_exponential,
+)
 
 logger = logging.getLogger("schedule_tracker")
 
@@ -64,6 +68,12 @@ class Tracker:
             return round(diff)
         else:
             return 200
+
+    @staticmethod
+    def log_prediction(event: ScheduleEvent):
+        logger.info(
+            f"action={event.action} time={event.time.strftime("%c")} route_id={event.route_id} route_type={event.route_type} headsign={event.headsign} stop={event.stop} id={event.id}, transit_time_min={event.transit_time_min}"
+        )
 
     def find_timestamp(self, prediction_id: str):
         for _, item in self.all_events.items():
@@ -188,6 +198,7 @@ class Tracker:
         return table
 
     def process_schedule_event(self, event: ScheduleEvent, pipeline: Pipeline):
+        self.log_prediction(event)
         match event.action:
             case "reset":
                 self.add(event, pipeline, "reset")
@@ -205,7 +216,6 @@ class Tracker:
 
 
 def run(tracker: Tracker, queue: Queue[ScheduleEvent]):
-    time.sleep(7)
     pipeline = tracker.redis.pipeline()
     while queue.qsize() != 0:
         try:
@@ -243,3 +253,4 @@ def process_queue(queue: Queue[ScheduleEvent]):
     else:
         while True:
             run(tracker, queue)
+            time.sleep(10)
