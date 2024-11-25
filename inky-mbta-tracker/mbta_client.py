@@ -23,7 +23,7 @@ from mbta_responses import (
     Trips,
     TypeAndID,
 )
-from prometheus import mbta_api_requests
+from prometheus import mbta_api_requests, tracker_executions
 from pydantic import TypeAdapter, ValidationError
 from schedule_tracker import ScheduleEvent, dummy_schedule_event
 from tenacity import (
@@ -279,6 +279,7 @@ async def watch_static_schedule(
     queue: Queue[ScheduleEvent],
     transit_time_min: int,
 ):
+    tracker_executions.labels(stop_id).inc()
     while True:
         watcher = Watcher(stop_id, route, direction, schedule_only=True)
         async with aiohttp.ClientSession(mbta_v3) as session:
@@ -295,6 +296,7 @@ async def watch_station(
     transit_time_min: int,
 ):
     endpoint = f"{mbta_v3}/predictions?filter[stop]={stop_id}&api_key={auth_token}"
+    tracker_executions.labels(stop_id).inc()
     mbta_api_requests.labels("predictions").inc()
     if route != "":
         endpoint += f"&filter[route]={route}"
