@@ -2,18 +2,17 @@ import contextlib
 import logging
 import os
 import time
-from asyncio import QueueEmpty
+from asyncio import QueueEmpty, Runner
 from datetime import UTC, datetime, timedelta
 from os import environ
 from queue import Queue
 
 import humanize
-import redis
 from paho.mqtt import MQTTException, publish
 from prometheus import schedule_events, tracked_events
 from pydantic import BaseModel
-from redis import Redis, ResponseError
-from redis.client import Pipeline
+from redis import ResponseError
+from redis.asyncio.client import Pipeline, Redis
 from rich.console import Console
 from rich.live import Live
 from rich.style import Style
@@ -29,10 +28,6 @@ from zoneinfo import ZoneInfo
 logger = logging.getLogger("schedule_tracker")
 
 
-# actions:
-# add
-# update
-# remove
 class ScheduleEvent(BaseModel):
     action: str
     time: datetime
@@ -42,6 +37,21 @@ class ScheduleEvent(BaseModel):
     stop: str
     id: str
     transit_time_min: int
+    trip_id: str
+
+
+def dummy_schedule_event(event_id: str):
+    return ScheduleEvent(
+        action="remove",
+        headsign="nowhere",
+        route_id="Green Line A Branch",
+        route_type=1,
+        id=event_id,
+        stop="Boston 2",
+        time=datetime.now(UTC),
+        transit_time_min=0,
+        trip_id="N/A",
+    )
 
 
 class Tracker:
@@ -50,7 +60,7 @@ class Tracker:
 
     def __init__(self):
         self.all_events = SortedDict()
-        r = redis.Redis(
+        r = Redis(
             host=environ.get("IMT_REDIS_ENDPOINT"),
             port=os.environ.get("IMT_REDIS_PORT", "6379"),
             password=os.environ.get("IMT_REDIS_PASSWORD"),
@@ -77,36 +87,51 @@ class Tracker:
                 return self.str_timestamp(item)
         return None
 
-    def cleanup(self, pipeline: Pipeline):
+    async def cleanup(self, pipeline: Pipeline):
         for _, v in self.all_events.items():
             if v.time < datetime.now().astimezone(UTC):
-                self.rm(v, pipeline)
+                await self.rm(v, pipeline)
             else:
                 break
 
-    def add(self, event: ScheduleEvent, pipeline: Pipeline, action: str):
+    async def add(self, event: ScheduleEvent, pipeline: Pipeline, action: str):
         # only add events in the future
         if event.time > datetime.now().astimezone(UTC):
+            trip_redis_key = f"trip-{event.trip_id}-{event.stop.replace(" ", "_")}"
+            existing_event = await self.redis.get(trip_redis_key)
+            if existing_event:
+                dec_ee = existing_event.decode("utf-8")
+                if dec_ee != event.id:
+                    logger.info(
+                        f"Removing existing schedule/prediction entry with id {dec_ee} as it has been replaced with {event.id}, trip_id={event.trip_id}"
+                    )
+                    await self.rm(dummy_schedule_event(existing_event), pipeline)
+
+            await pipeline.set(trip_redis_key, event.id, ex=timedelta(hours=6))
+
             self.all_events[self.str_timestamp(event)] = event
-            pipeline.set(
-                event.id, event.model_dump_json(), ex=self.calculate_time_diff(event)
+
+            await pipeline.set(
+                event.id,
+                event.model_dump_json(exclude={"trip_id"}),
+                ex=self.calculate_time_diff(event),
             )
-            pipeline.zadd("time", {event.id: self.str_timestamp(event)})
+            await pipeline.zadd("time", {event.id: self.str_timestamp(event)})
             schedule_events.labels(action, event.route_id, event.stop).inc()
 
-    def update(self, event: ScheduleEvent, pipeline: Pipeline):
+    async def update(self, event: ScheduleEvent, pipeline: Pipeline):
         existing_timestamp = self.find_timestamp(event.id)
         if existing_timestamp and existing_timestamp != str(event.time.timestamp()):
             # remove old predictions
             self.all_events.pop(existing_timestamp)
-        self.add(event, pipeline, "update")
+        await self.add(event, pipeline, "update")
 
-    def rm(self, event: ScheduleEvent, pipeline: Pipeline):
+    async def rm(self, event: ScheduleEvent, pipeline: Pipeline):
         timestamp = self.find_timestamp(event.id)
         if timestamp:
             with contextlib.suppress(KeyError):
                 self.all_events.pop(timestamp)
-            pipeline.zrem("time", self.str_timestamp(event))
+            await pipeline.zrem("time", self.str_timestamp(event))
             schedule_events.labels("remove", event.route_id, event.stop).inc()
 
     @staticmethod
@@ -195,36 +220,38 @@ class Tracker:
 
         return table
 
-    def process_schedule_event(self, event: ScheduleEvent, pipeline: Pipeline):
+    async def process_schedule_event(self, event: ScheduleEvent, pipeline: Pipeline):
         self.log_prediction(event)
         match event.action:
             case "reset":
-                self.add(event, pipeline, "reset")
+                await self.add(event, pipeline, "reset")
             case "add":
-                self.add(event, pipeline, "add")
+                await self.add(event, pipeline, "add")
             case "update":
-                self.update(event, pipeline)
+                await self.update(event, pipeline)
             case "remove":
                 # get the actual event based on the ID here
                 full_event = self.all_events.get(self.find_timestamp(event.id))
                 if full_event:
-                    self.rm(full_event, pipeline)
+                    await self.rm(full_event, pipeline)
                 else:
-                    self.rm(event, pipeline)
+                    await self.rm(event, pipeline)
 
 
-def run(tracker: Tracker, queue: Queue[ScheduleEvent]):
+async def execute(tracker: Tracker, queue: Queue[ScheduleEvent]):
     pipeline = tracker.redis.pipeline()
     while queue.qsize() != 0:
         try:
             schedule_event = queue.get()
-            tracker.process_schedule_event(schedule_event, pipeline)
+            await tracker.process_schedule_event(schedule_event, pipeline)
         except QueueEmpty:
             break
-    tracker.cleanup(pipeline)
+    await tracker.cleanup(pipeline)
     try:
-        pipeline.execute()
-        tracker.redis.zremrangebyscore("time", "-inf", str(datetime.now().timestamp()))
+        await pipeline.execute()
+        await tracker.redis.zremrangebyscore(
+            "time", "-inf", str(datetime.now().timestamp())
+        )
     except ResponseError as err:
         logger.error("Unable to communicate with Redis", exc_info=err)
     tracker.send_mqtt()
@@ -237,19 +264,20 @@ def run(tracker: Tracker, queue: Queue[ScheduleEvent]):
 )
 def process_queue(queue: Queue[ScheduleEvent]):
     tracker = Tracker()
-    if os.environ.get("IMT_CONSOLE", "false") == "true":
-        console = Console()
-        with Live(
-            console=console,
-            renderable=tracker.generate_table(),
-            refresh_per_second=1,
-            screen=True,
-            transient=True,
-        ) as live:
+    with Runner() as runner:
+        if os.environ.get("IMT_CONSOLE", "false") == "true":
+            console = Console()
+            with Live(
+                console=console,
+                renderable=tracker.generate_table(),
+                refresh_per_second=1,
+                screen=True,
+                transient=True,
+            ) as live:
+                while True:
+                    runner.run(execute(tracker, queue))
+                    live.update(tracker.generate_table())
+        else:
             while True:
-                run(tracker, queue)
-                live.update(tracker.generate_table())
-    else:
-        while True:
-            run(tracker, queue)
-            time.sleep(10)
+                runner.run(execute(tracker, queue))
+                time.sleep(10)
