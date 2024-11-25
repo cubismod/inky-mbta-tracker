@@ -238,12 +238,10 @@ class LinksAndData(BaseModel):
 
 
 class PredictionRelationships(BaseModel):
-    vehicle: LinksAndData
     trip: LinksAndData
     stop: LinksAndData
     schedule: Optional[LinksAndData] = None
     route: LinksAndData
-    alerts: Optional[LinksAndData] = None
 
 
 class PredictionAttributes(BaseModel):

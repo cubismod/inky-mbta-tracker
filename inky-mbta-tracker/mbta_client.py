@@ -25,7 +25,7 @@ from mbta_responses import (
 )
 from prometheus import mbta_api_requests
 from pydantic import TypeAdapter, ValidationError
-from schedule_tracker import ScheduleEvent
+from schedule_tracker import ScheduleEvent, dummy_schedule_event
 from tenacity import (
     before_log,
     before_sleep_log,
@@ -120,17 +120,7 @@ class Watcher:
                 case "remove":
                     schedule = TypeAndID.model_validate_json(data, strict=False)
                     # directly interact with the queue here to use a dummy object
-                    event = ScheduleEvent(
-                        action="remove",
-                        headsign="nowhere",
-                        route_id="Green Line A Branch",
-                        route_type=1,
-                        id=schedule.id,
-                        stop="Boston 2",
-                        time=datetime.now(UTC),
-                        transit_time_min=transit_time_min,
-                    )
-                    queue.put(event)
+                    queue.put(dummy_schedule_event(schedule.id))
 
         except ValidationError as err:
             logger.error("Unable to parse schedule", exc_info=err)
@@ -154,6 +144,9 @@ class Watcher:
             route_id = item.relationships.route.data.id
             headsign = self.get_headsign(item.relationships.trip.data.id)
             route_type = self.routes[route_id].attributes.type
+            trip = ""
+            if item.relationships.trip.data:
+                trip = item.relationships.trip.data.id
 
             event = ScheduleEvent(
                 action=event_type,
@@ -164,6 +157,7 @@ class Watcher:
                 id=item.id,
                 stop=self.stop.data.attributes.name,
                 transit_time_min=transit_time_min,
+                trip_id=trip,
             )
             queue.put(event)
 
