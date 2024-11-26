@@ -73,7 +73,10 @@ class Tracker:
 
     @staticmethod
     def calculate_time_diff(event: ScheduleEvent):
-        return event.time - datetime.now().astimezone(UTC)
+        res = event.time - datetime.now().astimezone(UTC)
+        if res < timedelta(seconds=5):
+            return timedelta(minutes=5)
+        return res
 
     @staticmethod
     def log_prediction(event: ScheduleEvent):

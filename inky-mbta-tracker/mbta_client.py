@@ -3,7 +3,7 @@ import logging
 import os
 import random
 from asyncio import CancelledError, sleep
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from queue import Queue
 from typing import Optional
 
@@ -34,6 +34,7 @@ from tenacity import (
     wait_exponential,
     wait_random_exponential,
 )
+from zoneinfo import ZoneInfo
 
 auth_token = os.environ.get("AUTH_TOKEN")
 mbta_v3 = "https://api-v3.mbta.com"
@@ -101,7 +102,9 @@ class Watcher:
                             item, "reset", queue, transit_time_min, session
                         )
                     if len(prediction) == 0:
-                        await self.save_schedule(transit_time_min, queue, session)
+                        await self.save_schedule(
+                            transit_time_min, queue, session, timedelta(minutes=180)
+                        )
                 case "add":
                     prediction = PredictionResource.model_validate_json(
                         data, strict=False
@@ -136,10 +139,7 @@ class Watcher:
         session: ClientSession,
     ):
         schedule_time = self.determine_time(item.attributes)
-        if schedule_time > datetime.now().astimezone(UTC):
-            if not schedule_time:
-                logger.warning(f"no time associated with event {item.id}, skipping")
-                return
+        if schedule_time and schedule_time > datetime.now().astimezone(UTC):
             await self.save_route(item, session)
             route_id = item.relationships.route.data.id
             headsign = self.get_headsign(item.relationships.trip.data.id)
@@ -210,13 +210,28 @@ class Watcher:
         before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
     )
     async def save_schedule(
-        self, transit_time_min: int, queue: Queue[ScheduleEvent], session: ClientSession
+        self,
+        transit_time_min: int,
+        queue: Queue[ScheduleEvent],
+        session: ClientSession,
+        time_limit: Optional[timedelta] = None,
     ):
         endpoint = f"schedules?filter[stop]={self.stop_id}&sort=time&api_key={auth_token}&filter[date]={datetime.now().date().isoformat()}"
         if self.route != "":
             endpoint += f"&filter[route]={self.route}"
         if self.direction != "":
             endpoint += f"&filter[direction_id]={self.direction}"
+        if time_limit:
+            diff = datetime.now().astimezone(ZoneInfo("US/Eastern")) + time_limit
+            if diff.hour > 2:
+                # Time after which schedule should not be returned.
+                # To filter times after midnight use more than 24 hours.
+                # For example, min_time=24:00 will return schedule information for the next calendar day, since that service is considered part of the current service day.
+                # Additionally, min_time=00:00&max_time=02:00 will not return anything. The time format is HH:MM.
+                # https://api-v3.mbta.com/docs/swagger/index.html#/Schedule/ApiWeb_ScheduleController_index
+                endpoint += f"&filter[max_time]={diff.strftime("%H:%M")}"
+            else:
+                endpoint += "&filter[min_time]=24:00"
         async with session.get(endpoint) as response:
             try:
                 body = await response.text()
