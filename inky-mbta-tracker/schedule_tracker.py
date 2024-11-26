@@ -101,9 +101,9 @@ class Tracker:
             existing_event = await self.redis.get(trip_redis_key)
             if existing_event:
                 dec_ee = existing_event.decode("utf-8")
-                if dec_ee != event.id:
+                if dec_ee != event.id and dec_ee.startswith("schedule"):
                     logger.info(
-                        f"Removing existing schedule/prediction entry with id {dec_ee} as it has been replaced with {event.id}, trip_id={event.trip_id}"
+                        f"Removing existing schedule entry with id {dec_ee} as it has been replaced with {event.id}, trip_id={event.trip_id}"
                     )
                     await self.rm(dummy_schedule_event(existing_event), pipeline)
 
