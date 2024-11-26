@@ -108,7 +108,9 @@ class Tracker:
                     await self.rm(dummy_schedule_event(existing_event), pipeline)
 
             await pipeline.set(
-                trip_redis_key, event.id, ex=event.time - datetime.now().astimezone(UTC)
+                trip_redis_key,
+                event.id,
+                ex=(event.time - datetime.now().astimezone(UTC)) + timedelta(hours=1),
             )
 
             self.all_events[self.str_timestamp(event)] = event
