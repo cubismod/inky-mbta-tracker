@@ -16,7 +16,6 @@ h11==0.14.0
 httpcore==1.0.7
 humanize==4.11.0
 idna==3.10
-loggingredactor==0.0.1
 markdown-it-py==3.0.0
 mdurl==0.1.2
 multidict==6.1.0
