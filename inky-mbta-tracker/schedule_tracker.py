@@ -109,7 +109,9 @@ class Tracker:
                         f"Removing existing schedule entry with id {dec_ee} as it has been replaced with {event.id}, trip_id={event.trip_id}"
                     )
                     await self.rm(dummy_schedule_event(existing_event), pipeline)
-
+                if dec_ee.startswith("prediction") and event.id.startswith("schedule"):
+                    # don't override realtime predictions
+                    return
             await pipeline.set(
                 trip_redis_key,
                 event.id,
@@ -125,13 +127,6 @@ class Tracker:
             )
             await pipeline.zadd("time", {event.id: self.str_timestamp(event)})
             schedule_events.labels(action, event.route_id, event.stop).inc()
-
-    async def update(self, event: ScheduleEvent, pipeline: Pipeline):
-        existing_timestamp = self.find_timestamp(event.id)
-        if existing_timestamp and existing_timestamp != str(event.time.timestamp()):
-            # remove old predictions
-            self.all_events.pop(existing_timestamp)
-        await self.add(event, pipeline, "update")
 
     async def rm(self, event: ScheduleEvent, pipeline: Pipeline):
         timestamp = self.find_timestamp(event.id)
@@ -235,7 +230,7 @@ class Tracker:
             case "add":
                 await self.add(event, pipeline, "add")
             case "update":
-                await self.update(event, pipeline)
+                await self.add(event, pipeline, "update")
             case "remove":
                 # get the actual event based on the ID here
                 full_event = self.all_events.get(self.find_timestamp(event.id))
