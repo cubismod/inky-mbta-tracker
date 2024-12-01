@@ -38,11 +38,11 @@ class ScheduleEvent(BaseModel):
 def dummy_schedule_event(event_id: str):
     return ScheduleEvent(
         action="remove",
-        headsign="nowhere",
-        route_id="Green Line A Branch",
+        headsign="N/A",
+        route_id="N/A",
         route_type=1,
         id=event_id,
-        stop="Boston 2",
+        stop="N/A",
         time=datetime.now(UTC),
         transit_time_min=0,
         trip_id="N/A",
@@ -117,7 +117,7 @@ class Tracker:
             await pipeline.set(
                 event.id,
                 event.model_dump_json(exclude={"trip_id"}),
-                ex=self.calculate_time_diff(event),
+                ex=self.calculate_time_diff(event) + timedelta(minutes=1),
             )
             await pipeline.zadd("time", {event.id: int(event.time.timestamp())})
             schedule_events.labels(action, event.route_id, event.stop).inc()
