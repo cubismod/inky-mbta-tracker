@@ -1,4 +1,3 @@
-import contextlib
 import logging
 import os
 import time
@@ -6,18 +5,14 @@ from asyncio import QueueEmpty, Runner
 from datetime import UTC, datetime, timedelta
 from os import environ
 from queue import Queue
+from typing import Optional
 
 import humanize
 from paho.mqtt import MQTTException, publish
-from prometheus import schedule_events, tracked_events
-from pydantic import BaseModel
+from prometheus import schedule_events
+from pydantic import BaseModel, ValidationError
 from redis import ResponseError
 from redis.asyncio.client import Pipeline, Redis
-from rich.console import Console
-from rich.live import Live
-from rich.style import Style
-from rich.table import Table
-from sortedcontainers import SortedDict
 from tenacity import (
     before_sleep_log,
     retry,
@@ -37,7 +32,7 @@ class ScheduleEvent(BaseModel):
     stop: str
     id: str
     transit_time_min: int
-    trip_id: str
+    trip_id: Optional[str] = None
 
 
 def dummy_schedule_event(event_id: str):
@@ -55,11 +50,9 @@ def dummy_schedule_event(event_id: str):
 
 
 class Tracker:
-    all_events: SortedDict[str, ScheduleEvent]
     redis: Redis
 
     def __init__(self):
-        self.all_events = SortedDict()
         r = Redis(
             host=environ.get("IMT_REDIS_ENDPOINT"),
             port=os.environ.get("IMT_REDIS_PORT", "6379"),
@@ -84,18 +77,18 @@ class Tracker:
             f"action={event.action} time={event.time.astimezone(ZoneInfo("US/Eastern")).strftime("%c")} route_id={event.route_id} route_type={event.route_type} headsign={event.headsign} stop={event.stop} id={event.id}, transit_time_min={event.transit_time_min}"
         )
 
-    def find_timestamp(self, prediction_id: str):
-        for _, item in self.all_events.items():
-            if item.id == prediction_id:
-                return self.str_timestamp(item)
-        return None
-
     async def cleanup(self, pipeline: Pipeline):
-        for _, v in self.all_events.items():
-            if v.time < datetime.now().astimezone(UTC):
-                await self.rm(v, pipeline)
-            else:
-                break
+        try:
+            obsolete_items = await self.redis.zrangebyscore(
+                "time",
+                min="-inf",
+                max=str(datetime.now().astimezone(UTC).timestamp()),
+                withscores=False,
+            )
+            for item in obsolete_items:
+                await self.rm(dummy_schedule_event(item), pipeline)
+        except ResponseError as err:
+            logger.error("unable to cleanup old entries", exc_info=err)
 
     async def add(self, event: ScheduleEvent, pipeline: Pipeline, action: str):
         # only add events in the future
@@ -118,23 +111,29 @@ class Tracker:
                 ex=(event.time - datetime.now().astimezone(UTC)) + timedelta(hours=1),
             )
 
-            self.all_events[self.str_timestamp(event)] = event
-
             await pipeline.set(
                 event.id,
                 event.model_dump_json(exclude={"trip_id"}),
                 ex=self.calculate_time_diff(event),
             )
-            await pipeline.zadd("time", {event.id: self.str_timestamp(event)})
+            await pipeline.zadd("time", {event.id: event.time.timestamp()})
             schedule_events.labels(action, event.route_id, event.stop).inc()
+            self.log_prediction(event)
 
     async def rm(self, event: ScheduleEvent, pipeline: Pipeline):
-        timestamp = self.find_timestamp(event.id)
-        if timestamp:
-            with contextlib.suppress(KeyError):
-                self.all_events.pop(timestamp)
+        try:
+            # fetch existing event metadata so we can keep tabs in prometheus
+            dec_ee = await self.redis.get(event.id)
+            if dec_ee:
+                event = dec_ee
+            await pipeline.delete(event.id)
             await pipeline.zrem("time", self.str_timestamp(event))
             schedule_events.labels("remove", event.route_id, event.stop).inc()
+            self.log_prediction(event)
+        except ResponseError as err:
+            logger.error("unable to get key from redis", exc_info=err)
+        except ValidationError as err:
+            logger.error("unable to validate ScheduleEvent model", exc_info=err)
 
     @staticmethod
     def __determine_color(event: ScheduleEvent):
@@ -152,18 +151,45 @@ class Tracker:
             return "#80276C"
         return "black"
 
-    def send_mqtt(self):
+    async def fetch_mqtt_events(self):
+        ret: list[ScheduleEvent] = list()
+        try:
+            now = datetime.now().astimezone(UTC)
+            max_time = now + timedelta(hours=1)
+            events = await self.redis.zrange(
+                "time",
+                start=int(now.timestamp()),
+                end=int(max_time.timestamp()),
+                byscore=True,
+                withscores=False,
+                num=21,
+                offset=0,
+            )
+            for event in events:
+                res = await self.redis.get(event.decode("utf-8"))
+                if res:
+                    v_event = ScheduleEvent.model_validate_json(
+                        res.decode("utf-8"), strict=False
+                    )
+                    ret.append(v_event)
+        except ResponseError as err:
+            logger.error("unable to run redis command", exc_info=err)
+        except ValidationError as err:
+            logger.error("unable to validate schema", exc_info=err)
+
+        return ret
+
+    async def send_mqtt(self):
         if os.getenv("IMT_ENABLE_MQTT", "true") == "true":
             msgs = list()
-            for i, event in enumerate(self.all_events.items()):
-                if len(msgs) > 20:
-                    break
+            events = self.fetch_mqtt_events()
+            for i, event in enumerate(await events):
                 topic = f"imt/departure_time{i}"
-                payload = self.prediction_display(event[1])
+                payload = self.prediction_display(event)
                 msgs.append({"topic": topic, "payload": payload})
 
                 topic = f"imt/destination_and_stop{i}"
-                payload = f"|{event[1].route_id}| to: {event[1].headsign}, from: {event[1].stop}"
+                payload = f"|{event.route_id}| to: {event.headsign}, from: {event.stop}"
                 msgs.append({"topic": topic, "payload": payload})
             if len(msgs) > 0:
                 try:
@@ -193,37 +219,7 @@ class Tracker:
         if rounded_time < 0:
             return f"{prediction_indicator} DEP"
 
-    def generate_table(self):
-        table = Table(title="Departures")
-        table.add_column("Stop")
-        table.add_column("Route")
-        table.add_column("Headsign")
-        table.add_column("Departure Min", justify="center")
-        table.add_column("Departure Time", justify="center")
-
-        table.field_names = [
-            "Stop",
-            "Route",
-            "Headsign",
-            "Departure Min",
-            "Departure Time",
-        ]
-        for _, event in self.all_events.items():
-            table.add_row(
-                event.stop,
-                event.route_id,
-                event.headsign,
-                self.prediction_display(event),
-                event.time.astimezone(ZoneInfo("US/Eastern")).strftime("%X"),
-                style=Style(color=self.__determine_color(event), bgcolor="white"),
-            )
-            if len(table.rows) > int(os.getenv("IMT_ROWS", 15)):
-                break
-
-        return table
-
     async def process_schedule_event(self, event: ScheduleEvent, pipeline: Pipeline):
-        self.log_prediction(event)
         match event.action:
             case "reset":
                 await self.add(event, pipeline, "reset")
@@ -232,12 +228,7 @@ class Tracker:
             case "update":
                 await self.add(event, pipeline, "update")
             case "remove":
-                # get the actual event based on the ID here
-                full_event = self.all_events.get(self.find_timestamp(event.id))
-                if full_event:
-                    await self.rm(full_event, pipeline)
-                else:
-                    await self.rm(event, pipeline)
+                await self.rm(event, pipeline)
 
 
 async def execute(tracker: Tracker, queue: Queue[ScheduleEvent]):
@@ -256,8 +247,7 @@ async def execute(tracker: Tracker, queue: Queue[ScheduleEvent]):
         )
     except ResponseError as err:
         logger.error("Unable to communicate with Redis", exc_info=err)
-    tracker.send_mqtt()
-    tracked_events.set(len(tracker.all_events))
+    await tracker.send_mqtt()
 
 
 @retry(
@@ -267,19 +257,6 @@ async def execute(tracker: Tracker, queue: Queue[ScheduleEvent]):
 def process_queue(queue: Queue[ScheduleEvent]):
     tracker = Tracker()
     with Runner() as runner:
-        if os.environ.get("IMT_CONSOLE", "false") == "true":
-            console = Console()
-            with Live(
-                console=console,
-                renderable=tracker.generate_table(),
-                refresh_per_second=1,
-                screen=True,
-                transient=True,
-            ) as live:
-                while True:
-                    runner.run(execute(tracker, queue))
-                    live.update(tracker.generate_table())
-        else:
-            while True:
-                runner.run(execute(tracker, queue))
-                time.sleep(10)
+        while True:
+            runner.run(execute(tracker, queue))
+            time.sleep(10)
