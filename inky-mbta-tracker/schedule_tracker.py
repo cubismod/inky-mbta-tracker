@@ -79,14 +79,17 @@ class Tracker:
 
     async def cleanup(self, pipeline: Pipeline):
         try:
-            obsolete_items = await self.redis.zrangebyscore(
+            obsolete_ids = await self.redis.zrange(
                 "time",
-                min="-inf",
-                max=str(datetime.now().astimezone(UTC).timestamp()),
+                start=0,
+                end=int(datetime.now().astimezone(UTC).timestamp()),
                 withscores=False,
+                byscore=True,
             )
-            for item in obsolete_items:
-                await self.rm(dummy_schedule_event(item), pipeline)
+            for item in obsolete_ids:
+                dec_i = item.decode("utf-8")
+                if dec_i:
+                    await self.rm(dummy_schedule_event(dec_i), pipeline)
         except ResponseError as err:
             logger.error("unable to cleanup old entries", exc_info=err)
 
@@ -116,7 +119,7 @@ class Tracker:
                 event.model_dump_json(exclude={"trip_id"}),
                 ex=self.calculate_time_diff(event),
             )
-            await pipeline.zadd("time", {event.id: event.time.timestamp()})
+            await pipeline.zadd("time", {event.id: int(event.time.timestamp())})
             schedule_events.labels(action, event.route_id, event.stop).inc()
             self.log_prediction(event)
 
@@ -125,9 +128,11 @@ class Tracker:
             # fetch existing event metadata so we can keep tabs in prometheus
             dec_ee = await self.redis.get(event.id)
             if dec_ee:
-                event = dec_ee
+                event = ScheduleEvent.model_validate_json(
+                    dec_ee.decode("utf-8"), strict=False
+                )
             await pipeline.delete(event.id)
-            await pipeline.zrem("time", self.str_timestamp(event))
+            await pipeline.zrem("time", int(event.time.timestamp()))
             schedule_events.labels("remove", event.route_id, event.stop).inc()
             self.log_prediction(event)
         except ResponseError as err:
