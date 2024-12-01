@@ -194,7 +194,7 @@ class Tracker:
                 msgs.append({"topic": topic, "payload": payload})
 
                 topic = f"imt/destination_and_stop{i}"
-                payload = f"|{event.route_id}| to: {event.headsign}, from: {event.stop}"
+                payload = f"[{event.route_id}] {event.headsign}: {event.stop}"
                 msgs.append({"topic": topic, "payload": payload})
             if len(msgs) > 0:
                 try:
