@@ -160,7 +160,7 @@ class Tracker:
         ret: list[ScheduleEvent] = list()
         try:
             now = datetime.now().astimezone(UTC)
-            max_time = now + timedelta(hours=1)
+            max_time = now + timedelta(hours=12)
             events = await self.redis.zrange(
                 "time",
                 start=int(now.timestamp()),
