@@ -22,7 +22,7 @@ multidict==6.1.0
 paho-mqtt==2.1.0
 prettytable==3.12.0
 prometheus_client==0.21.0
-propcache==0.2.0
+propcache==0.2.1
 pycares==4.5.0
 pycparser==2.22
 pydantic==2.10.2
