@@ -33,6 +33,7 @@ class ScheduleEvent(BaseModel):
     id: str
     transit_time_min: int
     trip_id: Optional[str] = None
+    alerting: bool = False
 
 
 def dummy_schedule_event(event_id: str):
@@ -46,6 +47,7 @@ def dummy_schedule_event(event_id: str):
         time=datetime.now(UTC),
         transit_time_min=0,
         trip_id="N/A",
+        alerting=False,
     )
 
 
@@ -74,7 +76,7 @@ class Tracker:
     @staticmethod
     def log_prediction(event: ScheduleEvent):
         logger.info(
-            f"action={event.action} time={event.time.astimezone(ZoneInfo("US/Eastern")).strftime("%c")} route_id={event.route_id} route_type={event.route_type} headsign={event.headsign} stop={event.stop} id={event.id}, transit_time_min={event.transit_time_min}"
+            f"action={event.action} time={event.time.astimezone(ZoneInfo("US/Eastern")).strftime("%c")} route_id={event.route_id} route_type={event.route_type} headsign={event.headsign} stop={event.stop} id={event.id}, transit_time_min={event.transit_time_min}, alerting={event.alerting}"
         )
 
     async def cleanup(self, pipeline: Pipeline):

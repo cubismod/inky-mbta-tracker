@@ -12,6 +12,7 @@ from aiohttp import ClientSession
 from aiosseclient import aiosseclient
 from expiring_dict import ExpiringDict
 from mbta_responses import (
+    Alerts,
     PredictionAttributes,
     PredictionResource,
     Route,
@@ -38,7 +39,6 @@ from zoneinfo import ZoneInfo
 
 auth_token = os.environ.get("AUTH_TOKEN")
 mbta_v3 = "https://api-v3.mbta.com"
-thirty_hours = 108000
 logger = logging.getLogger(__name__)
 
 
@@ -47,6 +47,8 @@ class Watcher:
     route: str | None
     direction: int | None
     trips: ExpiringDict[str, TripResource]
+    # key is trip, value is if there is an active alert
+    alerts: ExpiringDict[str, bool]
     routes: dict[str, RouteResource]
     stop: Optional[Stop]
     schedule_only: bool
@@ -58,10 +60,14 @@ class Watcher:
         direction: int | None,
         schedule_only=False,
     ):
+        thirty_hours = 108000
+        thirty_min = 1800
+
         self.stop_id = stop_id
         self.route = route
         self.direction = direction
         self.trips = ExpiringDict(thirty_hours)
+        self.alerts = ExpiringDict(thirty_min)
         self.routes = dict()
         logger.info(
             f"Init mbta_client for stop={stop_id}, route={route}, direction={direction}"
@@ -130,6 +136,13 @@ class Watcher:
         except KeyError as err:
             logger.error("Could not find prediction", exc_info=err)
 
+    async def get_alerting_state(self, trip_id: str, session: ClientSession):
+        alerting = self.alerts.get(trip_id)
+        if alerting:
+            return alerting
+        else:
+            return await self.save_alert(trip_id, session)
+
     async def queue_schedule_event(
         self,
         item: PredictionResource | ScheduleResource,
@@ -144,9 +157,11 @@ class Watcher:
             route_id = item.relationships.route.data.id
             headsign = self.get_headsign(item.relationships.trip.data.id)
             route_type = self.routes[route_id].attributes.type
+            alerting = False
             trip = ""
             if item.relationships.trip.data:
                 trip = item.relationships.trip.data.id
+                alerting = await self.get_alerting_state(trip, session)
 
             event = ScheduleEvent(
                 action=event_type,
@@ -158,6 +173,7 @@ class Watcher:
                 stop=self.stop.data.attributes.name,
                 transit_time_min=transit_time_min,
                 trip_id=trip,
+                alerting=alerting,
             )
             queue.put(event)
 
@@ -198,12 +214,31 @@ class Watcher:
                 try:
                     body = await response.text()
                     mbta_api_requests.labels("routes").inc()
-
                     route = Route.model_validate_json(body, strict=False)
                     for rd in route.data:
                         self.routes[route_id] = rd
                 except ValidationError as err:
                     logger.error(f"Unable to parse route, {err}")
+
+    @retry(
+        wait=wait_exponential(multiplier=1, min=1, max=10),
+        before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
+    )
+    async def save_alert(self, trip_id: str, session: ClientSession):
+        endpoint = f"alerts?filter[trip]={trip_id}&api_key={auth_token}&filter[lifecycle]=NEW,ONGOING,ONGOING_UPCOMING&filter[datetime]=NOW&filter[severity]=3,4,5,6,7,8,9,10"
+        async with session.get(endpoint) as response:
+            try:
+                body = await response.text()
+                mbta_api_requests.labels("alerts").inc()
+                alerts = Alerts.model_validate_json(strict=False, json_data=body)
+                if len(alerts.data) > 0:
+                    self.alerts[trip_id] = True
+                    return True
+                else:
+                    self.alerts[trip_id] = False
+                    return False
+            except ValidationError as err:
+                logger.error("Unable to parse alert", exc_info=err)
 
     @retry(
         wait=wait_exponential(multiplier=1, min=1, max=10),
