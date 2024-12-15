@@ -160,12 +160,11 @@ class AlertRelationships(BaseModel):
 
 class AlertResource(BaseModel):
     type: str
-    relationships: AlertRelationships
+    relationships: Optional[AlertRelationships] = None
 
 
 class Alerts(BaseModel):
-    links: PageLinks
-    data: AlertResource
+    data: list[AlertResource]
 
 
 class TripGeneric(BaseModel):
