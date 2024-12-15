@@ -138,10 +138,9 @@ class Watcher:
 
     async def get_alerting_state(self, trip_id: str, session: ClientSession):
         alerting = self.alerts.get(trip_id)
-        if alerting:
-            return alerting
-        else:
+        if alerting is None:
             return await self.save_alert(trip_id, session)
+        return alerting
 
     async def queue_schedule_event(
         self,
