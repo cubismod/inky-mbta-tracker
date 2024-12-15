@@ -2,6 +2,7 @@ import logging
 import os
 import threading
 import time
+from argparse import ArgumentParser
 from asyncio import CancelledError, Runner, Task, TaskGroup, sleep
 from datetime import UTC, datetime, timedelta
 from queue import Queue
@@ -49,6 +50,19 @@ def queue_watcher(queue: Queue[ScheduleEvent]):
 async def __main__():
     config = load_config()
 
+    parser = ArgumentParser(
+        prog="inky-mbta-tracker",
+        description="a program which uses the MBTA API to track transit departures",
+    )
+    parser.add_argument("-p", "--profile_s")
+    args = parser.parse_args()
+    kill_time = None
+    if args.profile_s:
+        kill_time = datetime.now().astimezone(UTC) + timedelta(
+            seconds=int(args.profile_s)
+        )
+        logging.info(f"Profiling for {args.profile_s}s")
+
     queue = Queue[ScheduleEvent]()
     tasks = set[TaskTracker]()
 
@@ -56,7 +70,8 @@ async def __main__():
     async with TaskGroup() as tg:
         # all the prediction/schedule watchers run on the main thread using async awaits while
         # the process_queue task runs on a separate thread to ensure updates continue in realtime
-        threading.Thread(target=process_queue, daemon=True, args=[queue]).start()
+        thr = threading.Thread(target=process_queue, daemon=True, args=[queue])
+        thr.start()
 
         for stop in config.stops:
             if stop.schedule_only:
@@ -95,6 +110,14 @@ async def __main__():
 
         while True:
             await sleep(30)
+            if kill_time and datetime.now().astimezone(UTC) > kill_time:
+                for task in tasks:
+                    try:
+                        task.task.cancel()
+                    except CancelledError:
+                        await task.task
+                        tasks.remove(task)
+                return
             for task in tasks:
                 if (
                     task.expiration_time

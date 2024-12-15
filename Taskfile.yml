@@ -16,6 +16,11 @@ tasks:
   run:
     cmds:
       - python3 inky-mbta-tracker/main.py
+  profile:
+    env:
+      PYTHONPERFSUPPORT: "1"
+    cmds:
+      - python3 inky-mbta-tracker/main.py --profile_s 30
   logs:
     cmds:
       - tail -f imt.log
