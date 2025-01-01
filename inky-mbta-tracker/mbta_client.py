@@ -13,6 +13,7 @@ from aiosseclient import aiosseclient
 from expiring_dict import ExpiringDict
 from mbta_responses import (
     Alerts,
+    Facilities,
     PredictionAttributes,
     PredictionResource,
     Route,
@@ -23,9 +24,6 @@ from mbta_responses import (
     TripResource,
     Trips,
     TypeAndID,
-    FacilityResource,
-    Facility,
-    Facilities,
 )
 from prometheus import mbta_api_requests, tracker_executions
 from pydantic import TypeAdapter, ValidationError
