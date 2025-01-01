@@ -22,8 +22,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-MIN_TASK_RESTART_MINS = 60
-MAX_TASK_RESTART_MINS = 180
+MIN_TASK_RESTART_MINS = 30
+MAX_TASK_RESTART_MINS = 60
 
 
 class TaskTracker:
