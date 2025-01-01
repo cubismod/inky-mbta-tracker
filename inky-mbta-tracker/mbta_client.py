@@ -1,4 +1,5 @@
 # client that keeps track of events on the stops specified
+import json
 import logging
 import os
 import random
@@ -23,6 +24,7 @@ from mbta_responses import (
     TripResource,
     Trips,
     TypeAndID,
+    AlertResource,
 )
 from prometheus import mbta_api_requests, tracker_executions
 from pydantic import TypeAdapter, ValidationError
@@ -232,12 +234,38 @@ class Watcher:
                 alerts = Alerts.model_validate_json(strict=False, json_data=body)
                 if len(alerts.data) > 0:
                     self.alerts[trip_id] = True
+                    for alert in alerts.data:
+                        await self.send_alert_notification(alert, session)
                     return True
                 else:
                     self.alerts[trip_id] = False
                     return False
             except ValidationError as err:
                 logger.error("Unable to parse alert", exc_info=err)
+
+    @retry(
+        wait=wait_exponential(multiplier=1, min=1, max=10),
+        before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
+    )
+    async def send_alert_notification(
+        self, alert: AlertResource, session: ClientSession
+    ):
+        if os.getenv("IMT_NTFY"):
+            endpoint = os.getenv("IMT_NTFY_ENDPOINT")
+            auth = os.getenv("IMT_NTFY_AUTH")
+            if endpoint and auth and alert.attributes:
+                attributes = alert.attributes
+                async with session.get(
+                    endpoint,
+                    headers={
+                        "Title": f"{self.stop}: attributes.short_header",
+                        "Priority": "high",
+                        "Tags": "warning",
+                        "Authorization": f"Basic {auth}",
+                    },
+                    data=attributes.description,
+                ):
+                    logger.info(f"notified about alert {attributes.short_header}")
 
     @retry(
         wait=wait_exponential(multiplier=1, min=1, max=10),

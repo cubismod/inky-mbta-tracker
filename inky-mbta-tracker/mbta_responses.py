@@ -142,6 +142,7 @@ class AlertAttributes(BaseModel):
     effect: str
     updated_at: str
     effect_name: str
+    description: str = ""
     active_period: ActivePeriod
     informed_entity: InformedEntity
 
@@ -151,7 +152,6 @@ class AlertFacility(BaseModel):
     data: FacilityData
     links: dict
     id: str
-    attributes: AlertAttributes
 
 
 class AlertRelationships(BaseModel):
@@ -161,6 +161,7 @@ class AlertRelationships(BaseModel):
 class AlertResource(BaseModel):
     type: str
     relationships: Optional[AlertRelationships] = None
+    attributes: AlertAttributes
 
 
 class Alerts(BaseModel):

@@ -47,6 +47,9 @@ IMT_ENABLE_MQTT=true/false
 IMT_MQTT_HOST=127.0.0.1
 IMT_MQTT_USER=username
 IMT_MQTT_PASS=mqtt_pass # change this!
+IMT_NTFY=true # set to true if you want to receive alert notifications via ntfy
+IMT_NTFY_ENDPOINT=my-ntfy-server.com/topic
+IMT_NTFY_AUTH=tk_ntfy_token_here
 ```
 
 From there, create a `config.json` like so to the following schema:
