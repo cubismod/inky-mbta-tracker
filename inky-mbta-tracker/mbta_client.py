@@ -85,7 +85,10 @@ class Watcher:
 
     def get_headsign(self, trip_id: str):
         if trip_id in self.trips:
-            return self.trips[trip_id].attributes.headsign
+            hs = self.trips[trip_id].attributes.headsign
+            if self.trips[trip_id].attributes.revenue_status == "NON_REVENUE":
+                return f"[NR] ${hs}"
+            return hs
         return ""
 
     async def parse_schedule_response(
