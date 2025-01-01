@@ -242,7 +242,7 @@ class Tracker:
             (event.time.timestamp() - datetime.now().astimezone(UTC).timestamp())
         )
         if rounded_time > 0:
-            return f"🕒 {humanize.naturaldelta(timedelta(seconds=rounded_time))} | 🚲/🚶 {event.transit_time_min} min"
+            return f"🕒 {humanize.naturaldelta(timedelta(seconds=rounded_time))} · 🚲/🚶 {event.transit_time_min} min"
         if rounded_time == 0:
             return f"{prediction_indicator} BRD"
         if rounded_time < 0:
