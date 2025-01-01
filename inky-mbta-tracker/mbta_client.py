@@ -260,7 +260,7 @@ class Watcher:
             endpoint += f"&filter[direction_id]={self.direction}"
         if time_limit:
             diff = datetime.now().astimezone(ZoneInfo("US/Eastern")) + time_limit
-            if diff.hour > 2:
+            if diff.hour >= 2:
                 # Time after which schedule should not be returned.
                 # To filter times after midnight use more than 24 hours.
                 # For example, min_time=24:00 will return schedule information for the next calendar day, since that service is considered part of the current service day.
