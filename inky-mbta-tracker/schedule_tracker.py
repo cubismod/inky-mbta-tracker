@@ -186,6 +186,20 @@ class Tracker:
 
         return ret
 
+    @staticmethod
+    def get_route_icon(event: ScheduleEvent):
+        match event.route_type:
+            case 0:
+                return "🚊"
+            case 1:
+                return "🚇"
+            case 2:
+                return "🚆"
+            case 3:
+                return "🚍"
+            case 4:
+                return "⛴️"
+
     async def send_mqtt(self):
         if os.getenv("IMT_ENABLE_MQTT", "true") == "true":
             msgs = list()
@@ -196,7 +210,7 @@ class Tracker:
                 msgs.append({"topic": topic, "payload": payload})
 
                 topic = f"imt/destination_and_stop{i}"
-                payload = f"[{event.route_id}] {event.headsign}: {event.stop}"
+                payload = f"{self.get_route_icon(event)} [{event.route_id}] {event.headsign}: {event.stop}"
                 if event.id.startswith("prediction"):
                     payload += " 📶"
                 if event.alerting:
