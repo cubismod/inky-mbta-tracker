@@ -189,14 +189,18 @@ class Tracker:
     async def send_mqtt(self):
         if os.getenv("IMT_ENABLE_MQTT", "true") == "true":
             msgs = list()
-            events = self.fetch_mqtt_events()
-            for i, event in enumerate(await events):
+            events = await self.fetch_mqtt_events()
+            for i, event in enumerate(events):
                 topic = f"imt/departure_time{i}"
                 payload = self.prediction_display(event)
                 msgs.append({"topic": topic, "payload": payload})
 
                 topic = f"imt/destination_and_stop{i}"
                 payload = f"[{event.route_id}] {event.headsign}: {event.stop}"
+                if event.id.startswith("prediction"):
+                    payload += " 📶"
+                if event.alerting:
+                    payload += " ⚠️"
                 msgs.append({"topic": topic, "payload": payload})
             if len(msgs) > 0:
                 try:
