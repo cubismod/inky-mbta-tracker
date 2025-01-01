@@ -169,7 +169,7 @@ class Tracker:
                 end=int(max_time.timestamp()),
                 byscore=True,
                 withscores=False,
-                num=21,
+                num=26,
                 offset=0,
             )
             for event in events:
