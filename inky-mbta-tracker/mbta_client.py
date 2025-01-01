@@ -145,6 +145,18 @@ class Watcher:
             return await self.save_alert(trip_id, session)
         return alerting
 
+    @staticmethod
+    def bikes_allowed(trip: TripResource):
+        match trip.attributes.bikes_allowed:
+            case 0:
+                return False
+            case 1:
+                return True
+            case 2:
+                return False
+            case _:
+                return False
+
     async def queue_schedule_event(
         self,
         item: PredictionResource | ScheduleResource,
@@ -161,8 +173,12 @@ class Watcher:
             route_type = self.routes[route_id].attributes.type
             alerting = False
             trip = ""
+            bikes_allowed = False
             if item.relationships.trip.data:
                 trip = item.relationships.trip.data.id
+                trip_info = self.trips[trip]
+                if trip_info:
+                    bikes_allowed = self.bikes_allowed(trip_info)
                 alerting = await self.get_alerting_state(trip, session)
 
             event = ScheduleEvent(
@@ -176,6 +192,7 @@ class Watcher:
                 transit_time_min=transit_time_min,
                 trip_id=trip,
                 alerting=alerting,
+                bikes_allowed=bikes_allowed,
             )
             queue.put(event)
 
