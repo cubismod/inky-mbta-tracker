@@ -23,6 +23,9 @@ from mbta_responses import (
     TripResource,
     Trips,
     TypeAndID,
+    FacilityResource,
+    Facility,
+    Facilities,
 )
 from prometheus import mbta_api_requests, tracker_executions
 from pydantic import TypeAdapter, ValidationError
@@ -52,6 +55,7 @@ class Watcher:
     routes: dict[str, RouteResource]
     stop: Optional[Stop]
     schedule_only: bool
+    facilities: Optional[Facilities]
 
     def __init__(
         self,
@@ -145,17 +149,28 @@ class Watcher:
             return await self.save_alert(trip_id, session)
         return alerting
 
-    @staticmethod
-    def bikes_allowed(trip: TripResource):
+    # checks if secure bike storage is available at the facility
+    def check_secure_bike_storage(self):
+        enclosed = False
+        secured = False
+        for facility in self.facilities.data:
+            for prop in facility.attributes.properties:
+                if prop.name == "enclosed" and prop.value != 0:
+                    enclosed = True
+                if prop.name == "secured" and prop.value != 0:
+                    secured = True
+        return enclosed and secured
+
+    def bikes_allowed(self, trip: TripResource):
         match trip.attributes.bikes_allowed:
             case 0:
-                return False
+                return self.check_secure_bike_storage()
             case 1:
                 return True
             case 2:
-                return False
+                return self.check_secure_bike_storage()
             case _:
-                return False
+                return self.check_secure_bike_storage()
 
     async def queue_schedule_event(
         self,
@@ -315,9 +330,21 @@ class Watcher:
                 stop = Stop.model_validate_json(body, strict=False)
                 logger.info(f"saved stop {stop.data.attributes.name}")
                 self.stop = stop
-                return stop
             except ValidationError as err:
                 logger.error("Unable to parse stop", exc_info=err)
+        # retrieve bike facility info
+        async with session.get(
+            f"/facilities/?filter[stop]={self.stop_id}&filter[type]=BIKE_STORAGE"
+        ) as response:
+            try:
+                body = await response.text()
+                mbta_api_requests.labels("facilities").inc()
+                facilities = Facilities.model_validate_json(body, strict=False)
+                self.facilities = facilities
+            except ValidationError as err:
+                logger.error("Unable to parse facility", exc_info=err)
+
+        return self.stop
 
 
 @retry(

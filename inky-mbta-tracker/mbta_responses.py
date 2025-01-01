@@ -265,3 +265,45 @@ class PredictionResource(BaseModel):
     links: Optional[dict] = None
     id: str
     attributes: PredictionAttributes
+
+
+class FacilityRelationships(BaseModel):
+    stop: LinksAndData
+
+
+class FacilityProperty(BaseModel):
+    value: str | int
+    name: str
+
+
+class FacilityAttributes(BaseModel):
+    # [ BIKE_STORAGE, BRIDGE_PLATE, ELECTRIC_CAR_CHARGERS,
+    # ELEVATED_SUBPLATFORM, ELEVATOR, ESCALATOR, FARE_MEDIA_ASSISTANCE_FACILITY,
+    # FARE_MEDIA_ASSISTANT, FARE_VENDING_MACHINE, FARE_VENDING_RETAILER,
+    # FULLY_ELEVATED_PLATFORM, OTHER, PARKING_AREA, PICK_DROP,
+    # PORTABLE_BOARDING_LIFT, RAMP, TAXI_STAND, TICKET_WINDOW ]
+    type: str
+    short_name: str
+    properties: list[FacilityProperty]
+    longitude: Optional[float] = None
+    long_name: str
+    latitude: Optional[float] = None
+
+
+class FacilityResource(BaseModel):
+    type: str
+    relationships: FacilityRelationships
+    links: Optional[dict] = None
+    id: str
+    attributes: FacilityAttributes
+
+
+class Facility(BaseModel):
+    links: Optional[dict] = None
+    included: TypeAndID
+    data: FacilityResource
+
+
+class Facilities(BaseModel):
+    links: Optional[dict] = None
+    data: list[FacilityResource]
