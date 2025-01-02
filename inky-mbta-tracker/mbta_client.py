@@ -373,11 +373,11 @@ async def watch_static_schedule(
     queue: Queue[ScheduleEvent],
     transit_time_min: int,
 ):
-    tracker_executions.labels(stop_id).inc()
     while True:
         watcher = Watcher(stop_id, route, direction, schedule_only=True)
         async with aiohttp.ClientSession(mbta_v3) as session:
             await watcher.save_stop(session)
+            tracker_executions.labels(watcher.stop.data.attributes.name).inc()
             await watcher.save_schedule(transit_time_min, queue, session)
             await sleep(10800)  # 3 hours
 
@@ -390,7 +390,6 @@ async def watch_station(
     transit_time_min: int,
 ):
     endpoint = f"{mbta_v3}/predictions?filter[stop]={stop_id}&api_key={auth_token}"
-    tracker_executions.labels(stop_id).inc()
     mbta_api_requests.labels("predictions").inc()
     if route != "":
         endpoint += f"&filter[route]={route}"
@@ -400,6 +399,7 @@ async def watch_station(
     watcher = Watcher(stop_id, route, direction)
     async with aiohttp.ClientSession(mbta_v3) as session:
         await watcher.save_stop(session)
+        tracker_executions.labels(watcher.stop.data.attributes.name).inc()
         await watch_server_side_events(
             watcher, endpoint, headers, queue, transit_time_min, session
         )
