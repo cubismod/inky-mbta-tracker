@@ -183,6 +183,12 @@ class Watcher:
             await self.save_route(item, session)
             route_id = item.relationships.route.data.id
             headsign = self.get_headsign(item.relationships.trip.data.id)
+            if headsign == self.stop.data.attributes.name:
+                logger.info(f"Dropping invalid schedule event {headsign}/{headsign}")
+                return
+            if route_id.startswith("Green"):
+                branch = route_id[-1:]
+                headsign = f"{branch} - {headsign}"
             route_type = self.routes[route_id].attributes.type
             alerting = False
             trip = ""
