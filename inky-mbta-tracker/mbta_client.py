@@ -114,7 +114,7 @@ class Watcher:
                         )
                     if len(prediction) == 0:
                         await self.save_schedule(
-                            transit_time_min, queue, session, timedelta(minutes=180)
+                            transit_time_min, queue, session, timedelta(hours=4)
                         )
                 case "add":
                     prediction = PredictionResource.model_validate_json(
@@ -195,6 +195,9 @@ class Watcher:
             await self.save_route(item, session)
             route_id = item.relationships.route.data.id
             headsign = self.get_headsign(item.relationships.trip.data.id)
+
+            # drop events that have the same stop & headsign as that train cannot be
+            # immediately boarded in most cases so there is no sense in showing it as a departure
             if headsign == self.stop.data.attributes.name:
                 logger.info(f"Dropping invalid schedule event {headsign}/{headsign}")
                 return
@@ -318,8 +321,6 @@ class Watcher:
                 # Additionally, min_time=00:00&max_time=02:00 will not return anything. The time format is HH:MM.
                 # https://api-v3.mbta.com/docs/swagger/index.html#/Schedule/ApiWeb_ScheduleController_index
                 endpoint += f"&filter[max_time]={diff.strftime("%H:%M")}"
-            else:
-                endpoint += "&filter[min_time]=24:00"
         async with session.get(endpoint) as response:
             try:
                 body = await response.text()
