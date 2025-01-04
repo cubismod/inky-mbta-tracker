@@ -180,7 +180,6 @@ class Watcher:
         inp = inp.replace("Road", "Rd")
         inp = inp.replace("Government", "Gov't")
         inp = inp.replace("Parkway", "Pkwy")
-        inp = inp.replace("Station", "Stn")
         return inp
 
     async def queue_schedule_event(
