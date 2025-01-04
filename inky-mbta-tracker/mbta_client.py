@@ -170,6 +170,19 @@ class Watcher:
             case _:
                 return self.check_secure_bike_storage()
 
+    # abbreviate common words to fit more on screen
+    @staticmethod
+    def abbreviate(inp: str):
+        inp = inp.replace("Massachusetts", "Mass")
+        inp = inp.replace("Street", "St")
+        inp = inp.replace("Avenue", "Ave")
+        inp = inp.replace("Square", "Sq")
+        inp = inp.replace("Road", "Rd")
+        inp = inp.replace("Government", "Gov't")
+        inp = inp.replace("Parkway", "Pkwy")
+        inp = inp.replace("Station", "Stn")
+        return inp
+
     async def queue_schedule_event(
         self,
         item: PredictionResource | ScheduleResource,
@@ -189,6 +202,9 @@ class Watcher:
             if route_id.startswith("Green"):
                 branch = route_id[-1:]
                 headsign = f"{branch} - {headsign}"
+            if route_id.startswith("CR"):
+                line = route_id.split("-")
+                headsign = f"{headsign} - {line[1]} Ln"
             route_type = self.routes[route_id].attributes.type
             alerting = False
             trip = ""
@@ -205,9 +221,9 @@ class Watcher:
                 time=schedule_time,
                 route_id=route_id,
                 route_type=route_type,
-                headsign=headsign,
+                headsign=self.abbreviate(headsign),
                 id=item.id,
-                stop=self.stop.data.attributes.name,
+                stop=self.abbreviate(self.stop.data.attributes.name),
                 transit_time_min=transit_time_min,
                 trip_id=trip,
                 alerting=alerting,
