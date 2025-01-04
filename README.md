@@ -57,7 +57,7 @@ From there, create a `config.json` like so to the following schema:
       // REQUIRED, the stop ID which can be retrieved from the stop page like this example:
       // https://www.mbta.com/stops/place-davis
       "stop_id": "place-davis",
-      // OPTIONAL, filter only arrivals going in this direction, typically 1 means that inbound
+      // OPTIONAL, filter only arrivals go ing in this direction, typically 1 means that inbound
       // and 0 means outbound but that depends on the route
       // more info here: https://api-v3.mbta.com/docs/swagger/index.html#/Prediction/ApiWeb_PredictionController_index
       "direction_filter": "1",
@@ -75,6 +75,15 @@ From there, create a `config.json` like so to the following schema:
   ]
 }
 ```
+
+## Prometheus & Grafana
+
+Prometheus is available at port 8000.
+
+You can use my [dashboard JSON](./grafana-dashboard.json) for a Grafana dashboard combining
+the Prom metrics & a Loki datasource for logs.
+
+![image of Inky MBTA Tracker Grafana dashboard](./img.png)
 
 ## Running
 
