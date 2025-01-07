@@ -419,9 +419,13 @@ async def watch_station(
         endpoint += f"&filter[direction_id]={direction}"
     headers = {"accept": "text/event-stream"}
     watcher = Watcher(stop_id, route, direction)
-    async with aiohttp.ClientSession(mbta_v3) as session:
-        await watcher.save_stop(session)
-        tracker_executions.labels(watcher.stop.data.attributes.name).inc()
-        await watch_server_side_events(
-            watcher, endpoint, headers, queue, transit_time_min, session
-        )
+    try:
+        async with aiohttp.ClientSession(mbta_v3) as session:
+            await watcher.save_stop(session)
+            tracker_executions.labels(watcher.stop.data.attributes.name).inc()
+            await watch_server_side_events(
+                watcher, endpoint, headers, queue, transit_time_min, session
+            )
+    except CancelledError:
+        logger.debug("cancelled")
+        return
