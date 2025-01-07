@@ -8,6 +8,7 @@ from queue import Queue
 from random import randint
 from typing import Optional
 
+import yappi
 from config import StopSetup, load_config
 from dotenv import load_dotenv
 from mbta_client import watch_static_schedule, watch_station
@@ -24,6 +25,7 @@ logger = logging.getLogger(__name__)
 
 MIN_TASK_RESTART_MINS = 45
 MAX_TASK_RESTART_MINS = 120
+PROFILE_TIME = 20
 
 
 class TaskTracker:
@@ -54,80 +56,100 @@ async def __main__():
 
     start_http_server(int(os.getenv("IMT_PROM_PORT", "8000")))
     async with TaskGroup() as tg:
-        # all the prediction/schedule watchers run on the main thread using async awaits while
-        # the process_queue task runs on a separate thread to ensure updates continue in realtime
-        threading.Thread(target=process_queue, daemon=True, args=[queue]).start()
+        try:
+            if os.environ.get("IMT_PROFILE") == "true":
+                yappi.set_clock_type("WALL")
+                yappi.start()
+            profile_time = datetime.now().astimezone(UTC) + timedelta(
+                minutes=PROFILE_TIME
+            )
+            # all the prediction/schedule watchers run on the main thread using async awaits while
+            # the process_queue task runs on a separate thread to ensure updates continue in realtime
+            threading.Thread(target=process_queue, daemon=True, args=[queue]).start()
 
-        for stop in config.stops:
-            if stop.schedule_only:
-                task = tg.create_task(
-                    watch_static_schedule(
-                        stop.stop_id,
-                        stop.route_filter,
-                        stop.direction_filter,
-                        queue,
-                        stop.transit_time_min,
+            for stop in config.stops:
+                if stop.schedule_only:
+                    task = tg.create_task(
+                        watch_static_schedule(
+                            stop.stop_id,
+                            stop.route_filter,
+                            stop.direction_filter,
+                            queue,
+                            stop.transit_time_min,
+                        )
                     )
-                )
-                tasks.add(TaskTracker(task=task, expiration_time=None, stop=stop))
-            else:
-                task = tg.create_task(
-                    watch_station(
-                        stop.stop_id,
-                        stop.route_filter,
-                        stop.direction_filter,
-                        queue,
-                        stop.transit_time_min,
+                    tasks.add(TaskTracker(task=task, expiration_time=None, stop=stop))
+                else:
+                    task = tg.create_task(
+                        watch_station(
+                            stop.stop_id,
+                            stop.route_filter,
+                            stop.direction_filter,
+                            queue,
+                            stop.transit_time_min,
+                        )
                     )
-                )
-                tasks.add(
-                    TaskTracker(
-                        task=task,
-                        expiration_time=datetime.now().astimezone(UTC)
-                        + timedelta(
-                            minutes=randint(
-                                MIN_TASK_RESTART_MINS, MAX_TASK_RESTART_MINS
-                            )
-                        ),
-                        stop=stop,
+                    tasks.add(
+                        TaskTracker(
+                            task=task,
+                            expiration_time=datetime.now().astimezone(UTC)
+                            + timedelta(
+                                minutes=randint(
+                                    MIN_TASK_RESTART_MINS, MAX_TASK_RESTART_MINS
+                                )
+                            ),
+                            stop=stop,
+                        )
                     )
-                )
 
-        while True:
-            await sleep(30)
-            for task in tasks:
-                if (
-                    task.expiration_time
-                    and datetime.now().astimezone(UTC) > task.expiration_time
-                ):
-                    try:
-                        logger.info(f"Restarting task for {task.stop}")
-                        # restart the task
-                        task.task.cancel()
-                        await task.task
-                    except CancelledError:
-                        new_task = tg.create_task(
-                            watch_station(
-                                task.stop.stop_id,
-                                task.stop.route_filter,
-                                task.stop.direction_filter,
-                                queue,
-                                task.stop.transit_time_min,
+            while True:
+                await sleep(30)
+                for task in tasks:
+                    if (
+                        task.expiration_time
+                        and datetime.now().astimezone(UTC) > task.expiration_time
+                    ):
+                        try:
+                            logger.info(f"Restarting task for {task.stop}")
+                            # restart the task
+                            task.task.cancel()
+                            await task.task
+                        except CancelledError:
+                            new_task = tg.create_task(
+                                watch_station(
+                                    task.stop.stop_id,
+                                    task.stop.route_filter,
+                                    task.stop.direction_filter,
+                                    queue,
+                                    task.stop.transit_time_min,
+                                )
                             )
-                        )
-                        tasks.remove(task)
-                        tasks.add(
-                            TaskTracker(
-                                task=new_task,
-                                expiration_time=datetime.now().astimezone(UTC)
-                                + timedelta(
-                                    minutes=randint(
-                                        MIN_TASK_RESTART_MINS, MAX_TASK_RESTART_MINS
-                                    )
-                                ),
-                                stop=task.stop,
+                            tasks.remove(task)
+                            tasks.add(
+                                TaskTracker(
+                                    task=new_task,
+                                    expiration_time=datetime.now().astimezone(UTC)
+                                    + timedelta(
+                                        minutes=randint(
+                                            MIN_TASK_RESTART_MINS, MAX_TASK_RESTART_MINS
+                                        )
+                                    ),
+                                    stop=task.stop,
+                                )
                             )
-                        )
+                    if (
+                        os.environ.get("IMT_PROFILE") == "true"
+                        and datetime.now().astimezone(UTC) > profile_time
+                    ):
+                        with open("imt_profile.txt", "w") as profile_doc:
+                            profile_doc.write(datetime.now().strftime("%c"))
+                            yappi.get_func_stats().print_all(out=profile_doc)
+                            profile_time = datetime.now().astimezone(UTC) + timedelta(
+                                minutes=PROFILE_TIME
+                            )
+        except KeyboardInterrupt:
+            if os.environ.get("IMT_PROFILE") == "true":
+                yappi.stop()
 
 
 if __name__ == "__main__":
