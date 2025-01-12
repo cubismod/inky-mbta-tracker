@@ -6,7 +6,6 @@ tasks:
   check:
     cmds:
       - ruff check inky-mbta-tracker
-
   fix:
     cmds:
       - ruff check --fix inky-mbta-tracker
@@ -19,3 +18,6 @@ tasks:
   logs:
     cmds:
       - tail -f imt.log
+  profile:
+    cmds:
+      - scalene inky-mbta-tracker/main.py
