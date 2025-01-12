@@ -12,6 +12,7 @@ from config import StopSetup, load_config
 from dotenv import load_dotenv
 from mbta_client import thread_runner
 from prometheus_client import start_http_server
+from pytz import timezone
 from schedule_tracker import ScheduleEvent, process_queue
 
 load_dotenv()
@@ -40,6 +41,9 @@ class TaskTracker:
         self.task = task
         self.expiration_time = expiration_time
         self.stop = stop
+        logger.info(
+            f"{stop.stop_id}/{stop.route_filter} will restart at {expiration_time.astimezone(timezone("US/Eastern")).strftime("%c")}"
+        )
 
 
 def queue_watcher(queue: Queue[ScheduleEvent]):
