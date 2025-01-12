@@ -2,7 +2,7 @@
 import logging
 import os
 import random
-from asyncio import CancelledError, sleep
+from asyncio import CancelledError, Runner, sleep
 from datetime import UTC, datetime, timedelta
 from queue import Queue
 from typing import Optional
@@ -54,12 +54,14 @@ class Watcher:
     stop: Optional[Stop]
     schedule_only: bool
     facilities: Optional[Facilities]
+    expiration_time: datetime
 
     def __init__(
         self,
         stop_id: str,
         route: str | None,
         direction: int | None,
+        expiration_time: datetime,
         schedule_only=False,
     ):
         thirty_hours = 108000
@@ -71,6 +73,7 @@ class Watcher:
         self.trips = ExpiringDict(thirty_hours)
         self.alerts = ExpiringDict(thirty_min)
         self.routes = dict()
+        self.expiration_time = expiration_time
         logger.info(
             f"Init mbta_client for stop={stop_id}, route={route}, direction={direction}"
         )
@@ -382,6 +385,8 @@ async def watch_server_side_events(
     session: ClientSession,
 ):
     async for event in aiosseclient(endpoint, headers=headers):
+        if datetime.now().astimezone(UTC) > watcher.expiration_time:
+            return
         await watcher.parse_schedule_response(
             event.data, event.event, queue, transit_time_min, session
         )
@@ -394,9 +399,12 @@ async def watch_static_schedule(
     direction: int | None,
     queue: Queue[ScheduleEvent],
     transit_time_min: int,
+    expiration_time: datetime,
 ):
     while True:
-        watcher = Watcher(stop_id, route, direction, schedule_only=True)
+        watcher = Watcher(
+            stop_id, route, direction, expiration_time, schedule_only=True
+        )
         async with aiohttp.ClientSession(mbta_v3) as session:
             await watcher.save_stop(session)
             tracker_executions.labels(watcher.stop.data.attributes.name).inc()
@@ -410,6 +418,7 @@ async def watch_station(
     direction: str | None,
     queue: Queue[ScheduleEvent],
     transit_time_min: int,
+    expiration_time: datetime,
 ):
     endpoint = f"{mbta_v3}/predictions?filter[stop]={stop_id}&api_key={auth_token}"
     mbta_api_requests.labels("predictions").inc()
@@ -418,14 +427,45 @@ async def watch_station(
     if direction != "":
         endpoint += f"&filter[direction_id]={direction}"
     headers = {"accept": "text/event-stream"}
-    watcher = Watcher(stop_id, route, direction)
-    try:
-        async with aiohttp.ClientSession(mbta_v3) as session:
-            await watcher.save_stop(session)
-            tracker_executions.labels(watcher.stop.data.attributes.name).inc()
-            await watch_server_side_events(
-                watcher, endpoint, headers, queue, transit_time_min, session
-            )
-    except CancelledError:
-        logger.debug("cancelled")
-        return
+    watcher = Watcher(stop_id, route, direction, expiration_time)
+    async with aiohttp.ClientSession(mbta_v3) as session:
+        await watcher.save_stop(session)
+        tracker_executions.labels(watcher.stop.data.attributes.name).inc()
+        await watch_server_side_events(
+            watcher, endpoint, headers, queue, transit_time_min, session
+        )
+
+
+def thread_runner(
+    target: str,
+    stop_id: str,
+    route: str | None,
+    direction: str | None,
+    queue: Queue[ScheduleEvent],
+    transit_time_min: int,
+    expiration_time: datetime,
+):
+    with Runner() as runner:
+        match target:
+            case "schedule":
+                runner.run(
+                    watch_static_schedule(
+                        stop_id,
+                        route,
+                        direction,
+                        queue,
+                        transit_time_min,
+                        expiration_time,
+                    )
+                )
+            case "predictions":
+                runner.run(
+                    watch_station(
+                        stop_id,
+                        route,
+                        direction,
+                        queue,
+                        transit_time_min,
+                        expiration_time,
+                    )
+                )
