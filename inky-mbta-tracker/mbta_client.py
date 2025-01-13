@@ -54,14 +54,14 @@ class Watcher:
     stop: Optional[Stop]
     schedule_only: bool
     facilities: Optional[Facilities]
-    expiration_time: datetime
+    expiration_time: Optional[datetime]
 
     def __init__(
         self,
         stop_id: str,
         route: str | None,
         direction: int | None,
-        expiration_time: datetime,
+        expiration_time: Optional[datetime] = None,
         schedule_only=False,
     ):
         thirty_hours = 108000
@@ -399,12 +399,9 @@ async def watch_static_schedule(
     direction: int | None,
     queue: Queue[ScheduleEvent],
     transit_time_min: int,
-    expiration_time: datetime,
 ):
     while True:
-        watcher = Watcher(
-            stop_id, route, direction, expiration_time, schedule_only=True
-        )
+        watcher = Watcher(stop_id, route, direction, schedule_only=True)
         async with aiohttp.ClientSession(mbta_v3) as session:
             await watcher.save_stop(session)
             tracker_executions.labels(watcher.stop.data.attributes.name).inc()
@@ -443,7 +440,7 @@ def thread_runner(
     direction: str | None,
     queue: Queue[ScheduleEvent],
     transit_time_min: int,
-    expiration_time: datetime,
+    expiration_time: Optional[datetime] = None,
 ):
     with Runner() as runner:
         match target:
@@ -455,7 +452,6 @@ def thread_runner(
                         direction,
                         queue,
                         transit_time_min,
-                        expiration_time,
                     )
                 )
             case "predictions":

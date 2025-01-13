@@ -35,15 +35,16 @@ class TaskTracker:
     def __init__(
         self,
         task: threading.Thread,
-        expiration_time: Optional[datetime],
-        stop: Optional[StopSetup],
+        expiration_time: Optional[datetime] = None,
+        stop: Optional[StopSetup] = None,
     ):
         self.task = task
         self.expiration_time = expiration_time
         self.stop = stop
-        logger.info(
-            f"{stop.stop_id}/{stop.route_filter} will restart at {expiration_time.astimezone(timezone("US/Eastern")).strftime("%c")}"
-        )
+        if self.expiration_time:
+            logger.info(
+                f"{stop.stop_id}/{stop.route_filter} will restart at {expiration_time.astimezone(timezone("US/Eastern")).strftime("%c")}"
+            )
 
 
 def queue_watcher(queue: Queue[ScheduleEvent]):
@@ -58,7 +59,6 @@ def queue_watcher(queue: Queue[ScheduleEvent]):
 def start_thread(target: str, stop: StopSetup, queue: Queue[ScheduleEvent]):
     match target:
         case "schedule":
-            exp_time = datetime.now().astimezone(UTC) + timedelta(days=365)
             thr = threading.Thread(
                 target=thread_runner,
                 args=[
@@ -68,11 +68,10 @@ def start_thread(target: str, stop: StopSetup, queue: Queue[ScheduleEvent]):
                     stop.direction_filter,
                     queue,
                     stop.transit_time_min,
-                    exp_time,
                 ],
             )
             thr.start()
-            return TaskTracker(task=thr, expiration_time=exp_time, stop=stop)
+            return TaskTracker(task=thr, stop=stop)
         case "predictions":
             exp_time = datetime.now().astimezone(UTC) + timedelta(
                 minutes=randint(MIN_TASK_RESTART_MINS, MAX_TASK_RESTART_MINS)
@@ -116,7 +115,7 @@ async def __main__():
                 and datetime.now().astimezone(UTC) > task.expiration_time
             ) or not task.task.is_alive():
                 tasks.remove(task)
-                tasks.append(start_thread("predictions", stop, queue))
+                tasks.append(start_thread("predictions", task.stop, queue))
 
 
 if __name__ == "__main__":
