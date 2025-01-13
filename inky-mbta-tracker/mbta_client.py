@@ -406,7 +406,7 @@ async def watch_static_schedule(
             await watcher.save_stop(session)
             tracker_executions.labels(watcher.stop.data.attributes.name).inc()
             await watcher.save_schedule(transit_time_min, queue, session)
-            await sleep(10800)  # 3 hours
+        await sleep(10800)  # 3 hours
 
 
 async def watch_station(
