@@ -386,6 +386,7 @@ async def watch_server_side_events(
 ):
     async for event in aiosseclient(endpoint, headers=headers):
         if datetime.now().astimezone(UTC) > watcher.expiration_time:
+            logger.info(f"Restarting thread ${watcher.stop_id}")
             return
         await watcher.parse_schedule_response(
             event.data, event.event, queue, transit_time_min, session
