@@ -323,7 +323,7 @@ class Watcher:
                 # For example, min_time=24:00 will return schedule information for the next calendar day, since that service is considered part of the current service day.
                 # Additionally, min_time=00:00&max_time=02:00 will not return anything. The time format is HH:MM.
                 # https://api-v3.mbta.com/docs/swagger/index.html#/Schedule/ApiWeb_ScheduleController_index
-                endpoint += f"&filter[max_time]={diff.strftime("%H:%M")}"
+                endpoint += f"&filter[max_time]={diff.strftime('%H:%M')}"
         async with session.get(endpoint) as response:
             try:
                 body = await response.text()

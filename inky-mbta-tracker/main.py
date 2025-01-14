@@ -11,6 +11,7 @@ from typing import Optional
 from config import StopSetup, load_config
 from dotenv import load_dotenv
 from mbta_client import thread_runner
+from prometheus import running_threads
 from prometheus_client import start_http_server
 from pytz import timezone
 from schedule_tracker import ScheduleEvent, process_queue
@@ -43,7 +44,7 @@ class TaskTracker:
         self.stop = stop
         if self.expiration_time:
             logger.info(
-                f"{stop.stop_id}/{stop.route_filter} will restart at {expiration_time.astimezone(timezone("US/Eastern")).strftime("%c")}"
+                f"{stop.stop_id}/{stop.route_filter} will restart at {expiration_time.astimezone(timezone('US/Eastern')).strftime('%c')}"
             )
 
 
@@ -100,7 +101,10 @@ async def __main__():
 
     start_http_server(int(os.getenv("IMT_PROM_PORT", "8000")))
 
-    threading.Thread(target=process_queue, daemon=True, args=[queue]).start()
+    process_thr = threading.Thread(target=process_queue, daemon=True, args=[queue])
+    process_thr.start()
+
+    tasks.append(TaskTracker(process_thr, stop=None))
     for stop in config.stops:
         if stop.schedule_only:
             tasks.append(start_thread("schedule", stop, queue))
@@ -108,6 +112,7 @@ async def __main__():
             tasks.append(start_thread("predictions", stop, queue))
 
     while True:
+        running_threads.set(len(tasks))
         await sleep(30)
         for task in tasks:
             if (

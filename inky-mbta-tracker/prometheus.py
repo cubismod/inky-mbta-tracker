@@ -9,3 +9,5 @@ tracker_executions = Counter("imt_tracker_executions", "Tracker Executions", ["s
 mbta_api_requests = Gauge(
     "mbta_api_requests", "Requests we are making to the MBTA API", ["endpoint"]
 )
+
+running_threads = Gauge("imt_active_threads", "Active Threads")
