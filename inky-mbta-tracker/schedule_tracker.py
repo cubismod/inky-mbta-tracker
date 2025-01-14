@@ -78,7 +78,7 @@ class Tracker:
     @staticmethod
     def log_prediction(event: ScheduleEvent):
         logger.info(
-            f"action={event.action} time={event.time.astimezone(ZoneInfo("US/Eastern")).strftime("%c")} route_id={event.route_id} route_type={event.route_type} headsign={event.headsign} stop={event.stop} id={event.id}, transit_time_min={event.transit_time_min}, alerting={event.alerting}, bikes_allowed={event.bikes_allowed}"
+            f"action={event.action} time={event.time.astimezone(ZoneInfo('US/Eastern')).strftime('%c')} route_id={event.route_id} route_type={event.route_type} headsign={event.headsign} stop={event.stop} id={event.id}, transit_time_min={event.transit_time_min}, alerting={event.alerting}, bikes_allowed={event.bikes_allowed}"
         )
 
     async def cleanup(self, pipeline: Pipeline):
@@ -100,7 +100,7 @@ class Tracker:
     async def add(self, event: ScheduleEvent, pipeline: Pipeline, action: str):
         # only add events in the future
         if event.time > datetime.now().astimezone(UTC):
-            trip_redis_key = f"trip-{event.trip_id}-{event.stop.replace(" ", "_")}"
+            trip_redis_key = f"trip-{event.trip_id}-{event.stop.replace(' ', '_')}"
             existing_event = await self.redis.get(trip_redis_key)
             if existing_event:
                 dec_ee = existing_event.decode("utf-8")
