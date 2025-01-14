@@ -10,11 +10,10 @@ from typing import Optional
 
 from config import StopSetup, load_config
 from dotenv import load_dotenv
-from mbta_client import thread_runner
+from mbta_client import EventType, thread_runner
 from prometheus import running_threads
 from prometheus_client import start_http_server
-from pytz import timezone
-from schedule_tracker import ScheduleEvent, process_queue
+from schedule_tracker import ScheduleEvent, VehicleRedisSchema, process_queue
 
 load_dotenv()
 
@@ -29,23 +28,25 @@ MAX_TASK_RESTART_MINS = 120
 
 
 class TaskTracker:
+    event_type: EventType
     task: threading.Thread
     expiration_time: Optional[datetime]
     stop: Optional[StopSetup]
+    route_id: Optional[str]
 
     def __init__(
         self,
         task: threading.Thread,
+        event_type: EventType,
         expiration_time: Optional[datetime] = None,
         stop: Optional[StopSetup] = None,
+        route_id: Optional[str] = None,
     ):
         self.task = task
         self.expiration_time = expiration_time
         self.stop = stop
-        if self.expiration_time:
-            logger.info(
-                f"{stop.stop_id}/{stop.route_filter} will restart at {expiration_time.astimezone(timezone('US/Eastern')).strftime('%c')}"
-            )
+        self.route_id = route_id
+        self.event_type = event_type
 
 
 def queue_watcher(queue: Queue[ScheduleEvent]):
@@ -57,9 +58,17 @@ def queue_watcher(queue: Queue[ScheduleEvent]):
 
 # launches a departures tracking thread, target should either be "schedule" or "predictions"
 # returns a TaskTracker
-def start_thread(target: str, stop: StopSetup, queue: Queue[ScheduleEvent]):
+def start_thread(
+    target: EventType,
+    queue: Queue[ScheduleEvent | VehicleRedisSchema],
+    stop: Optional[StopSetup] = None,
+    route_id: Optional[str] = None,
+):
+    exp_time = datetime.now().astimezone(UTC) + timedelta(
+        minutes=randint(MIN_TASK_RESTART_MINS, MAX_TASK_RESTART_MINS)
+    )
     match target:
-        case "schedule":
+        case EventType.SCHEDULES:
             thr = threading.Thread(
                 target=thread_runner,
                 args=[
@@ -72,31 +81,47 @@ def start_thread(target: str, stop: StopSetup, queue: Queue[ScheduleEvent]):
                 ],
             )
             thr.start()
-            return TaskTracker(task=thr, stop=stop)
-        case "predictions":
-            exp_time = datetime.now().astimezone(UTC) + timedelta(
-                minutes=randint(MIN_TASK_RESTART_MINS, MAX_TASK_RESTART_MINS)
-            )
+            return TaskTracker(task=thr, stop=stop, event_type=target)
+        case EventType.PREDICTIONS:
             thr = threading.Thread(
                 target=thread_runner,
                 args=[
                     target,
+                    queue,
+                    stop.transit_time_min,
                     stop.stop_id,
                     stop.route_filter,
                     stop.direction_filter,
-                    queue,
-                    stop.transit_time_min,
                     exp_time,
                 ],
             )
             thr.start()
-            return TaskTracker(task=thr, expiration_time=exp_time, stop=stop)
+            return TaskTracker(
+                task=thr, expiration_time=exp_time, stop=stop, event_type=target
+            )
+        case EventType.VEHICLES:
+            thr = threading.Thread(
+                target=thread_runner,
+                kwargs={
+                    "target": target,
+                    "route_id": route_id,
+                    "queue": queue,
+                    "expiration_time": exp_time,
+                },
+            )
+            thr.start()
+            return TaskTracker(
+                task=thr,
+                expiration_time=exp_time,
+                route_id=route_id,
+                event_type=target,
+            )
 
 
 async def __main__():
     config = load_config()
 
-    queue = Queue[ScheduleEvent]()
+    queue = Queue[ScheduleEvent | VehicleRedisSchema]()
     tasks = list[TaskTracker]()
 
     start_http_server(int(os.getenv("IMT_PROM_PORT", "8000")))
@@ -104,12 +129,21 @@ async def __main__():
     process_thr = threading.Thread(target=process_queue, daemon=True, args=[queue])
     process_thr.start()
 
-    tasks.append(TaskTracker(process_thr, stop=None))
+    tasks.append(TaskTracker(process_thr, stop=None, event_type=EventType.OTHER))
     for stop in config.stops:
         if stop.schedule_only:
-            tasks.append(start_thread("schedule", stop, queue))
+            tasks.append(start_thread(EventType.SCHEDULES, stop=stop, queue=queue))
         else:
-            tasks.append(start_thread("predictions", stop, queue))
+            tasks.append(start_thread(EventType.PREDICTIONS, stop=stop, queue=queue))
+    if config.vehicles_by_route:
+        for route in config.vehicles_by_route:
+            tasks.append(
+                start_thread(
+                    EventType.VEHICLES,
+                    route_id=config.vehicles_by_route,
+                    queue=queue,
+                )
+            )
 
     while True:
         running_threads.set(len(tasks))
@@ -120,7 +154,18 @@ async def __main__():
                 and datetime.now().astimezone(UTC) > task.expiration_time
             ) or not task.task.is_alive():
                 tasks.remove(task)
-                tasks.append(start_thread("predictions", task.stop, queue))
+                if task.event_type == EventType.VEHICLES:
+                    tasks.append(
+                        start_thread(
+                            EventType.VEHICLES,
+                            route_id=config.vehicles_by_route,
+                            queue=queue,
+                        )
+                    )
+                else:
+                    tasks.append(
+                        start_thread(EventType.VEHICLES, stop=task.stop, queue=queue)
+                    )
 
 
 if __name__ == "__main__":

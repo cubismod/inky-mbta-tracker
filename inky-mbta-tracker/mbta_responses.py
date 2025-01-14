@@ -307,3 +307,30 @@ class Facility(BaseModel):
 class Facilities(BaseModel):
     links: Optional[dict] = None
     data: list[FacilityResource]
+
+
+# not every field is being included in responses
+class VehicleAttributes(BaseModel):
+    current_status: str = ""
+    direction_id: int
+    latitude: float = 0
+    longitude: float = 0
+    speed: Optional[float] = None
+
+
+class TypeAndIDinData(BaseModel):
+    data: Optional[TypeAndID] = None
+
+
+class VehicleRelationships(BaseModel):
+    route: TypeAndIDinData
+    stop: Optional[TypeAndIDinData] = None
+    trip: Optional[TypeAndIDinData] = None
+
+
+class Vehicle(BaseModel):
+    id: str
+    links: Optional[dict] = None
+    attributes: VehicleAttributes
+    relationships: VehicleRelationships
+    type: str
