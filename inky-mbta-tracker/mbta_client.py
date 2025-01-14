@@ -477,7 +477,7 @@ async def watch_server_side_events(
     async for event in aiosseclient(endpoint, headers=headers):
         if datetime.now().astimezone(UTC) > watcher.expiration_time:
             logger.info(
-                f"Restarting thread {watcher.watcher_type} - {watcher.stop_id}/{watcher.route_type}"
+                f"Restarting thread {watcher.watcher_type} - {watcher.stop_id}/{watcher.route}"
             )
             return
         await watcher.parse_live_api_response(
@@ -502,9 +502,6 @@ async def watch_static_schedule(
             watcher_type=EventType.SCHEDULES,
         )
         async with aiohttp.ClientSession(mbta_v3) as session:
-            await watcher.save_stop(session)
-            if watcher.stop:
-                tracker_executions.labels(watcher.stop.data.attributes.name).inc()
             await watcher.save_schedule(transit_time_min, queue, session)
         await sleep(10800)  # 3 hours
 

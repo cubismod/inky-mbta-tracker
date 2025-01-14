@@ -92,6 +92,12 @@ class Tracker:
             f"action={event.action} time={event.time.astimezone(ZoneInfo('US/Eastern')).strftime('%c')} route_id={event.route_id} route_type={event.route_type} headsign={event.headsign} stop={event.stop} id={event.id}, transit_time_min={event.transit_time_min}, alerting={event.alerting}, bikes_allowed={event.bikes_allowed}"
         )
 
+    @staticmethod
+    def log_vehicle(event: VehicleRedisSchema):
+        logger.info(
+            f"action={event.action} route={event.route} vehicle_id={event.id} lat={event.latitude} long={event.longitude} status={event.current_status} speed={event.speed}"
+        )
+
     async def cleanup(self, pipeline: Pipeline):
         try:
             obsolete_ids = await self.redis.zrange(
@@ -147,6 +153,7 @@ class Tracker:
             redis_key = f"vehicle-{event.id}"
             await pipeline.set(redis_key, event.model_dump_json())
             vehicle_events.labels(action, event.route, event.id).inc()
+            self.log_vehicle(event)
 
     async def rm(self, event: ScheduleEvent | VehicleRedisSchema, pipeline: Pipeline):
         try:
@@ -158,6 +165,7 @@ class Tracker:
             if isinstance(event, VehicleRedisSchema):
                 vehicle_events.labels("remove", event.route, event.id).inc()
                 await pipeline.delete(f"vehicle-{event.id}")
+                self.log_vehicle(event)
         except ResponseError as err:
             logger.error("unable to get key from redis", exc_info=err)
         except ValidationError as err:

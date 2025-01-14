@@ -136,11 +136,11 @@ async def __main__():
         else:
             tasks.append(start_thread(EventType.PREDICTIONS, stop=stop, queue=queue))
     if config.vehicles_by_route:
-        for route in config.vehicles_by_route:
+        for route_id in config.vehicles_by_route:
             tasks.append(
                 start_thread(
                     EventType.VEHICLES,
-                    route_id=config.vehicles_by_route,
+                    route_id=route_id,
                     queue=queue,
                 )
             )
