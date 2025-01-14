@@ -4,6 +4,7 @@ import os
 import random
 from asyncio import CancelledError, Runner, sleep
 from datetime import UTC, datetime, timedelta
+from enum import Enum
 from queue import Queue
 from typing import Optional
 
@@ -24,10 +25,11 @@ from mbta_responses import (
     TripResource,
     Trips,
     TypeAndID,
+    Vehicle,
 )
 from prometheus import mbta_api_requests, tracker_executions
 from pydantic import TypeAdapter, ValidationError
-from schedule_tracker import ScheduleEvent, dummy_schedule_event
+from schedule_tracker import ScheduleEvent, VehicleRedisSchema, dummy_schedule_event
 from tenacity import (
     before_log,
     before_sleep_log,
@@ -43,10 +45,20 @@ mbta_v3 = "https://api-v3.mbta.com"
 logger = logging.getLogger(__name__)
 
 
+class EventType(Enum):
+    OTHER = -1
+    PREDICTIONS = 0
+    SCHEDULES = 1
+    VEHICLES = 2
+
+
 class Watcher:
-    stop_id: str
-    route: str | None
-    direction: int | None
+    # by default is predictions, can also be vehicles for a live
+    # vehicle watcher
+    watcher_type: EventType
+    stop_id: Optional[str]
+    route: Optional[str]
+    direction: Optional[str]
     trips: ExpiringDict[str, TripResource]
     # key is trip, value is if there is an active alert
     alerts: ExpiringDict[str, bool]
@@ -58,11 +70,13 @@ class Watcher:
 
     def __init__(
         self,
-        stop_id: str,
-        route: str | None,
-        direction: int | None,
+        stop_id: Optional[str] = None,
+        route: Optional[str] = None,
+        direction: Optional[int] = None,
         expiration_time: Optional[datetime] = None,
+        route_type: Optional[str] = None,
         schedule_only=False,
+        watcher_type=EventType.PREDICTIONS,
     ):
         thirty_hours = 108000
         thirty_min = 1800
@@ -74,8 +88,9 @@ class Watcher:
         self.alerts = ExpiringDict(thirty_min)
         self.routes = dict()
         self.expiration_time = expiration_time
+        self.watcher_type = watcher_type
         logger.info(
-            f"Init mbta_client for stop={stop_id}, route={route}, direction={direction}"
+            f"Init mbta_client for stop={stop_id}, route={route}, direction={direction}, route_type={route_type}"
         )
         self.schedule_only = schedule_only
 
@@ -96,48 +111,102 @@ class Watcher:
             return hs
         return ""
 
-    async def parse_schedule_response(
+    async def parse_live_api_response(
         self,
         data: str,
         event_type: str,
-        queue: Queue[ScheduleEvent],
-        transit_time_min: int,
+        queue: Queue[ScheduleEvent | VehicleRedisSchema],
+        transit_time_min: Optional[int],
         session: ClientSession,
     ):
         # https://www.mbta.com/developers/v3-api/streaming
         try:
             match event_type:
                 case "reset":
-                    ta = TypeAdapter(list[PredictionResource])
-                    prediction = ta.validate_json(data, strict=False)
-                    for item in prediction:
-                        await self.save_trip(item, session)
-                        await self.queue_schedule_event(
-                            item, "reset", queue, transit_time_min, session
-                        )
-                    if len(prediction) == 0:
-                        await self.save_schedule(
-                            transit_time_min, queue, session, timedelta(hours=4)
-                        )
+                    if (
+                        self.watcher_type == EventType.PREDICTIONS
+                        or self.watcher_type == EventType.SCHEDULES
+                    ):
+                        ta = TypeAdapter(list[PredictionResource])
+                        prediction = ta.validate_json(data, strict=False)
+                        for item in prediction:
+                            await self.save_trip(item, session)
+                            await self.queue_event(
+                                item,
+                                "reset",
+                                queue,
+                                transit_time_min=transit_time_min,
+                                session=session,
+                            )
+                        if len(prediction) == 0:
+                            await self.save_schedule(
+                                transit_time_min, queue, session, timedelta(hours=4)
+                            )
+                    else:
+                        ta = TypeAdapter(list[Vehicle])
+                        vehicles = ta.validate_json(data, strict=False)
+                        for v in vehicles:
+                            await self.queue_event(
+                                v, event_type, queue, session=session
+                            )
+
                 case "add":
-                    prediction = PredictionResource.model_validate_json(
-                        data, strict=False
-                    )
-                    await self.save_trip(prediction, session)
-                    await self.queue_schedule_event(
-                        prediction, "add", queue, transit_time_min, session
-                    )
+                    if (
+                        self.watcher_type == EventType.PREDICTIONS
+                        or self.watcher_type == EventType.SCHEDULES
+                    ):
+                        prediction = PredictionResource.model_validate_json(
+                            data, strict=False
+                        )
+                        await self.save_trip(prediction, session)
+                        await self.queue_event(
+                            prediction,
+                            "add",
+                            queue,
+                            transit_time_min=transit_time_min,
+                            session=session,
+                        )
+                    else:
+                        vehicle = Vehicle.model_validate_json(data, strict=False)
+                        await self.queue_event(vehicle, event_type, queue, session)
                 case "update":
-                    prediction = PredictionResource.model_validate_json(
-                        data, strict=False
-                    )
-                    await self.queue_schedule_event(
-                        prediction, "update", queue, transit_time_min, session
-                    )
+                    if (
+                        self.watcher_type == EventType.PREDICTIONS
+                        or self.watcher_type == EventType.SCHEDULES
+                    ):
+                        prediction = PredictionResource.model_validate_json(
+                            data, strict=False
+                        )
+                        await self.queue_event(
+                            prediction,
+                            "update",
+                            queue,
+                            transit_time_min=transit_time_min,
+                            session=session,
+                        )
+                    else:
+                        vehicle = Vehicle.model_validate_json(data, strict=False)
+                        await self.queue_event(vehicle, event_type, queue, session)
                 case "remove":
-                    schedule = TypeAndID.model_validate_json(data, strict=False)
+                    type_and_id = TypeAndID.model_validate_json(data, strict=False)
                     # directly interact with the queue here to use a dummy object
-                    queue.put(dummy_schedule_event(schedule.id))
+                    if (
+                        self.watcher_type == EventType.PREDICTIONS
+                        or self.watcher_type == EventType.SCHEDULES
+                    ):
+                        queue.put(dummy_schedule_event(type_and_id.id))
+                    else:
+                        queue.put(
+                            VehicleRedisSchema(
+                                longitude=0,
+                                latitude=0,
+                                direction_id=0,
+                                current_status="",
+                                id=type_and_id.id,
+                                action="remove",
+                                route=self.route,
+                            )
+                        )
 
         except ValidationError as err:
             logger.error("Unable to parse schedule", exc_info=err)
@@ -185,54 +254,72 @@ class Watcher:
         inp = inp.replace("Parkway", "Pkwy")
         return inp
 
-    async def queue_schedule_event(
+    async def queue_event(
         self,
-        item: PredictionResource | ScheduleResource,
+        item: PredictionResource | ScheduleResource | Vehicle,
         event_type: str,
-        queue: Queue[ScheduleEvent],
-        transit_time_min: int,
+        queue: Queue[ScheduleEvent | VehicleRedisSchema],
         session: ClientSession,
+        transit_time_min: Optional[int] = None,
     ):
-        schedule_time = self.determine_time(item.attributes)
-        if schedule_time and schedule_time > datetime.now().astimezone(UTC):
-            await self.save_route(item, session)
-            route_id = item.relationships.route.data.id
-            headsign = self.get_headsign(item.relationships.trip.data.id)
+        if (
+            self.watcher_type == EventType.PREDICTIONS
+            or self.watcher_type == EventType.SCHEDULES
+        ):
+            schedule_time = self.determine_time(item.attributes)
+            if schedule_time and schedule_time > datetime.now().astimezone(UTC):
+                await self.save_route(item, session)
+                route_id = item.relationships.route.data.id
+                headsign = self.get_headsign(item.relationships.trip.data.id)
 
-            # drop events that have the same stop & headsign as that train cannot be
-            # immediately boarded in most cases so there is no sense in showing it as a departure
-            if headsign == self.stop.data.attributes.name:
-                logger.info(f"Dropping invalid schedule event {headsign}/{headsign}")
-                return
-            if route_id.startswith("Green"):
-                branch = route_id[-1:]
-                headsign = f"{branch} - {headsign}"
-            if route_id.startswith("CR"):
-                line = route_id.split("-")
-                headsign = f"{headsign} - {line[1]} Ln"
-            route_type = self.routes[route_id].attributes.type
-            alerting = False
-            trip = ""
-            bikes_allowed = False
-            if item.relationships.trip.data:
-                trip = item.relationships.trip.data.id
-                trip_info = self.trips[trip]
-                if trip_info:
-                    bikes_allowed = self.bikes_allowed(trip_info)
-                alerting = await self.get_alerting_state(trip, session)
+                # drop events that have the same stop & headsign as that train cannot be
+                # immediately boarded in most cases so there is no sense in showing it as a departure
+                if headsign == self.stop.data.attributes.name:
+                    logger.info(
+                        f"Dropping invalid schedule event {headsign}/{headsign}"
+                    )
+                    return
+                if route_id.startswith("Green"):
+                    branch = route_id[-1:]
+                    headsign = f"{branch} - {headsign}"
+                if route_id.startswith("CR"):
+                    line = route_id.split("-")
+                    headsign = f"{headsign} - {line[1]} Ln"
+                route_type = self.routes[route_id].attributes.type
+                alerting = False
+                trip = ""
+                bikes_allowed = False
+                if item.relationships.trip.data:
+                    trip = item.relationships.trip.data.id
+                    trip_info = self.trips[trip]
+                    if trip_info:
+                        bikes_allowed = self.bikes_allowed(trip_info)
+                    alerting = await self.get_alerting_state(trip, session)
 
-            event = ScheduleEvent(
+                event = ScheduleEvent(
+                    action=event_type,
+                    time=schedule_time,
+                    route_id=route_id,
+                    route_type=route_type,
+                    headsign=self.abbreviate(headsign),
+                    id=item.id,
+                    stop=self.abbreviate(self.stop.data.attributes.name),
+                    transit_time_min=transit_time_min,
+                    trip_id=trip,
+                    alerting=alerting,
+                    bikes_allowed=bikes_allowed,
+                )
+                queue.put(event)
+        else:
+            event = VehicleRedisSchema(
                 action=event_type,
-                time=schedule_time,
-                route_id=route_id,
-                route_type=route_type,
-                headsign=self.abbreviate(headsign),
                 id=item.id,
-                stop=self.abbreviate(self.stop.data.attributes.name),
-                transit_time_min=transit_time_min,
-                trip_id=trip,
-                alerting=alerting,
-                bikes_allowed=bikes_allowed,
+                current_status=item.attributes.current_status,
+                direction_id=item.attributes.direction_id,
+                latitude=item.attributes.latitude,
+                longitude=item.attributes.longitude,
+                speed=item.attributes.speed,
+                route=item.relationships.route.data.id,
             )
             queue.put(event)
 
@@ -306,7 +393,7 @@ class Watcher:
     async def save_schedule(
         self,
         transit_time_min: int,
-        queue: Queue[ScheduleEvent],
+        queue: Queue[ScheduleEvent | VehicleRedisSchema],
         session: ClientSession,
         time_limit: Optional[timedelta] = None,
     ):
@@ -333,8 +420,12 @@ class Watcher:
                 for item in schedules.data:
                     await self.save_trip(item, session)
                     await self.save_route(item, session)
-                    await self.queue_schedule_event(
-                        item, "reset", queue, transit_time_min, session
+                    await self.queue_event(
+                        item,
+                        "reset",
+                        queue,
+                        transit_time_min=transit_time_min,
+                        session=session,
                     )
             except ValidationError as err:
                 logger.error("Unable to parse schedule", exc_info=err)
@@ -344,30 +435,29 @@ class Watcher:
         before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
     )
     async def save_stop(self, session: ClientSession):
-        async with session.get(
-            f"/stops/{self.stop_id}?api_key={auth_token}"
-        ) as response:
-            try:
-                body = await response.text()
-                mbta_api_requests.labels("stops").inc()
-                stop = Stop.model_validate_json(body, strict=False)
-                logger.info(f"saved stop {stop.data.attributes.name}")
-                self.stop = stop
-            except ValidationError as err:
-                logger.error("Unable to parse stop", exc_info=err)
-        # retrieve bike facility info
-        async with session.get(
-            f"/facilities/?filter[stop]={self.stop_id}&filter[type]=BIKE_STORAGE"
-        ) as response:
-            try:
-                body = await response.text()
-                mbta_api_requests.labels("facilities").inc()
-                facilities = Facilities.model_validate_json(body, strict=False)
-                self.facilities = facilities
-            except ValidationError as err:
-                logger.error("Unable to parse facility", exc_info=err)
-
-        return self.stop
+        if self.stop_id:
+            async with session.get(
+                f"/stops/{self.stop_id}?api_key={auth_token}"
+            ) as response:
+                try:
+                    body = await response.text()
+                    mbta_api_requests.labels("stops").inc()
+                    stop = Stop.model_validate_json(body, strict=False)
+                    logger.info(f"saved stop {stop.data.attributes.name}")
+                    self.stop = stop
+                except ValidationError as err:
+                    logger.error("Unable to parse stop", exc_info=err)
+            # retrieve bike facility info
+            async with session.get(
+                f"/facilities/?filter[stop]={self.stop_id}&filter[type]=BIKE_STORAGE"
+            ) as response:
+                try:
+                    body = await response.text()
+                    mbta_api_requests.labels("facilities").inc()
+                    facilities = Facilities.model_validate_json(body, strict=False)
+                    self.facilities = facilities
+                except ValidationError as err:
+                    logger.error("Unable to parse facility", exc_info=err)
 
 
 @retry(
@@ -380,15 +470,17 @@ async def watch_server_side_events(
     watcher: Watcher,
     endpoint: str,
     headers: dict[str, str],
-    queue: Queue[ScheduleEvent],
-    transit_time_min: int,
+    queue: Queue[ScheduleEvent | VehicleRedisSchema],
     session: ClientSession,
+    transit_time_min: Optional[int] = None,
 ):
     async for event in aiosseclient(endpoint, headers=headers):
         if datetime.now().astimezone(UTC) > watcher.expiration_time:
-            logger.info(f"Restarting thread ${watcher.stop_id}")
+            logger.info(
+                f"Restarting thread {watcher.watcher_type} - {watcher.stop_id}/{watcher.route_type}"
+            )
             return
-        await watcher.parse_schedule_response(
+        await watcher.parse_live_api_response(
             event.data, event.event, queue, transit_time_min, session
         )
         await sleep(random.randint(1, 30))
@@ -398,23 +490,50 @@ async def watch_static_schedule(
     stop_id: str,
     route: str | None,
     direction: int | None,
-    queue: Queue[ScheduleEvent],
+    queue: Queue[ScheduleEvent | VehicleRedisSchema],
     transit_time_min: int,
 ):
     while True:
-        watcher = Watcher(stop_id, route, direction, schedule_only=True)
+        watcher = Watcher(
+            stop_id=stop_id,
+            route=route,
+            direction=direction,
+            schedule_only=True,
+            watcher_type=EventType.SCHEDULES,
+        )
         async with aiohttp.ClientSession(mbta_v3) as session:
             await watcher.save_stop(session)
-            tracker_executions.labels(watcher.stop.data.attributes.name).inc()
+            if watcher.stop:
+                tracker_executions.labels(watcher.stop.data.attributes.name).inc()
             await watcher.save_schedule(transit_time_min, queue, session)
         await sleep(10800)  # 3 hours
+
+
+async def watch_vehicles(
+    queue: Queue[ScheduleEvent | VehicleRedisSchema],
+    expiration_time: datetime,
+    route_id: str,
+):
+    endpoint = f"{mbta_v3}/vehicles?filter[revenue]=REVENUE&fields[vehicle]=direction_id,latitude,longitude,speed,current_status&filter[route]={route_id}&api_key={auth_token}"
+    mbta_api_requests.labels("vehicles").inc()
+    headers = {"accept": "text/event-stream"}
+    watcher = Watcher(
+        route=route_id,
+        watcher_type=EventType.VEHICLES,
+        expiration_time=expiration_time,
+    )
+    async with aiohttp.ClientSession(mbta_v3) as session:
+        tracker_executions.labels("vehicles").inc()
+        await watch_server_side_events(
+            watcher, endpoint, headers, queue, session=session
+        )
 
 
 async def watch_station(
     stop_id: str,
     route: str | None,
     direction: str | None,
-    queue: Queue[ScheduleEvent],
+    queue: Queue[ScheduleEvent | VehicleRedisSchema],
     transit_time_min: int,
     expiration_time: datetime,
 ):
@@ -425,27 +544,35 @@ async def watch_station(
     if direction != "":
         endpoint += f"&filter[direction_id]={direction}"
     headers = {"accept": "text/event-stream"}
-    watcher = Watcher(stop_id, route, direction, expiration_time)
+    watcher = Watcher(
+        stop_id, route, direction, expiration_time, watcher_type=EventType.PREDICTIONS
+    )
     async with aiohttp.ClientSession(mbta_v3) as session:
         await watcher.save_stop(session)
         tracker_executions.labels(watcher.stop.data.attributes.name).inc()
         await watch_server_side_events(
-            watcher, endpoint, headers, queue, transit_time_min, session
+            watcher,
+            endpoint,
+            headers,
+            queue,
+            transit_time_min=transit_time_min,
+            session=session,
         )
 
 
 def thread_runner(
-    target: str,
-    stop_id: str,
-    route: str | None,
-    direction: str | None,
-    queue: Queue[ScheduleEvent],
-    transit_time_min: int,
+    target: EventType,
+    queue: Queue[ScheduleEvent | VehicleRedisSchema],
+    transit_time_min: int = 0,
+    stop_id: Optional[str] = None,
+    route: Optional[str] = None,
+    direction: Optional[str] = None,
     expiration_time: Optional[datetime] = None,
+    route_id: Optional[str] = None,
 ):
     with Runner() as runner:
         match target:
-            case "schedule":
+            case EventType.SCHEDULES:
                 runner.run(
                     watch_static_schedule(
                         stop_id,
@@ -455,7 +582,7 @@ def thread_runner(
                         transit_time_min,
                     )
                 )
-            case "predictions":
+            case EventType.PREDICTIONS:
                 runner.run(
                     watch_station(
                         stop_id,
@@ -464,5 +591,13 @@ def thread_runner(
                         queue,
                         transit_time_min,
                         expiration_time,
+                    )
+                )
+            case EventType.VEHICLES:
+                runner.run(
+                    watch_vehicles(
+                        queue,
+                        expiration_time,
+                        route_id,
                     )
                 )

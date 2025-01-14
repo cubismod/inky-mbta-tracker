@@ -1,5 +1,6 @@
 import os
 import pathlib
+from typing import Optional
 
 from pydantic import BaseModel, Field
 
@@ -14,6 +15,9 @@ class StopSetup(BaseModel):
 
 class Config(BaseModel):
     stops: list[StopSetup]
+    # fetches real-time vehicle information with the numbers referring to
+    # the routes
+    vehicles_by_route: Optional[list[str]] = None
 
 
 def load_config():
