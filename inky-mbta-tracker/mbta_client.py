@@ -1,7 +1,6 @@
 # client that keeps track of events on the stops specified
 import logging
 import os
-import random
 from asyncio import CancelledError, Runner, sleep
 from datetime import UTC, datetime, timedelta
 from enum import Enum
@@ -483,7 +482,6 @@ async def watch_server_side_events(
         await watcher.parse_live_api_response(
             event.data, event.event, queue, transit_time_min, session
         )
-        await sleep(random.randint(1, 30))
 
 
 async def watch_static_schedule(

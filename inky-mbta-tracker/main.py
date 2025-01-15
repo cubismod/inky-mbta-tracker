@@ -10,6 +10,7 @@ from typing import Optional
 
 from config import StopSetup, load_config
 from dotenv import load_dotenv
+from geojson_creator import run
 from mbta_client import EventType, thread_runner
 from prometheus import running_threads
 from prometheus_client import start_http_server
@@ -144,6 +145,9 @@ async def __main__():
                     queue=queue,
                 )
             )
+        geojson_thr = threading.Thread(target=run, daemon=True)
+        geojson_thr.start()
+        tasks.append(TaskTracker(geojson_thr, stop=None, event_type=EventType.OTHER))
 
     while True:
         running_threads.set(len(tasks))
