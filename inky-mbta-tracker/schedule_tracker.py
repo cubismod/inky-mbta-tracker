@@ -3,7 +3,6 @@ import os
 import time
 from asyncio import QueueEmpty, Runner
 from datetime import UTC, datetime, timedelta
-from os import environ
 from queue import Queue
 from typing import Optional
 
@@ -44,7 +43,7 @@ class VehicleRedisSchema(BaseModel):
     direction_id: int
     latitude: float
     longitude: float
-    speed: Optional[float] = None
+    speed: Optional[float] = 0
     route: str
 
 
@@ -69,7 +68,7 @@ class Tracker:
 
     def __init__(self):
         r = Redis(
-            host=environ.get("IMT_REDIS_ENDPOINT"),
+            host=os.environ.get("IMT_REDIS_ENDPOINT"),
             port=os.environ.get("IMT_REDIS_PORT", "6379"),
             password=os.environ.get("IMT_REDIS_PASSWORD"),
         )
@@ -94,7 +93,7 @@ class Tracker:
 
     @staticmethod
     def log_vehicle(event: VehicleRedisSchema):
-        logger.info(
+        logger.debug(
             f"action={event.action} route={event.route} vehicle_id={event.id} lat={event.latitude} long={event.longitude} status={event.current_status} speed={event.speed}"
         )
 
