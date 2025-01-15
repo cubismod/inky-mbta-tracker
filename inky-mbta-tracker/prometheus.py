@@ -4,6 +4,10 @@ schedule_events = Counter(
     "imt_schedule_events", "Processed Schedule Events", ["action", "route_id", "stop"]
 )
 
+vehicle_events = Counter(
+    "imt_vehicle_events", "Any updates to vehicles", ["action", "route_id", "id"]
+)
+
 tracker_executions = Counter("imt_tracker_executions", "Tracker Executions", ["stop"])
 
 mbta_api_requests = Gauge(

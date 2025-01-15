@@ -3,13 +3,12 @@ import os
 import time
 from asyncio import QueueEmpty, Runner
 from datetime import UTC, datetime, timedelta
-from os import environ
 from queue import Queue
 from typing import Optional
 
 import humanize
 from paho.mqtt import MQTTException, publish
-from prometheus import schedule_events
+from prometheus import schedule_events, vehicle_events
 from pydantic import BaseModel, ValidationError
 from redis import ResponseError
 from redis.asyncio.client import Pipeline, Redis
@@ -37,6 +36,17 @@ class ScheduleEvent(BaseModel):
     bikes_allowed: bool = False
 
 
+class VehicleRedisSchema(BaseModel):
+    action: str
+    id: str
+    current_status: str
+    direction_id: int
+    latitude: float
+    longitude: float
+    speed: Optional[float] = 0
+    route: str
+
+
 def dummy_schedule_event(event_id: str):
     return ScheduleEvent(
         action="remove",
@@ -58,7 +68,7 @@ class Tracker:
 
     def __init__(self):
         r = Redis(
-            host=environ.get("IMT_REDIS_ENDPOINT"),
+            host=os.environ.get("IMT_REDIS_ENDPOINT"),
             port=os.environ.get("IMT_REDIS_PORT", "6379"),
             password=os.environ.get("IMT_REDIS_PASSWORD"),
         )
@@ -81,6 +91,12 @@ class Tracker:
             f"action={event.action} time={event.time.astimezone(ZoneInfo('US/Eastern')).strftime('%c')} route_id={event.route_id} route_type={event.route_type} headsign={event.headsign} stop={event.stop} id={event.id}, transit_time_min={event.transit_time_min}, alerting={event.alerting}, bikes_allowed={event.bikes_allowed}"
         )
 
+    @staticmethod
+    def log_vehicle(event: VehicleRedisSchema):
+        logger.debug(
+            f"action={event.action} route={event.route} vehicle_id={event.id} lat={event.latitude} long={event.longitude} status={event.current_status} speed={event.speed}"
+        )
+
     async def cleanup(self, pipeline: Pipeline):
         try:
             obsolete_ids = await self.redis.zrange(
@@ -97,48 +113,58 @@ class Tracker:
         except ResponseError as err:
             logger.error("unable to cleanup old entries", exc_info=err)
 
-    async def add(self, event: ScheduleEvent, pipeline: Pipeline, action: str):
-        # only add events in the future
-        if event.time > datetime.now().astimezone(UTC):
-            trip_redis_key = f"trip-{event.trip_id}-{event.stop.replace(' ', '_')}"
-            existing_event = await self.redis.get(trip_redis_key)
-            if existing_event:
-                dec_ee = existing_event.decode("utf-8")
-                if dec_ee != event.id and dec_ee.startswith("schedule"):
-                    logger.info(
-                        f"Removing existing schedule entry with id {dec_ee} as it has been replaced with {event.id}, trip_id={event.trip_id}"
-                    )
-                    await self.rm(dummy_schedule_event(existing_event), pipeline)
-                if dec_ee.startswith("prediction") and event.id.startswith("schedule"):
-                    # don't override realtime predictions
-                    return
-            await pipeline.set(
-                trip_redis_key,
-                event.id,
-                ex=(event.time - datetime.now().astimezone(UTC)) + timedelta(hours=1),
-            )
-
-            await pipeline.set(
-                event.id,
-                event.model_dump_json(exclude={"trip_id"}),
-                ex=self.calculate_time_diff(event) + timedelta(minutes=1),
-            )
-            await pipeline.zadd("time", {event.id: int(event.time.timestamp())})
-            schedule_events.labels(action, event.route_id, event.stop).inc()
-            self.log_prediction(event)
-
-    async def rm(self, event: ScheduleEvent, pipeline: Pipeline):
-        try:
-            # fetch existing event metadata so we can keep tabs in prometheus
-            dec_ee = await self.redis.get(event.id)
-            if dec_ee:
-                event = ScheduleEvent.model_validate_json(
-                    dec_ee.decode("utf-8"), strict=False
+    async def add(
+        self, event: ScheduleEvent | VehicleRedisSchema, pipeline: Pipeline, action: str
+    ):
+        if isinstance(event, ScheduleEvent):
+            # only add events in the future
+            if event.time > datetime.now().astimezone(UTC):
+                trip_redis_key = f"trip-{event.trip_id}-{event.stop.replace(' ', '_')}"
+                existing_event = await self.redis.get(trip_redis_key)
+                if existing_event:
+                    dec_ee = existing_event.decode("utf-8")
+                    if dec_ee != event.id and dec_ee.startswith("schedule"):
+                        logger.info(
+                            f"Removing existing schedule entry with id {dec_ee} as it has been replaced with {event.id}, trip_id={event.trip_id}"
+                        )
+                        await self.rm(dummy_schedule_event(existing_event), pipeline)
+                    if dec_ee.startswith("prediction") and event.id.startswith(
+                        "schedule"
+                    ):
+                        # don't override realtime predictions
+                        return
+                await pipeline.set(
+                    trip_redis_key,
+                    event.id,
+                    ex=(event.time - datetime.now().astimezone(UTC))
+                    + timedelta(hours=1),
                 )
-            await pipeline.delete(event.id)
-            await pipeline.zrem("time", int(event.time.timestamp()))
-            schedule_events.labels("remove", event.route_id, event.stop).inc()
-            self.log_prediction(event)
+
+                await pipeline.set(
+                    event.id,
+                    event.model_dump_json(exclude={"trip_id"}),
+                    ex=self.calculate_time_diff(event) + timedelta(minutes=1),
+                )
+                await pipeline.zadd("time", {event.id: int(event.time.timestamp())})
+                schedule_events.labels(action, event.route_id, event.stop).inc()
+                self.log_prediction(event)
+        if isinstance(event, VehicleRedisSchema):
+            redis_key = f"vehicle-{event.id}"
+            await pipeline.set(redis_key, event.model_dump_json())
+            vehicle_events.labels(action, event.route, event.id).inc()
+            self.log_vehicle(event)
+
+    async def rm(self, event: ScheduleEvent | VehicleRedisSchema, pipeline: Pipeline):
+        try:
+            if isinstance(event, ScheduleEvent):
+                await pipeline.delete(event.id)
+                await pipeline.zrem("time", int(event.time.timestamp()))
+                schedule_events.labels("remove", event.route_id, event.stop).inc()
+                self.log_prediction(event)
+            if isinstance(event, VehicleRedisSchema):
+                vehicle_events.labels("remove", event.route, event.id).inc()
+                await pipeline.delete(f"vehicle-{event.id}")
+                self.log_vehicle(event)
         except ResponseError as err:
             logger.error("unable to get key from redis", exc_info=err)
         except ValidationError as err:
@@ -248,7 +274,9 @@ class Tracker:
         if rounded_time < 0:
             return f"{prediction_indicator} DEP"
 
-    async def process_schedule_event(self, event: ScheduleEvent, pipeline: Pipeline):
+    async def process_queue_item(
+        self, event: ScheduleEvent | VehicleRedisSchema, pipeline: Pipeline
+    ):
         match event.action:
             case "reset":
                 await self.add(event, pipeline, "reset")
@@ -260,12 +288,12 @@ class Tracker:
                 await self.rm(event, pipeline)
 
 
-async def execute(tracker: Tracker, queue: Queue[ScheduleEvent]):
+async def execute(tracker: Tracker, queue: Queue[ScheduleEvent | VehicleRedisSchema]):
     pipeline = tracker.redis.pipeline()
     while queue.qsize() != 0:
         try:
-            schedule_event = queue.get()
-            await tracker.process_schedule_event(schedule_event, pipeline)
+            item = queue.get()
+            await tracker.process_queue_item(item, pipeline)
         except QueueEmpty:
             break
     await tracker.cleanup(pipeline)
