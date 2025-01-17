@@ -166,3 +166,5 @@ config_*.json
 .DS_Store
 imt_profile.txt
 profile.*
+
+imt-out.json

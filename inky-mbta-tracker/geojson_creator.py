@@ -68,6 +68,7 @@ async def create_json():
                             "speed": vehicle_info.speed,
                             "direction": vehicle_info.direction_id,
                             "id": vehicle_info.id,
+                            "stop": vehicle_info.stop,
                         },
                     )
                     features.append(feature)
@@ -76,7 +77,7 @@ async def create_json():
                 ) as file:
                     file.write(dumps(FeatureCollection(features=features)))
 
-            await sleep(30)
+            await sleep(45)
         except ResponseError as err:
             logger.error("unable to run redis command", exc_info=err)
         except ValidationError as err:

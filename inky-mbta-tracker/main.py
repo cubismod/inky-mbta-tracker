@@ -72,29 +72,29 @@ def start_thread(
         case EventType.SCHEDULES:
             thr = threading.Thread(
                 target=thread_runner,
-                args=[
-                    target,
-                    stop.stop_id,
-                    stop.route_filter,
-                    stop.direction_filter,
-                    queue,
-                    stop.transit_time_min,
-                ],
+                kwargs={
+                    "target": target,
+                    "stop_id": stop.stop_id,
+                    "route": stop.route_filter,
+                    "direction": stop.direction_filter,
+                    "queue": queue,
+                    "transit_time_min": stop.transit_time_min,
+                },
             )
             thr.start()
             return TaskTracker(task=thr, stop=stop, event_type=target)
         case EventType.PREDICTIONS:
             thr = threading.Thread(
                 target=thread_runner,
-                args=[
-                    target,
-                    queue,
-                    stop.transit_time_min,
-                    stop.stop_id,
-                    stop.route_filter,
-                    stop.direction_filter,
-                    exp_time,
-                ],
+                kwargs={
+                    "target": target,
+                    "queue": queue,
+                    "transit_time_min": stop.transit_time_min,
+                    "stop_id": stop.stop_id,
+                    "route": stop.route_filter,
+                    "direction": stop.direction_filter,
+                    "expiration_time": exp_time,
+                },
             )
             thr.start()
             return TaskTracker(
@@ -105,7 +105,7 @@ def start_thread(
                 target=thread_runner,
                 kwargs={
                     "target": target,
-                    "route_id": route_id,
+                    "route": route_id,
                     "queue": queue,
                     "expiration_time": exp_time,
                 },
