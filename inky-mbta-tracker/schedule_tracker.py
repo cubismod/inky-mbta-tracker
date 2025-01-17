@@ -44,6 +44,7 @@ class VehicleRedisSchema(BaseModel):
     latitude: float
     longitude: float
     speed: Optional[float] = 0
+    stop: Optional[str] = None
     route: str
 
 

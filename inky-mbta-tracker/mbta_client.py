@@ -320,6 +320,8 @@ class Watcher:
                 speed=item.attributes.speed,
                 route=item.relationships.route.data.id,
             )
+            if item.relationships.stop.data:
+                event.stop = item.relationships.stop.data.id
             queue.put(event)
 
     @retry(
@@ -429,34 +431,37 @@ class Watcher:
             except ValidationError as err:
                 logger.error("Unable to parse schedule", exc_info=err)
 
+    async def save_own_stop(self, session: ClientSession):
+        stop_and_facilities = await self.get_stop(session, self.stop_id)
+        self.stop = stop_and_facilities[0]
+        self.facilities = stop_and_facilities[1]
+
     @retry(
-        wait=wait_exponential(multiplier=1, min=1, max=10),
+        wait=wait_random_exponential(multiplier=1, min=1),
         before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
     )
-    async def save_stop(self, session: ClientSession):
-        if self.stop_id:
-            async with session.get(
-                f"/stops/{self.stop_id}?api_key={auth_token}"
-            ) as response:
-                try:
-                    body = await response.text()
-                    mbta_api_requests.labels("stops").inc()
-                    stop = Stop.model_validate_json(body, strict=False)
-                    logger.info(f"saved stop {stop.data.attributes.name}")
-                    self.stop = stop
-                except ValidationError as err:
-                    logger.error("Unable to parse stop", exc_info=err)
-            # retrieve bike facility info
-            async with session.get(
-                f"/facilities/?filter[stop]={self.stop_id}&filter[type]=BIKE_STORAGE"
-            ) as response:
-                try:
-                    body = await response.text()
-                    mbta_api_requests.labels("facilities").inc()
-                    facilities = Facilities.model_validate_json(body, strict=False)
-                    self.facilities = facilities
-                except ValidationError as err:
-                    logger.error("Unable to parse facility", exc_info=err)
+    async def get_stop(self, session: ClientSession, stop_id: str):
+        stop = None
+        facilities = None
+        async with session.get(f"/stops/{stop_id}?api_key={auth_token}") as response:
+            try:
+                body = await response.text()
+                mbta_api_requests.labels("stops").inc()
+                stop = Stop.model_validate_json(body, strict=False)
+            except ValidationError as err:
+                logger.error("Unable to parse stop", exc_info=err)
+        # retrieve bike facility info
+        async with session.get(
+            f"/facilities/?filter[stop]={self.stop_id}&filter[type]=BIKE_STORAGE"
+        ) as response:
+            try:
+                body = await response.text()
+                mbta_api_requests.labels("facilities").inc()
+                facilities = Facilities.model_validate_json(body, strict=False)
+            except ValidationError as err:
+                logger.error("Unable to parse facility", exc_info=err)
+
+        return stop, facilities
 
 
 @retry(
@@ -500,6 +505,7 @@ async def watch_static_schedule(
             watcher_type=EventType.SCHEDULES,
         )
         async with aiohttp.ClientSession(mbta_v3) as session:
+            await watcher.save_own_stop(session)
             await watcher.save_schedule(transit_time_min, queue, session)
         await sleep(10800)  # 3 hours
 
@@ -543,7 +549,7 @@ async def watch_station(
         stop_id, route, direction, expiration_time, watcher_type=EventType.PREDICTIONS
     )
     async with aiohttp.ClientSession(mbta_v3) as session:
-        await watcher.save_stop(session)
+        await watcher.save_own_stop(session)
         tracker_executions.labels(watcher.stop.data.attributes.name).inc()
         await watch_server_side_events(
             watcher,
@@ -563,7 +569,6 @@ def thread_runner(
     route: Optional[str] = None,
     direction: Optional[str] = None,
     expiration_time: Optional[datetime] = None,
-    route_id: Optional[str] = None,
 ):
     with Runner() as runner:
         match target:
@@ -593,6 +598,6 @@ def thread_runner(
                     watch_vehicles(
                         queue,
                         expiration_time,
-                        route_id,
+                        route,
                     )
                 )
