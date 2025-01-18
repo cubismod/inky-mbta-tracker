@@ -158,6 +158,7 @@ async def create_json(config: Config):
                         write_file,
                         "w",
                     ) as file:
+                        logger.info("wrote geojson file")
                         file.write(
                             dumps(
                                 FeatureCollection(
