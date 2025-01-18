@@ -145,7 +145,7 @@ async def __main__():
                     queue=queue,
                 )
             )
-        geojson_thr = threading.Thread(target=run, daemon=True)
+        geojson_thr = threading.Thread(target=run, daemon=True, args=[config])
         geojson_thr.start()
         tasks.append(TaskTracker(geojson_thr, stop=None, event_type=EventType.OTHER))
 
