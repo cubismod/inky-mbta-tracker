@@ -34,7 +34,6 @@ from tenacity import (
     before_sleep_log,
     retry,
     retry_if_not_exception_type,
-    wait_exponential,
     wait_random_exponential,
 )
 from zoneinfo import ZoneInfo
@@ -325,7 +324,7 @@ class Watcher:
             queue.put(event)
 
     @retry(
-        wait=wait_exponential(multiplier=1, min=1, max=10),
+        wait=wait_random_exponential(multiplier=1, min=1),
         before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
     )
     async def save_trip(
@@ -347,7 +346,7 @@ class Watcher:
                     logger.error(f"Unable to parse trip, {err}")
 
     @retry(
-        wait=wait_exponential(multiplier=1, min=1, max=10),
+        wait=wait_random_exponential(multiplier=1, min=1),
         before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
     )
     async def save_route(
@@ -368,7 +367,7 @@ class Watcher:
                     logger.error(f"Unable to parse route, {err}")
 
     @retry(
-        wait=wait_exponential(multiplier=1, min=1, max=10),
+        wait=wait_random_exponential(multiplier=1, min=1),
         before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
     )
     async def save_alert(self, trip_id: str, session: ClientSession):
@@ -388,7 +387,7 @@ class Watcher:
                 logger.error("Unable to parse alert", exc_info=err)
 
     @retry(
-        wait=wait_exponential(multiplier=1, min=1, max=10),
+        wait=wait_random_exponential(multiplier=1, min=1),
         before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
     )
     async def save_schedule(

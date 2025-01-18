@@ -15,7 +15,7 @@ from redis.asyncio.client import Pipeline, Redis
 from tenacity import (
     before_sleep_log,
     retry,
-    wait_exponential,
+    wait_random_exponential,
 )
 from zoneinfo import ZoneInfo
 
@@ -311,7 +311,7 @@ async def execute(tracker: Tracker, queue: Queue[ScheduleEvent | VehicleRedisSch
 
 
 @retry(
-    wait=wait_exponential(multiplier=1, min=1, max=10),
+    wait=wait_random_exponential(multiplier=1, min=1),
     before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
 )
 def process_queue(queue: Queue[ScheduleEvent]):
