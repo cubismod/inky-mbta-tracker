@@ -145,7 +145,7 @@ async def create_json(config: Config):
                                 "speed": vehicle_info.speed,
                                 "direction": vehicle_info.direction_id,
                                 "id": vehicle_info.id,
-                                "stop": vehicle_info.stop
+                                "stop": vehicle_info.stop,
                             },
                         )
                         features.append(feature)
