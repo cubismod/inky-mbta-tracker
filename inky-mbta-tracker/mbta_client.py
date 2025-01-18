@@ -5,6 +5,7 @@ from asyncio import CancelledError, Runner, sleep
 from datetime import UTC, datetime, timedelta
 from enum import Enum
 from queue import Queue
+from random import randint
 from typing import Optional
 
 import aiohttp
@@ -28,6 +29,7 @@ from mbta_responses import (
 )
 from prometheus import mbta_api_requests, tracker_executions
 from pydantic import TypeAdapter, ValidationError
+from redis.asyncio import Redis
 from schedule_tracker import ScheduleEvent, VehicleRedisSchema, dummy_schedule_event
 from tenacity import (
     before_log,
@@ -48,6 +50,28 @@ class EventType(Enum):
     PREDICTIONS = 0
     SCHEDULES = 1
     VEHICLES = 2
+
+
+async def light_get_stop(redis: Redis, stop_id: Optional[str]):
+    if stop_id:
+        key = f"stop-{stop_id}"
+        res = await redis.get(key)
+        if res:
+            dec_v = res.decode("utf-8")
+            if dec_v:
+                return Stop.model_validate_json(
+                    strict=False, json_data=dec_v
+                ).data.attributes.description
+        else:
+            async with aiohttp.ClientSession(mbta_v3) as session:
+                watcher = Watcher(stop_id=stop_id, watcher_type=EventType.OTHER)
+                # avoid stressing out the API by spacing out requests
+                await sleep(randint(1, 10))
+                stop = await watcher.get_stop(session, stop_id)
+                if stop and stop[0]:
+                    await redis.set(key, stop[0].model_dump_json())
+                    return stop[0].data.attributes.description
+    return stop_id
 
 
 class Watcher:
@@ -436,7 +460,7 @@ class Watcher:
         self.facilities = stop_and_facilities[1]
 
     @retry(
-        wait=wait_random_exponential(multiplier=1, min=1),
+        wait=wait_random_exponential(multiplier=2, min=10),
         before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
     )
     async def get_stop(self, session: ClientSession, stop_id: str):

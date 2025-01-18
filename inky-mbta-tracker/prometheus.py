@@ -5,7 +5,7 @@ schedule_events = Counter(
 )
 
 vehicle_events = Counter(
-    "imt_vehicle_events", "Any updates to vehicles", ["action", "route_id", "id"]
+    "imt_vehicle_events", "Any updates to vehicles", ["action", "route_id"]
 )
 
 tracker_executions = Counter("imt_tracker_executions", "Tracker Executions", ["stop"])

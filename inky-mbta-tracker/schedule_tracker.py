@@ -154,7 +154,7 @@ class Tracker:
             await pipeline.set(
                 redis_key, event.model_dump_json(), ex=timedelta(hours=1)
             )
-            vehicle_events.labels(action, event.route, event.id).inc()
+            vehicle_events.labels(action, event.route).inc()
             self.log_vehicle(event)
 
     async def rm(self, event: ScheduleEvent | VehicleRedisSchema, pipeline: Pipeline):
@@ -165,7 +165,7 @@ class Tracker:
                 schedule_events.labels("remove", event.route_id, event.stop).inc()
                 self.log_prediction(event)
             if isinstance(event, VehicleRedisSchema):
-                vehicle_events.labels("remove", event.route, event.id).inc()
+                vehicle_events.labels("remove", event.route).inc()
                 await pipeline.delete(f"vehicle-{event.id}")
                 self.log_vehicle(event)
         except ResponseError as err:
