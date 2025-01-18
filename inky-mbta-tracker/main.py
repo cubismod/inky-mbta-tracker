@@ -158,18 +158,27 @@ async def __main__():
                 and datetime.now().astimezone(UTC) > task.expiration_time
             ) or not task.task.is_alive():
                 tasks.remove(task)
-                if task.event_type == EventType.VEHICLES:
-                    tasks.append(
-                        start_thread(
-                            EventType.VEHICLES,
-                            route_id=config.vehicles_by_route,
-                            queue=queue,
+                match task.event_type:
+                    case EventType.VEHICLES:
+                        tasks.append(
+                            start_thread(
+                                EventType.VEHICLES,
+                                route_id=config.vehicles_by_route,
+                                queue=queue,
+                            )
                         )
-                    )
-                else:
-                    tasks.append(
-                        start_thread(EventType.VEHICLES, stop=task.stop, queue=queue)
-                    )
+                    case EventType.SCHEDULES:
+                        tasks.append(
+                            start_thread(
+                                EventType.SCHEDULES, stop=task.stop, queue=queue
+                            )
+                        )
+                    case EventType.PREDICTIONS:
+                        tasks.append(
+                            start_thread(
+                                EventType.PREDICTIONS, stop=task.stop, queue=queue
+                            )
+                        )
 
 
 if __name__ == "__main__":
