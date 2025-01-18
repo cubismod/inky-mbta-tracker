@@ -89,7 +89,7 @@ class Watcher:
         self.expiration_time = expiration_time
         self.watcher_type = watcher_type
         logger.info(
-            f"Init mbta_client for stop={stop_id}, route={route}, direction={direction}, route_type={route_type}"
+            f"Init mbta_client for type={watcher_type} stop={stop_id}, route={route}, direction={direction}, route_type={route_type}"
         )
         self.schedule_only = schedule_only
 

@@ -163,7 +163,7 @@ async def __main__():
                         tasks.append(
                             start_thread(
                                 EventType.VEHICLES,
-                                route_id=config.vehicles_by_route,
+                                route_id=task.route_id,
                                 queue=queue,
                             )
                         )
