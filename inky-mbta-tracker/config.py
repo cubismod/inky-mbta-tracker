@@ -18,6 +18,12 @@ class Config(BaseModel):
     # fetches real-time vehicle information with the numbers referring to
     # the routes
     vehicles_by_route: Optional[list[str]] = None
+    # git repo to store vehicle location information in
+    vehicle_git_repo: Optional[str] = None
+    vehicle_git_user: Optional[str] = None
+    # git auth token to use when cloning
+    vehicle_git_token: Optional[str] = None
+    vehicle_git_email: Optional[str] = None
 
 
 def load_config():
