@@ -39,6 +39,8 @@ def ret_color(vehicle: VehicleRedisSchema):
         return "#FA2D27"
     if vehicle.route.startswith("Orange"):
         return "#FD8A03"
+    if vehicle.route.startswith("7"):
+        return "#9A9C9D"
 
 
 class GitClient:

@@ -54,6 +54,9 @@ class EventType(Enum):
     VEHICLES = 2
 
 
+shape_polylines = set[str]()
+
+
 @retry(
     wait=wait_random_exponential(multiplier=2, min=10),
     before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
@@ -70,7 +73,11 @@ async def get_shape(routes: Optional[list[str]]):
                     mbta_api_requests.labels("shapes").inc()
                     shapes = Shapes.model_validate_json(body, strict=False)
                     for shape in shapes.data:
-                        if "canonical" in shape.id:
+                        if (
+                            shape.attributes.polyline not in shape_polylines
+                            and "canonical" in shape.id
+                            or shape.id.replace("_", "").isdecimal()
+                        ):
                             ret.append(
                                 [
                                     list(i)
@@ -79,6 +86,7 @@ async def get_shape(routes: Optional[list[str]]):
                                     )
                                 ]
                             )
+                            shape_polylines.add(shape.attributes.polyline)
         except ValidationError as err:
             logger.error("unable to parse response", exc_info=err)
 
