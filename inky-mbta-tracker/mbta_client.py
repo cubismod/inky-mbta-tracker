@@ -105,6 +105,8 @@ def silver_line_lookup(route_id: str):
             return "SL5"
         case "751":
             return "SL4"
+        case _:
+            return route_id
 
 
 async def light_get_stop(redis: Redis, stop_id: Optional[str]):

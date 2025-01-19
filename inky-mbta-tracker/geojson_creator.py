@@ -39,7 +39,7 @@ def ret_color(vehicle: VehicleRedisSchema):
         return "#FA2D27"
     if vehicle.route.startswith("Orange"):
         return "#FD8A03"
-    if vehicle.route.startswith("74"):
+    if vehicle.route.startswith("74") or vehicle.route.startswith("SL"):
         return "#9A9C9D"
     elif vehicle.route.isdecimal():
         return "#907e00"
@@ -162,7 +162,9 @@ async def create_json(config: Config):
                                 or vehicle_info.route.isdecimal()
                             ):
                                 route_icon = "bus"
-                            if vehicle_info.route.startswith("74"):
+                            if vehicle_info.route.startswith(
+                                "74"
+                            ) or vehicle_info.route.startswith("75"):
                                 vehicle_info.route = silver_line_lookup(
                                     vehicle_info.route
                                 )
