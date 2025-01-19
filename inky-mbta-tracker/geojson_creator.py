@@ -100,7 +100,7 @@ async def create_json(config: Config):
         password=os.environ.get("IMT_REDIS_PASSWORD"),
     )
 
-    with TemporaryDirectory() as tmpdir:
+    with TemporaryDirectory(delete=True) as tmpdir:
         git_client = None
         if (
             config.vehicle_git_repo
@@ -134,6 +134,7 @@ async def create_json(config: Config):
                             strict=False, json_data=result
                         )
                         point = Point((vehicle_info.longitude, vehicle_info.latitude))
+                        stop = await light_get_stop(r, vehicle_info.stop)
                         feature = Feature(
                             geometry=point,
                             id=vehicle_info.id,
@@ -146,19 +147,33 @@ async def create_json(config: Config):
                                 "speed": vehicle_info.speed,
                                 "direction": vehicle_info.direction_id,
                                 "id": vehicle_info.id,
-                                "stop": await light_get_stop(r, vehicle_info.stop),
+                                "stop": stop[0],
                             },
                         )
                         features.append(feature)
+
+                        if stop[1]:
+                            stop_point = Point(stop[1])
+                            stop_feature = Feature(
+                                geometry=stop_point,
+                                id=vehicle_info.stop,
+                                properties={
+                                    "marker-size": "small",
+                                    "marker-symbol": "building",
+                                    "marker-color": ret_color(vehicle_info),
+                                    "name": stop[0],
+                                    "id": vehicle_info.stop,
+                                },
+                            )
+                            features.append(stop_feature)
                     write_file = Path(
                         os.environ.get("IMT_JSON_WRITE_FILE", "./imt-out.json")
                     )
-                    write_file.unlink(missing_ok=True)
                     with open(
                         write_file,
                         "w",
                     ) as file:
-                        logger.info("wrote geojson file")
+                        logger.info(f"wrote geojson file to {write_file}")
                         file.write(
                             dumps(
                                 FeatureCollection(
@@ -166,8 +181,6 @@ async def create_json(config: Config):
                                         features, key=lambda d: d["properties"]["id"]
                                     )
                                 ),
-                                sort_keys=True,
-                                indent=2,
                             )
                         )
 

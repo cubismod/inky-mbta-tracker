@@ -59,9 +59,11 @@ async def light_get_stop(redis: Redis, stop_id: Optional[str]):
         if res:
             dec_v = res.decode("utf-8")
             if dec_v:
-                return Stop.model_validate_json(
-                    strict=False, json_data=dec_v
-                ).data.attributes.description
+                stop = Stop.model_validate_json(strict=False, json_data=dec_v)
+                return stop.data.attributes.description, (
+                    stop.data.attributes.longitude,
+                    stop.data.attributes.latitude,
+                )
         else:
             async with aiohttp.ClientSession(mbta_v3) as session:
                 watcher = Watcher(stop_id=stop_id, watcher_type=EventType.OTHER)
@@ -70,8 +72,11 @@ async def light_get_stop(redis: Redis, stop_id: Optional[str]):
                 stop = await watcher.get_stop(session, stop_id)
                 if stop and stop[0]:
                     await redis.set(key, stop[0].model_dump_json())
-                    return stop[0].data.attributes.description
-    return stop_id
+                    return stop[0].data.attributes.description, (
+                        stop[0].data.attributes.longitude,
+                        stop[0].data.attributes.latitude,
+                    )
+    return stop_id, None
 
 
 class Watcher:
