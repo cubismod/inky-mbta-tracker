@@ -140,7 +140,7 @@ async def create_json(config: Config):
                 features = dict[str, Feature]()
                 pl = r.pipeline()
 
-                async for vehicle in r.scan_iter("vehicle*", 300):
+                async for vehicle in r.scan_iter("vehicle*"):
                     dec_v = vehicle.decode("utf-8")
                     if dec_v:
                         await pl.get(vehicle)
@@ -209,7 +209,7 @@ async def create_json(config: Config):
 
                 if git_client:
                     git_client.commit_and_push(write_file)
-                await sleep(45)
+                await sleep(90)
             except ResponseError as err:
                 logger.error("unable to run redis command", exc_info=err)
             except ValidationError as err:
