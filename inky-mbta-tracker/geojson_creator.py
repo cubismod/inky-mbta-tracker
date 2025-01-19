@@ -151,7 +151,7 @@ async def create_json(config: Config):
                     point = Point((vehicle_info.longitude, vehicle_info.latitude))
                     stop = await light_get_stop(r, vehicle_info.stop)
                     route_icon = "rail"
-                    if vehicle_info.route.startswith("7"):
+                    if vehicle_info.route.startswith("7") or vehicle_info.route.isdecimal():
                         route_icon = "bus"
                     feature = Feature(
                         geometry=point,
