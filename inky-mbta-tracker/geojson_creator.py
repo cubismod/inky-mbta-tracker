@@ -41,6 +41,8 @@ def ret_color(vehicle: VehicleRedisSchema):
         return "#FD8A03"
     if vehicle.route.startswith("7"):
         return "#9A9C9D"
+    elif vehicle.route.isdecimal():
+        return "#FFFF00"
 
 
 class GitClient:
@@ -151,7 +153,10 @@ async def create_json(config: Config):
                     point = Point((vehicle_info.longitude, vehicle_info.latitude))
                     stop = await light_get_stop(r, vehicle_info.stop)
                     route_icon = "rail"
-                    if vehicle_info.route.startswith("7") or vehicle_info.route.isdecimal():
+                    if (
+                        vehicle_info.route.startswith("7")
+                        or vehicle_info.route.isdecimal()
+                    ):
                         route_icon = "bus"
                     feature = Feature(
                         geometry=point,
