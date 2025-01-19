@@ -21,12 +21,14 @@ from mbta_responses import (
     RouteResource,
     ScheduleResource,
     Schedules,
+    Shapes,
     Stop,
     TripResource,
     Trips,
     TypeAndID,
     Vehicle,
 )
+from polyline import decode
 from prometheus import mbta_api_requests, tracker_executions
 from pydantic import TypeAdapter, ValidationError
 from redis.asyncio import Redis
@@ -50,6 +52,37 @@ class EventType(Enum):
     PREDICTIONS = 0
     SCHEDULES = 1
     VEHICLES = 2
+
+
+@retry(
+    wait=wait_random_exponential(multiplier=2, min=10),
+    before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
+)
+async def get_shape(routes: Optional[list[str]]):
+    ret = list()
+    if routes:
+        try:
+            async with aiohttp.ClientSession(mbta_v3) as session:
+                async with session.get(
+                    f"/shapes?filter[route]={','.join(routes)}"
+                ) as response:
+                    body = await response.text()
+                    mbta_api_requests.labels("shapes").inc()
+                    shapes = Shapes.model_validate_json(body, strict=False)
+                    for shape in shapes.data:
+                        if "canonical" in shape.id:
+                            ret.append(
+                                [
+                                    list(i)
+                                    for i in decode(
+                                        shape.attributes.polyline, geojson=True
+                                    )
+                                ]
+                            )
+        except ValidationError as err:
+            logger.error("unable to parse response", exc_info=err)
+
+    return ret
 
 
 async def light_get_stop(redis: Redis, stop_id: Optional[str]):
