@@ -1,5 +1,6 @@
 import logging
 import os
+import subprocess
 from asyncio import Runner, sleep
 from datetime import datetime
 from pathlib import Path
@@ -75,6 +76,19 @@ class GitClient:
         )
         self.repo = Repository(self.git_repo_local)
 
+    def cleanup_repo(self):
+        try:
+            # Run the git gc --auto command
+            out = subprocess.run(
+                ["git", "gc", "--auto"],
+                capture_output=True,
+                text=True,
+                cwd=self.git_repo_local,
+            )
+            logger.info(out)
+        except Exception as e:
+            logger.error("unable to run git gc", exc_info=e)
+
     def commit_and_push(self, txt_file_name: Path):
         remote_name = "origin"
 
@@ -97,6 +111,8 @@ class GitClient:
                 )
 
                 branch = "main"
+                self.cleanup_repo()
+
                 self.repo.remotes[remote_name].push((["+refs/heads/{}".format(branch)]))
 
 
