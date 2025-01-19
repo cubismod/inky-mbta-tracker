@@ -334,3 +334,19 @@ class Vehicle(BaseModel):
     attributes: VehicleAttributes
     relationships: VehicleRelationships
     type: str
+
+
+class ShapeAttributes(BaseModel):
+    polyline: str
+
+
+class ShapeResource(BaseModel):
+    type: str
+    relationships: Optional[dict] = None
+    links: Optional[dict] = None
+    id: str
+    attributes: ShapeAttributes
+
+
+class Shapes(BaseModel):
+    data: list[ShapeResource]
