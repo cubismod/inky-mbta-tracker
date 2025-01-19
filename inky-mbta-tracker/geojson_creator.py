@@ -150,6 +150,9 @@ async def create_json(config: Config):
                     )
                     point = Point((vehicle_info.longitude, vehicle_info.latitude))
                     stop = await light_get_stop(r, vehicle_info.stop)
+                    route_icon = "rail"
+                    if vehicle_info.route.startswith("7"):
+                        route_icon = "bus"
                     feature = Feature(
                         geometry=point,
                         id=vehicle_info.id,
@@ -157,7 +160,7 @@ async def create_json(config: Config):
                             "route": vehicle_info.route,
                             "status": vehicle_info.current_status,
                             "marker-size": "medium",
-                            "marker-symbol": "rail",
+                            "marker-symbol": route_icon,
                             "marker-color": ret_color(vehicle_info),
                             "speed": vehicle_info.speed,
                             "direction": vehicle_info.direction_id,
