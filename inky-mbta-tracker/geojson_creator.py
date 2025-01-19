@@ -118,73 +118,71 @@ async def create_json(config: Config):
             git_client.clone()
         while True:
             try:
-                vehicle_ids = await r.scan(0, match="vehicle*", count=300)
                 features = list[Feature]()
                 pl = r.pipeline()
 
-                if vehicle_ids:
-                    for vehicle in vehicle_ids[1]:
-                        dec_v = vehicle.decode("utf-8")
-                        if dec_v:
-                            await pl.get(vehicle)
+                async for vehicle in r.scan_iter("vehicle*", 300):
+                    dec_v = vehicle.decode("utf-8")
+                    if dec_v:
+                        await pl.get(vehicle)
 
-                    results = await pl.execute()
-                    for result in results:
-                        vehicle_info = VehicleRedisSchema.model_validate_json(
-                            strict=False, json_data=result
-                        )
-                        point = Point((vehicle_info.longitude, vehicle_info.latitude))
-                        stop = await light_get_stop(r, vehicle_info.stop)
-                        feature = Feature(
-                            geometry=point,
-                            id=vehicle_info.id,
+                results = await pl.execute()
+                for result in results:
+                    vehicle_info = VehicleRedisSchema.model_validate_json(
+                        strict=False, json_data=result
+                    )
+                    point = Point((vehicle_info.longitude, vehicle_info.latitude))
+                    stop = await light_get_stop(r, vehicle_info.stop)
+                    feature = Feature(
+                        geometry=point,
+                        id=vehicle_info.id,
+                        properties={
+                            "route": vehicle_info.route,
+                            "status": vehicle_info.current_status,
+                            "marker-size": "medium",
+                            "marker-symbol": "rail",
+                            "marker-color": ret_color(vehicle_info),
+                            "speed": vehicle_info.speed,
+                            "direction": vehicle_info.direction_id,
+                            "id": vehicle_info.id,
+                            "stop": stop[0],
+                        },
+                    )
+                    features.append(feature)
+
+                    if stop[1]:
+                        stop_point = Point(stop[1])
+                        stop_feature = Feature(
+                            geometry=stop_point,
+                            id=vehicle_info.stop,
                             properties={
-                                "route": vehicle_info.route,
-                                "status": vehicle_info.current_status,
-                                "marker-size": "medium",
-                                "marker-symbol": "rail",
+                                "marker-size": "small",
+                                "marker-symbol": "building",
                                 "marker-color": ret_color(vehicle_info),
-                                "speed": vehicle_info.speed,
-                                "direction": vehicle_info.direction_id,
-                                "id": vehicle_info.id,
-                                "stop": stop[0],
+                                "name": stop[0],
+                                "id": vehicle_info.stop,
                             },
                         )
-                        features.append(feature)
-
-                        if stop[1]:
-                            stop_point = Point(stop[1])
-                            stop_feature = Feature(
-                                geometry=stop_point,
-                                id=vehicle_info.stop,
-                                properties={
-                                    "marker-size": "small",
-                                    "marker-symbol": "building",
-                                    "marker-color": ret_color(vehicle_info),
-                                    "name": stop[0],
-                                    "id": vehicle_info.stop,
-                                },
-                            )
-                            features.append(stop_feature)
-                    write_file = Path(
-                        os.environ.get("IMT_JSON_WRITE_FILE", "./imt-out.json")
-                    )
-                    with open(
-                        write_file,
-                        "w",
-                    ) as file:
-                        logger.info(f"wrote geojson file to {write_file}")
-                        file.write(
-                            dumps(
-                                FeatureCollection(
-                                    features=sorted(
-                                        features, key=lambda d: d["properties"]["id"]
-                                    )
-                                ),
-                                sort_keys=True,
-                                indent=2,
-                            )
+                        features.append(stop_feature)
+                write_file = Path(
+                    os.environ.get("IMT_JSON_WRITE_FILE", "./imt-out.json")
+                )
+                with open(
+                    write_file,
+                    "w",
+                ) as file:
+                    logger.info(f"wrote geojson file to {write_file}")
+                    file.write(
+                        dumps(
+                            FeatureCollection(
+                                features=sorted(
+                                    features, key=lambda d: d["properties"]["id"]
+                                )
+                            ),
+                            sort_keys=True,
+                            indent=2,
                         )
+                    )
 
                 if git_client:
                     git_client.commit_and_push(write_file)
