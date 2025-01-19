@@ -154,6 +154,7 @@ class Tracker:
             await pipeline.set(
                 redis_key, event.model_dump_json(), ex=timedelta(minutes=10)
             )
+            await pipeline.sadd("pos-data", redis_key)
             vehicle_events.labels(action, event.route).inc()
             self.log_vehicle(event)
 

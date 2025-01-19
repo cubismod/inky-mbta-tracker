@@ -93,6 +93,20 @@ async def get_shape(routes: Optional[list[str]]):
     return ret
 
 
+def silver_line_lookup(route_id: str):
+    match route_id:
+        case "741":
+            return "SL1"
+        case "742":
+            return "SL2"
+        case "743":
+            return "SL3"
+        case "749":
+            return "SL5"
+        case "751":
+            return "SL4"
+
+
 async def light_get_stop(redis: Redis, stop_id: Optional[str]):
     if stop_id:
         key = f"stop-{stop_id}"

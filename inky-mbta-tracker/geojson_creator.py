@@ -3,6 +3,7 @@ import os
 from asyncio import Runner, sleep
 from datetime import datetime
 from pathlib import Path
+from random import randint
 from shutil import copyfile
 from tempfile import TemporaryDirectory
 from typing import Optional
@@ -15,7 +16,7 @@ from geojson import (
     Point,
     dumps,
 )
-from mbta_client import get_shape, light_get_stop
+from mbta_client import get_shape, light_get_stop, silver_line_lookup
 from pydantic import ValidationError
 from pygit2 import Repository, Signature, clone_repository
 from pygit2.enums import FileStatus
@@ -39,10 +40,10 @@ def ret_color(vehicle: VehicleRedisSchema):
         return "#FA2D27"
     if vehicle.route.startswith("Orange"):
         return "#FD8A03"
-    if vehicle.route.startswith("7"):
+    if vehicle.route.startswith("74"):
         return "#9A9C9D"
     elif vehicle.route.isdecimal():
-        return "#FFFF00"
+        return "#907e00"
 
 
 class GitClient:
@@ -140,59 +141,66 @@ async def create_json(config: Config):
                 features = dict[str, Feature]()
                 pl = r.pipeline()
 
-                async for vehicle in r.scan_iter("vehicle*"):
+                for vehicle in await r.smembers("pos-data"):
                     dec_v = vehicle.decode("utf-8")
                     if dec_v:
                         await pl.get(vehicle)
 
                 results = await pl.execute()
                 for result in results:
-                    vehicle_info = VehicleRedisSchema.model_validate_json(
-                        strict=False, json_data=result
-                    )
-                    point = Point((vehicle_info.longitude, vehicle_info.latitude))
-                    stop = await light_get_stop(r, vehicle_info.stop)
-                    route_icon = "rail"
-                    if (
-                        vehicle_info.route.startswith("7")
-                        or vehicle_info.route.isdecimal()
-                    ):
-                        route_icon = "bus"
-                    feature = Feature(
-                        geometry=point,
-                        id=vehicle_info.id,
-                        properties={
-                            "route": vehicle_info.route,
-                            "status": vehicle_info.current_status,
-                            "marker-size": "medium",
-                            "marker-symbol": route_icon,
-                            "marker-color": ret_color(vehicle_info),
-                            "speed": vehicle_info.speed,
-                            "direction": vehicle_info.direction_id,
-                            "id": vehicle_info.id,
-                            "stop": stop[0],
-                        },
-                    )
-                    features[vehicle_info.id] = feature
-
-                    if stop[1]:
-                        stop_point = Point(stop[1])
-                        stop_feature = Feature(
-                            geometry=stop_point,
-                            id=vehicle_info.stop,
+                    if result:
+                        vehicle_info = VehicleRedisSchema.model_validate_json(
+                            strict=False, json_data=result
+                        )
+                        point = Point((vehicle_info.longitude, vehicle_info.latitude))
+                        stop = await light_get_stop(r, vehicle_info.stop)
+                        route_icon = "rail"
+                        if (
+                            vehicle_info.route.startswith("7")
+                            or vehicle_info.route.isdecimal()
+                        ):
+                            route_icon = "bus"
+                            # don't save every single bus event
+                            if randint(1, 10) > 4:
+                                continue
+                        if vehicle_info.route.startswith("74"):
+                            vehicle_info.route = silver_line_lookup(vehicle_info.route)
+                        feature = Feature(
+                            geometry=point,
+                            id=vehicle_info.id,
                             properties={
-                                "marker-size": "small",
-                                "marker-symbol": "building",
+                                "route": vehicle_info.route,
+                                "status": vehicle_info.current_status,
+                                "marker-size": "medium",
+                                "marker-symbol": route_icon,
                                 "marker-color": ret_color(vehicle_info),
-                                "name": stop[0],
-                                "id": vehicle_info.stop,
+                                "speed": vehicle_info.speed,
+                                "direction": vehicle_info.direction_id,
+                                "id": vehicle_info.id,
+                                "stop": stop[0],
                             },
                         )
-                        features[vehicle_info.stop] = stop_feature
+                        features[f"v-{vehicle_info.id}"] = feature
+
+                        if stop[1] and vehicle_info.stop:
+                            stop_point = Point(stop[1])
+                            stop_feature = Feature(
+                                geometry=stop_point,
+                                id=vehicle_info.stop,
+                                properties={
+                                    "marker-size": "small",
+                                    "marker-symbol": "building",
+                                    "marker-color": ret_color(vehicle_info),
+                                    "name": stop[0],
+                                    "id": vehicle_info.stop,
+                                },
+                            )
+                            features[f"v-{vehicle_info.stop}"] = stop_feature
                 write_file = Path(
                     os.environ.get("IMT_JSON_WRITE_FILE", "./imt-out.json")
                 )
-                vals = [feature for features in feature.values()]
+                vals = [v for _, v in features.items()]
+                all_vals = vals + lines
 
                 with open(
                     write_file,
@@ -201,7 +209,7 @@ async def create_json(config: Config):
                     logger.info(f"wrote geojson file to {write_file}")
                     file.write(
                         dumps(
-                            FeatureCollection(vals + lines),
+                            FeatureCollection(all_vals),
                             sort_keys=True,
                             indent=2,
                         )
