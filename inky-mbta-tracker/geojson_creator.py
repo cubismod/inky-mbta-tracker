@@ -133,7 +133,7 @@ async def create_json(config: Config):
             git_client.clone()
         while True:
             try:
-                features = list[Feature]()
+                features = dict[str, Feature]()
                 pl = r.pipeline()
 
                 async for vehicle in r.scan_iter("vehicle*", 300):
@@ -163,7 +163,7 @@ async def create_json(config: Config):
                             "stop": stop[0],
                         },
                     )
-                    features.append(feature)
+                    features[vehicle_info.id] = feature
 
                     if stop[1]:
                         stop_point = Point(stop[1])
@@ -178,10 +178,12 @@ async def create_json(config: Config):
                                 "id": vehicle_info.stop,
                             },
                         )
-                        features.append(stop_feature)
+                        features[vehicle_info.stop] = stop_feature
                 write_file = Path(
                     os.environ.get("IMT_JSON_WRITE_FILE", "./imt-out.json")
                 )
+                vals = [feature for features in feature.values()]
+
                 with open(
                     write_file,
                     "w",
@@ -189,7 +191,7 @@ async def create_json(config: Config):
                     logger.info(f"wrote geojson file to {write_file}")
                     file.write(
                         dumps(
-                            FeatureCollection(features + lines),
+                            FeatureCollection(vals + lines),
                             sort_keys=True,
                             indent=2,
                         )

@@ -152,7 +152,7 @@ class Tracker:
         if isinstance(event, VehicleRedisSchema):
             redis_key = f"vehicle-{event.id}"
             await pipeline.set(
-                redis_key, event.model_dump_json(), ex=timedelta(hours=1)
+                redis_key, event.model_dump_json(), ex=timedelta(minutes=10)
             )
             vehicle_events.labels(action, event.route).inc()
             self.log_vehicle(event)
