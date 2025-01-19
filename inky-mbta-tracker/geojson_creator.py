@@ -181,6 +181,8 @@ async def create_json(config: Config):
                                         features, key=lambda d: d["properties"]["id"]
                                     )
                                 ),
+                                sort_keys=True,
+                                indent=2,
                             )
                         )
 
