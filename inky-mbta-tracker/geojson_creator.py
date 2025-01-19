@@ -8,14 +8,8 @@ from tempfile import TemporaryDirectory
 from typing import Optional
 
 from config import Config
-from geojson import (
-    Feature,
-    FeatureCollection,
-    LineString,
-    Point,
-    dumps,
-)
-from mbta_client import get_shape, light_get_stop
+from geojson import Feature, FeatureCollection, Point, dumps
+from mbta_client import light_get_stop
 from pydantic import ValidationError
 from pygit2 import Repository, Signature, clone_repository
 from pygit2.enums import FileStatus
@@ -108,15 +102,6 @@ async def create_json(config: Config):
 
     with TemporaryDirectory(delete=True) as tmpdir:
         git_client = None
-        lines = list()
-        shapes = await get_shape(config.vehicles_by_route)
-        if shapes:
-            for shape in shapes:
-                lines.append(
-                    Feature(
-                        geometry=LineString(coordinates=shape),
-                    )
-                )
         if (
             config.vehicle_git_repo
             and config.vehicle_git_user
@@ -189,7 +174,11 @@ async def create_json(config: Config):
                     logger.info(f"wrote geojson file to {write_file}")
                     file.write(
                         dumps(
-                            FeatureCollection(features + lines),
+                            FeatureCollection(
+                                features=sorted(
+                                    features, key=lambda d: d["properties"]["id"]
+                                )
+                            ),
                             sort_keys=True,
                             indent=2,
                         )
