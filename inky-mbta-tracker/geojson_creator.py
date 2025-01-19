@@ -161,7 +161,7 @@ async def create_json(config: Config):
                         ):
                             route_icon = "bus"
                             # don't save every single bus event
-                            if randint(1, 10) > 4:
+                            if randint(0, 10) > 3:
                                 continue
                         if vehicle_info.route.startswith("74"):
                             vehicle_info.route = silver_line_lookup(vehicle_info.route)
@@ -182,7 +182,7 @@ async def create_json(config: Config):
                         )
                         features[f"v-{vehicle_info.id}"] = feature
 
-                        if stop[1] and vehicle_info.stop:
+                        if stop[0] and vehicle_info.stop:
                             stop_point = Point(stop[1])
                             stop_feature = Feature(
                                 geometry=stop_point,
