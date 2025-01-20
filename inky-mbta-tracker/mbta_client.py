@@ -119,7 +119,11 @@ async def light_get_stop(redis: Redis, stop_id: Optional[str]):
             dec_v = res.decode("utf-8")
             if dec_v:
                 stop = Stop.model_validate_json(strict=False, json_data=dec_v)
-                return stop.data.attributes.description, (
+                if stop.data.attributes.description:
+                    stop_id = stop.data.attributes.description
+                elif stop.data.attributes.name:
+                    stop_id = stop.data.attributes.name
+                return stop_id, (
                     stop.data.attributes.longitude,
                     stop.data.attributes.latitude,
                 )
@@ -131,7 +135,11 @@ async def light_get_stop(redis: Redis, stop_id: Optional[str]):
                 stop = await watcher.get_stop(session, stop_id)
                 if stop and stop[0]:
                     await redis.set(key, stop[0].model_dump_json())
-                    return stop[0].data.attributes.description, (
+                    if stop[0].data.attributes.description:
+                        stop_id = stop[0].data.attributes.description
+                    elif stop[0].data.attributes.name:
+                        stop_id = stop[0].data.attributes.name
+                    return stop_id, (
                         stop[0].data.attributes.longitude,
                         stop[0].data.attributes.latitude,
                     )
