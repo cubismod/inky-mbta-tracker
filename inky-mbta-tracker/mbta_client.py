@@ -101,6 +101,8 @@ def silver_line_lookup(route_id: str):
             return "SL2"
         case "743":
             return "SL3"
+        case "746":
+            return "SLW"
         case "749":
             return "SL5"
         case "751":
@@ -600,7 +602,7 @@ async def watch_vehicles(
     expiration_time: datetime,
     route_id: str,
 ):
-    endpoint = f"{mbta_v3}/vehicles?filter[revenue]=REVENUE&fields[vehicle]=direction_id,latitude,longitude,speed,current_status&filter[route]={route_id}&api_key={auth_token}"
+    endpoint = f"{mbta_v3}/vehicles?fields[vehicle]=direction_id,latitude,longitude,speed,current_status&filter[route]={route_id}&api_key={auth_token}"
     mbta_api_requests.labels("vehicles").inc()
     headers = {"accept": "text/event-stream"}
     watcher = Watcher(
