@@ -117,7 +117,12 @@ async def create_json(config: Config):
         if shapes:
             for k, v in shapes.items():
                 for line in v:
-                    lines.append(Feature(geometry=LineString(coordinates=line), id=k))
+                    lines.append(
+                        Feature(
+                            geometry=LineString(coordinates=line),
+                            properties={"route": k},
+                        )
+                    )
         if (
             config.vehicle_git_repo
             and config.vehicle_git_user
