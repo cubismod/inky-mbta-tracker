@@ -12,6 +12,7 @@ import aiohttp
 from aiohttp import ClientSession
 from aiosseclient import aiosseclient
 from expiring_dict import ExpiringDict
+from geojson import Point
 from mbta_responses import (
     Alerts,
     Facilities,
@@ -31,6 +32,7 @@ from mbta_responses import (
 from polyline import decode
 from prometheus import mbta_api_requests, tracker_executions
 from pydantic import TypeAdapter, ValidationError
+from redis import ResponseError
 from redis.asyncio import Redis
 from schedule_tracker import ScheduleEvent, VehicleRedisSchema, dummy_schedule_event
 from tenacity import (
@@ -57,39 +59,49 @@ class EventType(Enum):
 shape_polylines = set[str]()
 
 
+def parse_shape_data(shapes: Shapes):
+    ret = list()
+    for shape in shapes.data:
+        if (
+            shape.attributes.polyline not in shape_polylines
+            and "canonical" in shape.id
+            or shape.id.replace("_", "").isdecimal()
+        ):
+            ret.append(
+                [Point(i) for i in decode(shape.attributes.polyline, geojson=True)]
+            )
+            shape_polylines.add(shape.attributes.polyline)
+    return ret
+
+
+# gets line geometry using Redis caching from the MBTA API
 @retry(
     wait=wait_random_exponential(multiplier=2, min=10),
     before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
 )
-async def get_shape(routes: Optional[list[str]]):
-    ret = list()
-    if routes:
-        try:
-            async with aiohttp.ClientSession(mbta_v3) as session:
-                async with session.get(
-                    f"/shapes?filter[route]={','.join(routes)}"
-                ) as response:
-                    body = await response.text()
-                    mbta_api_requests.labels("shapes").inc()
-                    shapes = Shapes.model_validate_json(body, strict=False)
-                    for shape in shapes.data:
-                        if (
-                            shape.attributes.polyline not in shape_polylines
-                            and "canonical" in shape.id
-                            or shape.id.replace("_", "").isdecimal()
-                        ):
-                            ret.append(
-                                [
-                                    list(i)
-                                    for i in decode(
-                                        shape.attributes.polyline, geojson=True
-                                    )
-                                ]
-                            )
-                            shape_polylines.add(shape.attributes.polyline)
-        except ValidationError as err:
-            logger.error("unable to parse response", exc_info=err)
-
+async def get_shapes(routes: list[str], redis: Redis):
+    ret = dict()
+    try:
+        async with aiohttp.ClientSession(mbta_v3) as session:
+            for route in routes:
+                shape_key = f"shape-{route}"
+                route_raw = await redis.get(shape_key)
+                if route_raw:
+                    shapes = Shapes.model_validate_json(route_raw, strict=False)
+                    ret[route] = parse_shape_data(shapes)
+                else:
+                    async with session.get(
+                        f"/shapes?filter[route]={route}&api_key={auth_token}"
+                    ) as response:
+                        body = await response.text()
+                        mbta_api_requests.labels("shapes").inc()
+                        shapes = Shapes.model_validate_json(body, strict=False)
+                        ret[route] = parse_shape_data(shapes)
+                        await redis.set(shape_key, shapes.model_dump_json())
+    except ResponseError as err:
+        logger.error("unable to run redis command", exc_info=err)
+    except ValidationError as err:
+        logger.error("unable to parse response", exc_info=err)
     return ret
 
 

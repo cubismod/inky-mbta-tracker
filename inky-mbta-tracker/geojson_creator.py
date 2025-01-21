@@ -15,7 +15,7 @@ from geojson import (
     Point,
     dumps,
 )
-from mbta_client import get_shape, light_get_stop, silver_line_lookup
+from mbta_client import get_shapes, light_get_stop, silver_line_lookup
 from pydantic import ValidationError
 from pygit2 import Repository, Signature, clone_repository
 from pygit2.enums import FileStatus
@@ -113,14 +113,11 @@ async def create_json(config: Config):
     with TemporaryDirectory(delete=True) as tmpdir:
         git_client = None
         lines = list()
-        shapes = await get_shape(config.vehicles_by_route)
+        shapes = await get_shapes(config.vehicles_by_route, r)
         if shapes:
-            for shape in shapes:
-                lines.append(
-                    Feature(
-                        geometry=LineString(coordinates=shape),
-                    )
-                )
+            for k, v in shapes.items():
+                for line in v:
+                    lines.append(Feature(geometry=LineString(coordinates=line), id=k))
         if (
             config.vehicle_git_repo
             and config.vehicle_git_user
