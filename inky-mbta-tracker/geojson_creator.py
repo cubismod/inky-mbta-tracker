@@ -222,7 +222,7 @@ async def create_json(config: Config):
 
                 if git_client:
                     git_client.commit_and_push(write_file)
-                await sleep(120)
+                await sleep(40)
             except ResponseError as err:
                 logger.error("unable to run redis command", exc_info=err)
             except ValidationError as err:
