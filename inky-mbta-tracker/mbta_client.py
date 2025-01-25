@@ -143,7 +143,7 @@ async def light_get_stop(redis: Redis, stop_id: Optional[str]):
             async with aiohttp.ClientSession(mbta_v3) as session:
                 watcher = Watcher(stop_id=stop_id, watcher_type=EventType.OTHER)
                 # avoid stressing out the API by spacing out requests
-                await sleep(randint(1, 15))
+                await sleep(randint(1, 4))
                 stop = await watcher.get_stop(session, stop_id)
                 if stop and stop[0]:
                     await redis.set(key, stop[0].model_dump_json())
@@ -470,6 +470,7 @@ class Watcher:
                     mbta_api_requests.labels("routes").inc()
                     route = Route.model_validate_json(body, strict=False)
                     for rd in route.data:
+                        logger.info(f"route {rd.id} saved")
                         self.routes[route_id] = rd
                 except ValidationError as err:
                     logger.error(f"Unable to parse route, {err}")

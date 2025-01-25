@@ -1,12 +1,8 @@
 import logging
 import os
 from asyncio import Runner, sleep
-from datetime import datetime
-from pathlib import Path
-from shutil import copyfile
-from tempfile import TemporaryDirectory
-from typing import Optional
 
+import boto3
 from config import Config
 from geojson import (
     Feature,
@@ -17,13 +13,11 @@ from geojson import (
 )
 from mbta_client import get_shapes, light_get_stop, silver_line_lookup
 from pydantic import ValidationError
-from pygit2 import Repository, Signature, clone_repository
-from pygit2.enums import FileStatus
 from redis import ResponseError
 from redis.asyncio import Redis
+from s3transfer import S3UploadFailedError
 from schedule_tracker import VehicleRedisSchema
 from tenacity import before_sleep_log, retry, wait_random_exponential
-from zoneinfo import ZoneInfo
 
 logger = logging.getLogger("geojson")
 
@@ -45,58 +39,29 @@ def ret_color(vehicle: VehicleRedisSchema):
         return "#907e00"
 
 
-class GitClient:
-    git_repo_local: Path
-    git_repo_url: str
-    git_email: str
-    auth_user: str
-    auth_token: str
-    repo: Optional[Repository]
-
-    def __init__(
-        self,
-        git_repo_local: Path,
-        git_repo_url: str,
-        auth_user: str,
-        auth_token: str,
-        git_email: str,
-    ):
-        self.git_repo_local = git_repo_local
-        self.git_repo_url = git_repo_url
-        self.auth_user = auth_user
-        self.auth_token = auth_token
-        self.git_email = git_email
-
-    def clone(self):
-        clone_repository(
-            url=f"https://{self.auth_user}:{self.auth_token}@{self.git_repo_url}",
-            path=self.git_repo_local,
+# create an upload a geojson file to S3
+def create_and_upload_file(
+    resource, file_name: str, bucket_name: str, features: list[Feature]
+):
+    with open(
+        file_name,
+        "w",
+    ) as file:
+        file.write(
+            dumps(
+                FeatureCollection(features),
+                sort_keys=True,
+            )
         )
-        self.repo = Repository(self.git_repo_local)
-
-    def commit_and_push(self, txt_file_name: Path):
-        remote_name = "origin"
-
-        dest = (self.git_repo_local / "vehicles.json").absolute()
-        copyfile(txt_file_name, dest)
-        index = self.repo.index
-
-        status = self.repo.status()
-        for filepath, flags in status.items():
-            if flags != FileStatus.CURRENT:
-                index.add_all()
-                index.write()
-
-                ref = "HEAD"
-                author = Signature(self.auth_user, self.git_email)
-                message = f"update for {datetime.now().astimezone(ZoneInfo('US/Eastern')).strftime('%c')}"
-                tree = index.write_tree()
-                self.repo.create_commit(
-                    ref, author, author, message, tree, [self.repo.head.target]
-                )
-
-                branch = "main"
-                self.repo.remotes[remote_name].push((["+refs/heads/{}".format(branch)]))
+        bucket = resource.Bucket(bucket_name)
+        obj = bucket.Object(file_name)
+        try:
+            obj.upload_file(file_name)
+            logger.info(f"Successfully uploaded file {file_name} to s3://{bucket_name}")
+        except S3UploadFailedError as err:
+            logger.error(
+                f"Couldn't upload file {file_name} to {bucket.name}", exc_info=err
+            )
 
 
 @retry(
@@ -110,33 +75,23 @@ async def create_json(config: Config):
         password=os.environ.get("IMT_REDIS_PASSWORD"),
     )
 
-    with TemporaryDirectory(delete=True) as tmpdir:
-        git_client = None
-        lines = list()
-        shapes = await get_shapes(config.vehicles_by_route, r)
-        if shapes:
-            for k, v in shapes.items():
-                for line in v:
-                    lines.append(
-                        Feature(
-                            geometry=LineString(coordinates=line),
-                            properties={"route": k},
-                        )
+    # set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY env variables if you wish to use S3
+    s3_bucket = os.environ.get("IMT_S3_BUCKET")
+
+    lines = list()
+    shapes = await get_shapes(config.vehicles_by_route, r)
+    if shapes:
+        for k, v in shapes.items():
+            for line in v:
+                lines.append(
+                    Feature(
+                        geometry=LineString(coordinates=line),
+                        properties={"route": k},
                     )
-        if (
-            config.vehicle_git_repo
-            and config.vehicle_git_user
-            and config.vehicle_git_token
-            and config.vehicle_git_email
-        ):
-            git_client = GitClient(
-                git_repo_url=config.vehicle_git_repo,
-                git_repo_local=Path(tmpdir),
-                auth_user=config.vehicle_git_user,
-                auth_token=config.vehicle_git_token,
-                git_email=config.vehicle_git_email,
-            )
-            git_client.clone()
+                )
+    if s3_bucket:
+        resource = boto3.resource("s3")
+        create_and_upload_file(resource, "shapes.json", s3_bucket, lines)
         while True:
             try:
                 features = dict[str, Feature]()
@@ -201,28 +156,10 @@ async def create_json(config: Config):
                                     },
                                 )
                                 features[f"v-{vehicle_info.stop}"] = stop_feature
-                write_file = Path(
-                    os.environ.get("IMT_JSON_WRITE_FILE", "./imt-out.json")
-                )
                 vals = [v for _, v in features.items()]
-                all_vals = vals + lines
-
-                with open(
-                    write_file,
-                    "w",
-                ) as file:
-                    logger.info(f"wrote geojson file to {write_file}")
-                    file.write(
-                        dumps(
-                            FeatureCollection(all_vals),
-                            sort_keys=True,
-                            indent=2,
-                        )
-                    )
-
-                if git_client:
-                    git_client.commit_and_push(write_file)
-                await sleep(40)
+                if len(vals) > 0:
+                    create_and_upload_file(resource, "vehicles.json", s3_bucket, vals)
+                await sleep(15)
             except ResponseError as err:
                 logger.error("unable to run redis command", exc_info=err)
             except ValidationError as err:

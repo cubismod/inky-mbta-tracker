@@ -168,3 +168,5 @@ imt_profile.txt
 profile.*
 
 imt-out.json
+shapes.json
+vehicles.json
