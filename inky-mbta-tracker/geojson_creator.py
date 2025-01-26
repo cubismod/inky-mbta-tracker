@@ -83,6 +83,8 @@ async def create_json(config: Config):
     if shapes:
         for k, v in shapes.items():
             for line in v:
+                if k.startswith("74") or k.startswith("75"):
+                    k = silver_line_lookup(k)
                 lines.append(
                     Feature(
                         geometry=LineString(coordinates=line),
@@ -159,7 +161,7 @@ async def create_json(config: Config):
                 vals = [v for _, v in features.items()]
                 if len(vals) > 0:
                     create_and_upload_file(resource, "vehicles.json", s3_bucket, vals)
-                await sleep(15)
+                await sleep(35)
             except ResponseError as err:
                 logger.error("unable to run redis command", exc_info=err)
             except ValidationError as err:
