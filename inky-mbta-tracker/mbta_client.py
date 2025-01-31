@@ -586,17 +586,26 @@ async def watch_server_side_events(
     session: ClientSession,
     transit_time_min: Optional[int] = None,
 ):
-    async for event in aiosseclient(endpoint, headers=headers):
-        if datetime.now().astimezone(UTC) > watcher.expiration_time:
-            logger.info(
-                f"Restarting thread {watcher.watcher_type} - {watcher.stop_id}/{watcher.route}"
+    client = aiosseclient(endpoint, headers=headers)
+    try:
+        async for event in client:
+            if datetime.now().astimezone(UTC) > watcher.expiration_time:
+                await client.aclose()
+            await watcher.parse_live_api_response(
+                event.data, event.event, queue, transit_time_min, session
             )
-            return
-        await watcher.parse_live_api_response(
-            event.data, event.event, queue, transit_time_min, session
+    except GeneratorExit:
+        logger.info(
+            f"Restarting thread {watcher.watcher_type} - {watcher.stop_id}/{watcher.route}"
         )
 
 
+@retry(
+    wait=wait_random_exponential(multiplier=1),
+    before=before_log(logger, logging.INFO),
+    before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
+    retry=retry_if_not_exception_type(CancelledError),
+)
 async def watch_static_schedule(
     stop_id: str,
     route: str | None,
@@ -618,6 +627,12 @@ async def watch_static_schedule(
         await sleep(10800)  # 3 hours
 
 
+@retry(
+    wait=wait_random_exponential(multiplier=1),
+    before=before_log(logger, logging.INFO),
+    before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
+    retry=retry_if_not_exception_type(CancelledError),
+)
 async def watch_vehicles(
     queue: Queue[ScheduleEvent | VehicleRedisSchema],
     expiration_time: datetime,
