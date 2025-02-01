@@ -162,7 +162,9 @@ async def create_json(config: Config):
                                 features[f"v-{vehicle_info.stop}"] = stop_feature
                 vals = [v for _, v in features.items()]
                 if len(vals) > 0:
-                    create_and_upload_file(resource, f"{prefix}vehicles.json", s3_bucket, vals)
+                    create_and_upload_file(
+                        resource, f"{prefix}vehicles.json", s3_bucket, vals
+                    )
                 await sleep(35)
             except ResponseError as err:
                 logger.error("unable to run redis command", exc_info=err)
