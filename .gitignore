@@ -170,3 +170,5 @@ profile.*
 imt-out.json
 shapes.json
 vehicles.json
+
+profiles/

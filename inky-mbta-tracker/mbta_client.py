@@ -397,8 +397,8 @@ class Watcher:
                 bikes_allowed = False
                 if item.relationships.trip.data:
                     trip = item.relationships.trip.data.id
-                    trip_info = self.trips[trip]
-                    if trip_info:
+                    if trip in self.trips:
+                        trip_info = self.trips[trip]
                         bikes_allowed = self.bikes_allowed(trip_info)
                     alerting = await self.get_alerting_state(trip, session)
 
