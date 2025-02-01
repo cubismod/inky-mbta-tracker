@@ -205,9 +205,9 @@ async def __main__():
 
             with open(file_name, "w") as f:
                 f.write(f"{start_time.strftime('%c')} to {end_time.strftime('%c')}")
-                threads = yappi.get_thread_stats().sort("id", "asc")
-                threads.print_all(out=f)
-                for thread in threads:
+                threads = yappi.get_thread_stats()
+                threads.sort("ttot", "desc").print_all(out=f)
+                for thread in threads.sort("id", "asc"):
                     stats = yappi.get_func_stats(
                         ctx_id=thread.id,
                         filter_callback=lambda x: "lib" not in x.module,
