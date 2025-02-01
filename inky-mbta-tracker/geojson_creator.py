@@ -78,6 +78,8 @@ async def create_json(config: Config):
     # set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY env variables if you wish to use S3
     s3_bucket = os.environ.get("IMT_S3_BUCKET")
 
+    prefix = os.environ.get("IMT_S3_PREFIX", "")
+
     lines = list()
     shapes = await get_shapes(config.vehicles_by_route, r)
     if shapes:
@@ -93,7 +95,7 @@ async def create_json(config: Config):
                 )
     if s3_bucket:
         resource = boto3.resource("s3")
-        create_and_upload_file(resource, "shapes.json", s3_bucket, lines)
+        create_and_upload_file(resource, f"{prefix}shapes.json", s3_bucket, lines)
         while True:
             try:
                 features = dict[str, Feature]()
@@ -160,7 +162,7 @@ async def create_json(config: Config):
                                 features[f"v-{vehicle_info.stop}"] = stop_feature
                 vals = [v for _, v in features.items()]
                 if len(vals) > 0:
-                    create_and_upload_file(resource, "vehicles.json", s3_bucket, vals)
+                    create_and_upload_file(resource, f"{prefix}vehicles.json", s3_bucket, vals)
                 await sleep(35)
             except ResponseError as err:
                 logger.error("unable to run redis command", exc_info=err)
