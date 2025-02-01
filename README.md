@@ -47,6 +47,7 @@ IMT_ENABLE_MQTT=true/false
 IMT_MQTT_HOST=127.0.0.1
 IMT_MQTT_USER=username
 IMT_MQTT_PASS=mqtt_pass # change this!
+IMT_PROFILE_FILE=./profile.txt # optional to enable Yappi profiling around every hour
 ```
 
 From there, create a `config.json` like so to the following schema:

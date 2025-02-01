@@ -2,12 +2,15 @@ import logging
 import os
 import threading
 import time
+import uuid
 from asyncio import Runner, sleep
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from queue import Queue
-from random import randint
+from random import getrandbits, randint
 from typing import Optional
 
+import yappi
 from config import StopSetup, load_config
 from dotenv import load_dotenv
 from geojson_creator import run
@@ -15,6 +18,7 @@ from mbta_client import EventType, thread_runner
 from prometheus import running_threads
 from prometheus_client import start_http_server
 from schedule_tracker import ScheduleEvent, VehicleRedisSchema, process_queue
+from zoneinfo import ZoneInfo
 
 load_dotenv()
 
@@ -80,6 +84,7 @@ def start_thread(
                     "queue": queue,
                     "transit_time_min": stop.transit_time_min,
                 },
+                name=f"{stop.route_filter}_{stop.stop_id}_schedules",
             )
             thr.start()
             return TaskTracker(task=thr, stop=stop, event_type=target)
@@ -95,6 +100,7 @@ def start_thread(
                     "direction": stop.direction_filter,
                     "expiration_time": exp_time,
                 },
+                name=f"{stop.route_filter}_{stop.stop_id}_predictions",
             )
             thr.start()
             return TaskTracker(
@@ -109,6 +115,7 @@ def start_thread(
                     "queue": queue,
                     "expiration_time": exp_time,
                 },
+                name=f"{route_id}_vehicles",
             )
             thr.start()
             return TaskTracker(
@@ -122,12 +129,19 @@ def start_thread(
 async def __main__():
     config = load_config()
 
+    profile_dir = os.getenv("IMT_PROFILE_DIR")
+    start_time = datetime.now().astimezone(ZoneInfo("US/Eastern"))
+    if profile_dir:
+        yappi.start()
+
     queue = Queue[ScheduleEvent | VehicleRedisSchema]()
     tasks = list[TaskTracker]()
 
     start_http_server(int(os.getenv("IMT_PROM_PORT", "8000")))
 
-    process_thr = threading.Thread(target=process_queue, daemon=True, args=[queue])
+    process_thr = threading.Thread(
+        target=process_queue, daemon=True, args=[queue], name="event_processor"
+    )
     process_thr.start()
 
     tasks.append(TaskTracker(process_thr, stop=None, event_type=EventType.OTHER))
@@ -145,10 +159,13 @@ async def __main__():
                     queue=queue,
                 )
             )
-        geojson_thr = threading.Thread(target=run, daemon=True, args=[config])
+        geojson_thr = threading.Thread(
+            target=run, daemon=True, args=[config], name="geojson"
+        )
         geojson_thr.start()
         tasks.append(TaskTracker(geojson_thr, stop=None, event_type=EventType.OTHER))
 
+    next_profile_time = datetime.now().astimezone(UTC) + timedelta(seconds=10)
     while True:
         running_threads.set(len(tasks))
         await sleep(30)
@@ -179,6 +196,36 @@ async def __main__():
                                 EventType.PREDICTIONS, stop=task.stop, queue=queue
                             )
                         )
+        if profile_dir and datetime.now().astimezone(UTC) > next_profile_time:
+            if not yappi.is_running():
+                yappi.start()
+            logging.info("started profiling")
+            await sleep(180)
+            yappi.stop()
+            logging.info("stopped profiling")
+            end_time = datetime.now().astimezone(ZoneInfo("US/Eastern"))
+
+            file_name = (
+                Path(profile_dir)
+                / f"{uuid.UUID(int=getrandbits(128), version=4)}-profile.txt"
+            )
+
+            with open(file_name, "w") as f:
+                f.write(f"{start_time.strftime('%c')} to {end_time.strftime('%c')}")
+                threads = yappi.get_thread_stats()
+                threads.sort("ttot", "desc").print_all(out=f)
+                for thread in threads.sort("id", "asc"):
+                    stats = yappi.get_func_stats(
+                        ctx_id=thread.id,
+                        filter_callback=lambda x: "lib" not in x.module,
+                    )
+                    if len(stats) > 0:
+                        f.write(f"\nStats for Thread {thread.id} {thread.name}")
+                        stats.print_all(out=f)
+                next_profile_time = datetime.now().astimezone(UTC) + timedelta(
+                    minutes=randint(30, 60)
+                )
+            yappi.clear_stats()
 
 
 if __name__ == "__main__":
