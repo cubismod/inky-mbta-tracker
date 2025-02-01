@@ -206,15 +206,13 @@ async def __main__():
             logging.info("stopped profiling")
             end_time = datetime.now().astimezone(ZoneInfo("US/Eastern"))
 
-            file_name = (
-                Path(profile_dir)
-                / f"{uuid.UUID(int=getrandbits(128), version=4)}-profile.txt"
-            )
+            file_uuid = uuid.UUID(int=getrandbits(128), version=4)
 
-            with open(file_name, "w") as f:
+            with open(Path(profile_dir) / f"{file_uuid}-profile.txt", "w") as f:
                 f.write(f"{start_time.strftime('%c')} to {end_time.strftime('%c')}")
                 threads = yappi.get_thread_stats()
                 threads.sort("ttot", "desc").print_all(out=f)
+
                 for thread in threads.sort("id", "asc"):
                     stats = yappi.get_func_stats(
                         ctx_id=thread.id,
@@ -226,6 +224,10 @@ async def __main__():
                 next_profile_time = datetime.now().astimezone(UTC) + timedelta(
                     minutes=randint(30, 60)
                 )
+
+            all_stats = yappi.get_func_stats()
+            all_stats.save(Path(profile_dir) / f"{file_uuid}.out", "callgrind")
+
             yappi.clear_stats()
 
 
