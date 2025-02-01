@@ -84,6 +84,7 @@ def start_thread(
                     "queue": queue,
                     "transit_time_min": stop.transit_time_min,
                 },
+                name=f"{stop.route_filter}_{stop.stop_id}_schedules",
             )
             thr.start()
             return TaskTracker(task=thr, stop=stop, event_type=target)
@@ -99,6 +100,7 @@ def start_thread(
                     "direction": stop.direction_filter,
                     "expiration_time": exp_time,
                 },
+                name=f"{stop.route_filter}_{stop.stop_id}_predictions",
             )
             thr.start()
             return TaskTracker(
@@ -113,6 +115,7 @@ def start_thread(
                     "queue": queue,
                     "expiration_time": exp_time,
                 },
+                name=f"{route_id}_vehicles",
             )
             thr.start()
             return TaskTracker(
@@ -136,7 +139,9 @@ async def __main__():
 
     start_http_server(int(os.getenv("IMT_PROM_PORT", "8000")))
 
-    process_thr = threading.Thread(target=process_queue, daemon=True, args=[queue])
+    process_thr = threading.Thread(
+        target=process_queue, daemon=True, args=[queue], name="event_processor"
+    )
     process_thr.start()
 
     tasks.append(TaskTracker(process_thr, stop=None, event_type=EventType.OTHER))
@@ -154,7 +159,9 @@ async def __main__():
                     queue=queue,
                 )
             )
-        geojson_thr = threading.Thread(target=run, daemon=True, args=[config])
+        geojson_thr = threading.Thread(
+            target=run, daemon=True, args=[config], name="geojson"
+        )
         geojson_thr.start()
         tasks.append(TaskTracker(geojson_thr, stop=None, event_type=EventType.OTHER))
 
@@ -213,7 +220,7 @@ async def __main__():
                         filter_callback=lambda x: "lib" not in x.module,
                     )
                     if len(stats) > 0:
-                        f.write(f"\nStats for Thread {thread.id}")
+                        f.write(f"\nStats for Thread {thread.id} {thread.name}")
                         stats.print_all(out=f)
                 next_profile_time = datetime.now().astimezone(UTC) + timedelta(
                     minutes=randint(30, 60)
