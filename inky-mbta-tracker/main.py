@@ -199,8 +199,9 @@ async def __main__():
         if profile_dir and datetime.now().astimezone(UTC) > next_profile_time:
             if not yappi.is_running():
                 yappi.start()
-            logging.info("started profiling")
-            await sleep(180)
+                start_time = datetime.now().astimezone(ZoneInfo("US/Eastern"))
+                logging.info("started profiling")
+            await sleep(300)
             yappi.stop()
             logging.info("stopped profiling")
             end_time = datetime.now().astimezone(ZoneInfo("US/Eastern"))
