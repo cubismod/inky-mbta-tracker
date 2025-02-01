@@ -2,10 +2,12 @@ import logging
 import os
 import threading
 import time
+import uuid
 from asyncio import Runner, sleep
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from queue import Queue
-from random import randint
+from random import getrandbits, randint
 from typing import Optional
 
 import yappi
@@ -124,8 +126,9 @@ def start_thread(
 async def __main__():
     config = load_config()
 
-    profile_file = os.getenv("IMT_PROFILE_FILE")
-    if profile_file:
+    profile_dir = os.getenv("IMT_PROFILE_DIR")
+    start_time = datetime.now().astimezone(ZoneInfo("US/Eastern"))
+    if profile_dir:
         yappi.start()
 
     queue = Queue[ScheduleEvent | VehicleRedisSchema]()
@@ -186,16 +189,22 @@ async def __main__():
                                 EventType.PREDICTIONS, stop=task.stop, queue=queue
                             )
                         )
-        if profile_file and datetime.now().astimezone(UTC) > next_profile_time:
+        if profile_dir and datetime.now().astimezone(UTC) > next_profile_time:
             if not yappi.is_running():
                 yappi.start()
             logging.info("started profiling")
             await sleep(180)
             yappi.stop()
             logging.info("stopped profiling")
+            end_time = datetime.now().astimezone(ZoneInfo("US/Eastern"))
 
-            with open(profile_file, "a") as f:
-                f.write("\n====================================\n")
+            file_name = (
+                Path(profile_dir)
+                / f"{uuid.UUID(int=getrandbits(128), version=4)}-profile.txt"
+            )
+
+            with open(file_name, "w") as f:
+                f.write(f"{start_time.strftime('%c')} to {end_time.strftime('%c')}")
                 threads = yappi.get_thread_stats().sort("id", "asc")
                 threads.print_all(out=f)
                 for thread in threads:
@@ -204,9 +213,7 @@ async def __main__():
                         filter_callback=lambda x: "lib" not in x.module,
                     )
                     if len(stats) > 0:
-                        f.write(
-                            f"\n{datetime.now().astimezone(ZoneInfo('US/Eastern')).strftime('%c')}\nStats for Thread {thread.id}"
-                        )
+                        f.write(f"\nStats for Thread {thread.id}")
                         stats.print_all(out=f)
                 next_profile_time = datetime.now().astimezone(UTC) + timedelta(
                     minutes=randint(30, 60)
