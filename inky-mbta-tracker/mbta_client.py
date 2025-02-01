@@ -591,14 +591,15 @@ async def watch_server_side_events(
         async for event in client:
             if datetime.now().astimezone(UTC) > watcher.expiration_time:
                 await client.aclose()
+                logger.info(
+                    f"Restarting thread {watcher.watcher_type} - {watcher.stop_id}/{watcher.route}"
+                )
                 return
             await watcher.parse_live_api_response(
                 event.data, event.event, queue, transit_time_min, session
             )
     except GeneratorExit:
-        logger.info(
-            f"Restarting thread {watcher.watcher_type} - {watcher.stop_id}/{watcher.route}"
-        )
+        return
 
 
 @retry(
