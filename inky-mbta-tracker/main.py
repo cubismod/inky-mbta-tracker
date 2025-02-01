@@ -8,6 +8,7 @@ from queue import Queue
 from random import randint
 from typing import Optional
 
+import yappi
 from config import StopSetup, load_config
 from dotenv import load_dotenv
 from geojson_creator import run
@@ -122,6 +123,10 @@ def start_thread(
 async def __main__():
     config = load_config()
 
+    profile_file = os.getenv("IMT_PROFILE_FILE")
+    if profile_file:
+        yappi.start()
+
     queue = Queue[ScheduleEvent | VehicleRedisSchema]()
     tasks = list[TaskTracker]()
 
@@ -149,6 +154,7 @@ async def __main__():
         geojson_thr.start()
         tasks.append(TaskTracker(geojson_thr, stop=None, event_type=EventType.OTHER))
 
+    next_profile_time = datetime.now().astimezone(UTC) + timedelta(seconds=10)
     while True:
         running_threads.set(len(tasks))
         await sleep(30)
@@ -179,6 +185,20 @@ async def __main__():
                                 EventType.PREDICTIONS, stop=task.stop, queue=queue
                             )
                         )
+        if profile_file and datetime.now().astimezone(UTC) > next_profile_time:
+            with open(profile_file, "a") as f:
+                threads = yappi.get_thread_stats().sort("id")
+                for thread in threads:
+                    f.write(
+                        f"\n{datetime.now().strftime('%c')}\nFunction stats for Thread {thread.id}"
+                    )
+                    yappi.get_func_stats(
+                        ctx_id=thread.id,
+                        filter_callback=lambda x: "lib" not in x.module,
+                    ).print_all(out=f)
+                next_profile_time = datetime.now().astimezone(UTC) + timedelta(
+                    minutes=randint(60, 120)
+                )
 
 
 if __name__ == "__main__":
