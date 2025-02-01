@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 from queue import Queue
 from random import randint
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 import yappi
 from config import StopSetup, load_config
@@ -190,7 +191,7 @@ async def __main__():
                 threads = yappi.get_thread_stats().sort("id")
                 for thread in threads:
                     f.write(
-                        f"\n{datetime.now().strftime('%c')}\nFunction stats for Thread {thread.id}"
+                        f"\n{datetime.now().astimezone(ZoneInfo('US/Eastern')).strftime('%c')}\nFunction stats for Thread {thread.id}"
                     )
                     yappi.get_func_stats(
                         ctx_id=thread.id,
