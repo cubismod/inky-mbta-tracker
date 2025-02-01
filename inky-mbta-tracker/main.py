@@ -187,19 +187,31 @@ async def __main__():
                             )
                         )
         if profile_file and datetime.now().astimezone(UTC) > next_profile_time:
+            if not yappi.is_running():
+                yappi.start()
+            logging.info("started profiling")
+            await sleep(180)
+            yappi.stop()
+            logging.info("stopped profiling")
+
             with open(profile_file, "a") as f:
-                threads = yappi.get_thread_stats().sort("id")
+                f.write("\n====================================\n")
+                threads = yappi.get_thread_stats().sort("id", "asc")
+                threads.print_all(out=f)
                 for thread in threads:
-                    f.write(
-                        f"\n{datetime.now().astimezone(ZoneInfo('US/Eastern')).strftime('%c')}\nFunction stats for Thread {thread.id}"
-                    )
-                    yappi.get_func_stats(
+                    stats = yappi.get_func_stats(
                         ctx_id=thread.id,
                         filter_callback=lambda x: "lib" not in x.module,
-                    ).print_all(out=f)
+                    )
+                    if len(stats) > 0:
+                        f.write(
+                            f"\n{datetime.now().astimezone(ZoneInfo('US/Eastern')).strftime('%c')}\nStats for Thread {thread.id}"
+                        )
+                        stats.print_all(out=f)
                 next_profile_time = datetime.now().astimezone(UTC) + timedelta(
-                    minutes=randint(60, 120)
+                    minutes=randint(30, 60)
                 )
+            yappi.clear_stats()
 
 
 if __name__ == "__main__":
