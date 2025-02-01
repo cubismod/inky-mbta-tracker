@@ -591,6 +591,7 @@ async def watch_server_side_events(
         async for event in client:
             if datetime.now().astimezone(UTC) > watcher.expiration_time:
                 await client.aclose()
+                return
             await watcher.parse_live_api_response(
                 event.data, event.event, queue, transit_time_min, session
             )
