@@ -150,7 +150,7 @@ async def __main__():
             tasks.append(start_thread(EventType.SCHEDULES, stop=stop, queue=queue))
         else:
             tasks.append(start_thread(EventType.PREDICTIONS, stop=stop, queue=queue))
-    if config.vehicles_by_route:
+    if config.vehicles_by_route or os.getenv("IMT_TRACK_VEHICLES"):
         for route_id in config.vehicles_by_route:
             tasks.append(
                 start_thread(
