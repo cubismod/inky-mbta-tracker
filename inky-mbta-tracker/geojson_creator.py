@@ -165,7 +165,7 @@ async def create_json(config: Config):
                     create_and_upload_file(
                         resource, f"{prefix}vehicles.json", s3_bucket, vals
                     )
-                await sleep(35)
+                await sleep(int(os.getenv("IMT_S3_REFRESH_TIME", "35")))
             except ResponseError as err:
                 logger.error("unable to run redis command", exc_info=err)
             except ValidationError as err:
