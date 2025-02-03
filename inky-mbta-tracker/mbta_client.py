@@ -123,6 +123,7 @@ def silver_line_lookup(route_id: str):
             return route_id
 
 
+# retrieves a rail/bus stop from Redis & returns the stop ID with optional coordinates
 async def light_get_stop(redis: Redis, stop_id: Optional[str]):
     if stop_id:
         key = f"stop-{stop_id}"
@@ -142,7 +143,7 @@ async def light_get_stop(redis: Redis, stop_id: Optional[str]):
         else:
             async with aiohttp.ClientSession(mbta_v3) as session:
                 watcher = Watcher(stop_id=stop_id, watcher_type=EventType.OTHER)
-                # avoid stressing out the API by spacing out requests
+                # avoid rate-limiting by spacing out requests
                 await sleep(randint(1, 4))
                 stop = await watcher.get_stop(session, stop_id)
                 if stop and stop[0]:
