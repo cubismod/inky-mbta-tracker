@@ -7,6 +7,7 @@ from queue import Queue
 from typing import Optional
 
 import humanize
+from geojson import Feature, Point
 from paho.mqtt import MQTTException, publish
 from prometheus import schedule_events, vehicle_events
 from pydantic import BaseModel, ValidationError
@@ -17,6 +18,7 @@ from tenacity import (
     retry,
     wait_random_exponential,
 )
+from turfpy import measurement
 from zoneinfo import ZoneInfo
 
 logger = logging.getLogger("schedule_tracker")
@@ -99,6 +101,39 @@ class Tracker:
             f"action={event.action} route={event.route} vehicle_id={event.id} lat={event.latitude} long={event.longitude} status={event.current_status} speed={event.speed}"
         )
 
+    # calculate an approximate vehicle speed using the previous position and timestamp
+    async def calculate_vehicle_speed(self, event: VehicleRedisSchema):
+        try:
+            if event.current_status != "STOPPED_AT" and not event.speed:
+                last_event = await self.redis.get(f"vehicle-{event.id}")
+                if last_event:
+                    last_event_validated = VehicleRedisSchema.model_validate_json(
+                        last_event, strict=False
+                    )
+
+                    start = Feature(
+                        geometry=Point(
+                            (
+                                last_event_validated.longitude,
+                                last_event_validated.latitude,
+                            )
+                        )
+                    )
+                    end = Feature(geometry=Point((event.longitude, event.latitude)))
+
+                    distance = measurement.distance(start, end, "m")
+                    duration = event.update_time - last_event_validated.update_time
+                    if distance > 0 and duration.seconds > 0:
+                        meters_per_second = distance / duration.seconds
+                        return round(meters_per_second * 2.2369362921, 2)
+                    else:
+                        return last_event_validated.speed
+            return None
+        except ResponseError as err:
+            logger.error("unable to get redis event", exc_info=err)
+        except ValidationError as err:
+            logger.error("unable to validate obj", exc_info=err)
+
     async def cleanup(self, pipeline: Pipeline):
         try:
             obsolete_ids = await self.redis.zrange(
@@ -152,6 +187,7 @@ class Tracker:
                 self.log_prediction(event)
         if isinstance(event, VehicleRedisSchema):
             redis_key = f"vehicle-{event.id}"
+            event.speed = await self.calculate_vehicle_speed(event)
             await pipeline.set(
                 redis_key, event.model_dump_json(), ex=timedelta(minutes=10)
             )
