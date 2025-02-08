@@ -44,25 +44,27 @@ def ret_color(vehicle: VehicleRedisSchema):
 def create_and_upload_file(
     resource, file_name: str, bucket_name: str, features: list[Feature]
 ):
-    with open(
-        file_name,
-        "w",
-    ) as file:
-        file.write(
-            dumps(
-                FeatureCollection(features),
-                sort_keys=True,
-            )
-        )
-        bucket = resource.Bucket(bucket_name)
-        obj = bucket.Object(file_name)
-        try:
-            obj.upload_file(file_name)
-            logger.info(f"Successfully uploaded file {file_name} to s3://{bucket_name}")
-        except S3UploadFailedError as err:
-            logger.error(
-                f"Couldn't upload file {file_name} to {bucket.name}", exc_info=err
-            )
+    features_str = dumps(
+        FeatureCollection(features),
+        sort_keys=True,
+    )
+    if "geometry" in features_str:
+        with open(
+            file_name,
+            "w",
+        ) as file:
+            file.write(features_str)
+            bucket = resource.Bucket(bucket_name)
+            obj = bucket.Object(file_name)
+            try:
+                obj.upload_file(file_name)
+                logger.info(
+                    f"Successfully uploaded file {file_name} to s3://{bucket_name}"
+                )
+            except S3UploadFailedError as err:
+                logger.error(
+                    f"Couldn't upload file {file_name} to {bucket.name}", exc_info=err
+                )
 
 
 def calculate_bearing(start: Point, end: Point):
@@ -178,10 +180,9 @@ async def create_json(config: Config):
                                 )
                                 features[f"v-{vehicle_info.stop}"] = stop_feature
                 vals = [v for _, v in features.items()]
-                if len(vals) > 0:
-                    create_and_upload_file(
-                        resource, f"{prefix}vehicles.json", s3_bucket, vals
-                    )
+                create_and_upload_file(
+                    resource, f"{prefix}vehicles.json", s3_bucket, vals
+                )
                 await sleep(int(os.getenv("IMT_S3_REFRESH_TIME", "35")))
             except ResponseError as err:
                 logger.error("unable to run redis command", exc_info=err)
