@@ -11,14 +11,18 @@ permissions:
   id-token: write
 
 
+
 on:
   push:
     branches: ["main"]
   pull_request:
   merge_group:
 
+
+
 jobs:
   build-main:
+    if: github.ref_name == 'main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@master
@@ -33,3 +37,18 @@ jobs:
           cache_registry: cache
           tag: ${{ github.sha }}
           tag_with_latest: true
+  pr-check:
+    if: startsWith(github.ref, 'refs/pull/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@master
+      - name: Kaniko build Dockerfile
+        uses: aevea/action-kaniko@master
+        with:
+          registry: ghcr.io
+          password: ${{ secrets.GITHUB_TOKEN }}
+          image: inky-mbta-tracker-dev
+          cache: true
+          build_file: Dockerfile
+          cache_registry: cache
+          tag: ${{ github.sha }}
