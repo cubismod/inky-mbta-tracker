@@ -125,9 +125,17 @@ class Tracker:
                     duration = event.update_time - last_event_validated.update_time
                     if distance > 0 and duration.seconds > 0:
                         meters_per_second = distance / duration.seconds
-                        return round(meters_per_second * 2.2369362921, 2)
+                        speed = meters_per_second * 2.2369362921
+                        if not event.route.startswith("CR") and speed > 57:
+                            # throw out insane predictions
+                            return None
+                        else:
+                            return round(speed, 2)
+
                     else:
                         return last_event_validated.speed
+            if event.speed:
+                return event.speed
             return None
         except ResponseError as err:
             logger.error("unable to get redis event", exc_info=err)
