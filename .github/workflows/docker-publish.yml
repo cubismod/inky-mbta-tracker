@@ -45,8 +45,10 @@ jobs:
       - name: Kaniko build Dockerfile
         uses: aevea/action-kaniko@master
         with:
+          registry: ghcr.io
+          password: ${{ secrets.GITHUB_TOKEN }}
           image: inky-mbta-tracker-dev
           cache: true
-          cache_registry: cache
           build_file: Dockerfile
+          cache_registry: cache
           tag: ${{ github.sha }}
