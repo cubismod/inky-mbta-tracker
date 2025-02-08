@@ -18,6 +18,7 @@ from redis.asyncio import Redis
 from s3transfer import S3UploadFailedError
 from schedule_tracker import VehicleRedisSchema
 from tenacity import before_sleep_log, retry, wait_random_exponential
+from turfpy.measurement import bearing
 
 logger = logging.getLogger("geojson")
 
@@ -62,6 +63,10 @@ def create_and_upload_file(
             logger.error(
                 f"Couldn't upload file {file_name} to {bucket.name}", exc_info=err
             )
+
+
+def calculate_bearing(start: Point, end: Point):
+    return bearing(Feature(geometry=start), Feature(geometry=end))
 
 
 @retry(
@@ -109,6 +114,7 @@ async def create_json(config: Config):
                 results = await pl.execute()
                 for result in results:
                     if result:
+                        vehicle_bearing = None
                         vehicle_info = VehicleRedisSchema.model_validate_json(
                             strict=False, json_data=result
                         )
@@ -117,6 +123,11 @@ async def create_json(config: Config):
                                 (vehicle_info.longitude, vehicle_info.latitude)
                             )
                             stop = await light_get_stop(r, vehicle_info.stop)
+                            if stop[1]:
+                                vehicle_bearing = calculate_bearing(
+                                    point, Point(stop[1])
+                                )
+
                             route_icon = "rail"
                             if (
                                 vehicle_info.route.startswith("7")
@@ -143,6 +154,7 @@ async def create_json(config: Config):
                                     "id": vehicle_info.id,
                                     "stop": stop[0],
                                     "stop-coordinates": stop[1],
+                                    "bearing": vehicle_bearing,
                                 },
                             )
                             features[f"v-{vehicle_info.id}"] = feature

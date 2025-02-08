@@ -46,6 +46,7 @@ class VehicleRedisSchema(BaseModel):
     speed: Optional[float] = 0
     stop: Optional[str] = None
     route: str
+    update_time: datetime
 
 
 def dummy_schedule_event(event_id: str):

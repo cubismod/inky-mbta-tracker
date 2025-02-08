@@ -172,3 +172,5 @@ shapes.json
 vehicles.json
 
 profiles/
+*_shapes.json
+*_vehicles.json

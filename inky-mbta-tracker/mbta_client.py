@@ -312,6 +312,7 @@ class Watcher:
                                 id=type_and_id.id,
                                 action="remove",
                                 route=self.route,
+                                update_time=datetime.now().astimezone(UTC),
                             )
                         )
 
@@ -348,6 +349,12 @@ class Watcher:
                 return self.check_secure_bike_storage()
             case _:
                 return self.check_secure_bike_storage()
+
+    @staticmethod
+    def meters_per_second_to_mph(speed: Optional[float]):
+        if speed:
+            return round(speed * 2.23693629, 2)
+        return None
 
     # abbreviate common words to fit more on screen
     @staticmethod
@@ -425,8 +432,9 @@ class Watcher:
                 direction_id=item.attributes.direction_id,
                 latitude=item.attributes.latitude,
                 longitude=item.attributes.longitude,
-                speed=item.attributes.speed,
+                speed=self.meters_per_second_to_mph(item.attributes.speed),
                 route=item.relationships.route.data.id,
+                update_time=datetime.now().astimezone(UTC),
             )
             if item.relationships.stop.data:
                 event.stop = item.relationships.stop.data.id
