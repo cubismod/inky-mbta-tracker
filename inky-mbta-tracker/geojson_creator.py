@@ -155,6 +155,7 @@ async def create_json(config: Config):
                                     "stop": stop[0],
                                     "stop-coordinates": stop[1],
                                     "bearing": vehicle_bearing,
+                                    "update_time": vehicle_info.update_time.isoformat(),
                                 },
                             )
                             features[f"v-{vehicle_info.id}"] = feature
