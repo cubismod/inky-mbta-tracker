@@ -38,7 +38,7 @@ jobs:
           tag: ${{ github.sha }}
           tag_with_latest: true
   pr-check:
-    if: startsWith(github.ref, "refs/pull/")
+    if: startsWith(github.ref, 'refs/pull/')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@master
