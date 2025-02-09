@@ -49,6 +49,7 @@ class VehicleRedisSchema(BaseModel):
     stop: Optional[str] = None
     route: str
     update_time: datetime
+    approximate_speed: bool = False
 
 
 def dummy_schedule_event(event_id: str):
@@ -102,6 +103,7 @@ class Tracker:
         )
 
     # calculate an approximate vehicle speed using the previous position and timestamp
+    # returns (the speed, if this was an approximate calculation)
     async def calculate_vehicle_speed(self, event: VehicleRedisSchema):
         try:
             if event.current_status != "STOPPED_AT" and not event.speed:
@@ -128,15 +130,18 @@ class Tracker:
                         speed = meters_per_second * 2.2369362921
                         if not event.route.startswith("CR") and speed > 57:
                             # throw out insane predictions
-                            return None
+                            return None, False
                         else:
-                            return round(speed, 2)
+                            return round(speed, 2), True
 
                     else:
-                        return last_event_validated.speed
+                        return (
+                            last_event_validated.speed,
+                            last_event_validated.approximate_speed,
+                        )
             if event.speed:
-                return event.speed
-            return None
+                return event.speed, False
+            return None, False
         except ResponseError as err:
             logger.error("unable to get redis event", exc_info=err)
         except ValidationError as err:
@@ -195,7 +200,8 @@ class Tracker:
                 self.log_prediction(event)
         if isinstance(event, VehicleRedisSchema):
             redis_key = f"vehicle-{event.id}"
-            event.speed = await self.calculate_vehicle_speed(event)
+            event.speed, approximate = await self.calculate_vehicle_speed(event)
+            event.approximate_speed = approximate
             await pipeline.set(
                 redis_key, event.model_dump_json(), ex=timedelta(minutes=10)
             )
