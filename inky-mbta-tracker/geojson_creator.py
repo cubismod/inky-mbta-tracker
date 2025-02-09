@@ -158,6 +158,7 @@ async def create_json(config: Config):
                                     "stop-coordinates": stop[1],
                                     "bearing": vehicle_bearing,
                                     # https://tc39.es/ecma262/multipage/numbers-and-dates.html#sec-date-time-string-format
+                                    "approximate_speed": vehicle_info.approximate_speed,
                                     "update_time": vehicle_info.update_time.strftime(
                                         "%Y-%m-%dT%H:%M:%S.000Z"
                                     ),
