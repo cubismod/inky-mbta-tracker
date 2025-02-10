@@ -50,6 +50,7 @@ class VehicleRedisSchema(BaseModel):
     route: str
     update_time: datetime
     approximate_speed: bool = False
+    occupancy_status: Optional[str] = None
 
 
 def dummy_schedule_event(event_id: str):

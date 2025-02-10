@@ -309,6 +309,12 @@ class Facilities(BaseModel):
     data: list[FacilityResource]
 
 
+class CarriageStatus(BaseModel):
+    occupancy_status: Optional[str] = None
+    occupancy_percentage: Optional[int] = None
+    label: Optional[str] = None
+
+
 # not every field is being included in responses
 class VehicleAttributes(BaseModel):
     current_status: str = ""
@@ -316,6 +322,8 @@ class VehicleAttributes(BaseModel):
     latitude: float = 0
     longitude: float = 0
     speed: Optional[float] = None
+    occupancy_status: Optional[str] = None
+    carriages: Optional[list[CarriageStatus]] = None
 
 
 class TypeAndIDinData(BaseModel):

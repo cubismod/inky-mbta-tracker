@@ -435,6 +435,7 @@ class Watcher:
                 speed=self.meters_per_second_to_mph(item.attributes.speed),
                 route=item.relationships.route.data.id,
                 update_time=datetime.now().astimezone(UTC),
+                occupancy_status=item.attributes.occupancy_status,
             )
             if item.relationships.stop.data:
                 event.stop = item.relationships.stop.data.id
@@ -649,7 +650,7 @@ async def watch_vehicles(
     expiration_time: datetime,
     route_id: str,
 ):
-    endpoint = f"{mbta_v3}/vehicles?fields[vehicle]=direction_id,latitude,longitude,speed,current_status&filter[route]={route_id}&api_key={auth_token}"
+    endpoint = f"{mbta_v3}/vehicles?fields[vehicle]=direction_id,latitude,longitude,speed,current_status,occupancy_status,carriages&filter[route]={route_id}&api_key={auth_token}"
     mbta_api_requests.labels("vehicles").inc()
     headers = {"accept": "text/event-stream"}
     watcher = Watcher(
