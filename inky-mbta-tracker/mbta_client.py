@@ -2,6 +2,7 @@
 import logging
 import os
 from asyncio import CancelledError, Runner, sleep
+from collections import Counter
 from datetime import UTC, datetime, timedelta
 from enum import Enum
 from queue import Queue
@@ -356,6 +357,25 @@ class Watcher:
             return round(speed * 2.23693629, 2)
         return None
 
+    @staticmethod
+    def occupancy_status_human_readable(occupancy: str):
+        return occupancy.replace("_", " ").capitalize()
+
+    @staticmethod
+    def calculate_carriage_occupancy(vehicle: Vehicle):
+        if vehicle.attributes.carriages:
+            statuses = list[str]()
+            [
+                statuses.append(carriage.occupancy_status)
+                for carriage in vehicle.attributes.carriages
+                if carriage.occupancy_status
+                and carriage.occupancy_status != "NO_DATA_AVAILABLE"
+            ]
+            if len(statuses) > 0:
+                count = Counter(statuses)
+                return count.most_common(1)[0][0]
+        return None
+
     # abbreviate common words to fit more on screen
     @staticmethod
     def abbreviate(inp: str):
@@ -425,6 +445,11 @@ class Watcher:
                 )
                 queue.put(event)
         else:
+            occupancy = item.attributes.occupancy_status
+            if not occupancy:
+                occupancy = self.calculate_carriage_occupancy(item)
+            if occupancy:
+                occupancy = self.occupancy_status_human_readable(occupancy)
             event = VehicleRedisSchema(
                 action=event_type,
                 id=item.id,
@@ -435,7 +460,7 @@ class Watcher:
                 speed=self.meters_per_second_to_mph(item.attributes.speed),
                 route=item.relationships.route.data.id,
                 update_time=datetime.now().astimezone(UTC),
-                occupancy_status=item.attributes.occupancy_status,
+                occupancy_status=occupancy,
             )
             if item.relationships.stop.data:
                 event.stop = item.relationships.stop.data.id
