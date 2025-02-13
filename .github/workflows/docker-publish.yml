@@ -26,29 +26,45 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@master
-      - name: Kaniko build Dockerfile
-        uses: aevea/action-kaniko@master
+      - name: buildah
+        id: build-image
+        uses: redhat-actions/buildah-build@v2
         with:
-          registry: ghcr.io
-          password: ${{ secrets.GITHUB_TOKEN }}
           image: inky-mbta-tracker
-          cache: true
-          build_file: Dockerfile
-          cache_registry: cache
-          tag: ${{ github.sha }}
-          tag_with_latest: true
+          tags: ${{ github.sha }}
+          layers: true
+          containerfiles: |
+            ./Dockerfile
+      - name: push
+        uses: redhat-actions/push-to-registry@v2
+        with:
+          image: ${{ steps.build-image.outputs.image }}
+          tags: ${{ steps.build-image.outputs.tags }}
+          registry: ${{ env.IMAGE_REGISTRY }}
+          username: ${{ env.REGISTRY_USER }}
+          password: ${{ env.REGISTRY_PASSWORD }}
+          extra-args: |
+            --disable-content-trust
   pr-check:
     if: startsWith(github.ref, 'refs/pull/')
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@master
-      - name: Kaniko build Dockerfile
-        uses: aevea/action-kaniko@master
+      - name: buildah
+        id: build-image
+        uses: redhat-actions/buildah-build@v2
         with:
-          registry: ghcr.io
-          password: ${{ secrets.GITHUB_TOKEN }}
           image: inky-mbta-tracker-dev
-          cache: true
-          build_file: Dockerfile
-          cache_registry: cache
-          tag: ${{ github.sha }}
+          tags: ${{ github.sha }}
+          layers: true
+          containerfiles: |
+            ./Dockerfile
+      - name: push
+        uses: redhat-actions/push-to-registry@v2
+        with:
+          image: ${{ steps.build-image.outputs.image }}
+          tags: ${{ steps.build-image.outputs.tags }}
+          registry: ${{ env.IMAGE_REGISTRY }}
+          username: ${{ env.REGISTRY_USER }}
+          password: ${{ env.REGISTRY_PASSWORD }}
+          extra-args: |
+            --disable-content-trust
