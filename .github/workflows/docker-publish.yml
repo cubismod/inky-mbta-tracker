@@ -25,34 +25,44 @@ jobs:
     if: github.ref_name == 'main'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@master
-      - name: buildah
-        id: build-image
-        uses: redhat-actions/buildah-build@v2
-        with:
-          image: inky-mbta-tracker
-          tags: ${{ github.sha }}
-          layers: true
-          containerfiles: |
-            ./Dockerfile
-          build_args: |
-            cache-to=ghcr.io/cubismod/inky-mbta-tracker/cache
-            cache-from=ghcr.io/cubismod/inky-mbta-tracker/cache
-      - name: push
-        uses: redhat-actions/push-to-registry@v2
-        with:
-          image: ${{ steps.build-image.outputs.image }}
-          tags: ${{ steps.build-image.outputs.tags }}
-          registry: ghcr.io/${{ github.repository_owner }}
-          username: ${{ env.REGISTRY_USER }}
-          password: ${{ env.REGISTRY_PASSWORD }}
-          extra-args: |
-            --disable-content-trust
+    - uses: actions/checkout@master
+    - name: login
+      uses: redhat-actions/podman-login@v1
+      with:
+        username: ${{ env.REGISTRY_USER }}
+        password: ${{ env.REGISTRY_PASSWORD }}
+    - name: buildah
+      id: build-image
+      uses: redhat-actions/buildah-build@v2
+      with:
+        image: inky-mbta-tracker
+        tags: ${{ github.sha }}
+        layers: true
+        containerfiles: |
+          ./Dockerfile
+        build_args: |
+          cache-to=ghcr.io/cubismod/inky-mbta-tracker/cache
+          cache-from=ghcr.io/cubismod/inky-mbta-tracker/cache
+    - name: push
+      uses: redhat-actions/push-to-registry@v2
+      with:
+        image: ${{ steps.build-image.outputs.image }}
+        tags: ${{ steps.build-image.outputs.tags }}
+        registry: ghcr.io/${{ github.repository_owner }}
+        username: ${{ env.REGISTRY_USER }}
+        password: ${{ env.REGISTRY_PASSWORD }}
+        extra-args: |
+          --disable-content-trust
   pr-check:
     if: startsWith(github.ref, 'refs/pull/')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@master
+      - name: login
+        uses: redhat-actions/podman-login@v1
+        with:
+          username: ${{ env.REGISTRY_USER }}
+          password: ${{ env.REGISTRY_PASSWORD }}
       - name: buildah
         id: build-image
         uses: redhat-actions/buildah-build@v2
