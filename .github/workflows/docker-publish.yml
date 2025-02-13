@@ -34,7 +34,7 @@ jobs:
           tags: ${{ github.sha }}
           layers: true
           containerfiles: |
-            ./Dockerfile
+            ../Dockerfile
       - name: push
         uses: redhat-actions/push-to-registry@v2
         with:
@@ -57,7 +57,7 @@ jobs:
           tags: ${{ github.sha }}
           layers: true
           containerfiles: |
-            ./Dockerfile
+            ../Dockerfile
       - name: push
         uses: redhat-actions/push-to-registry@v2
         with:
