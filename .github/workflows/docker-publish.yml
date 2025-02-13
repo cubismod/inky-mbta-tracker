@@ -61,6 +61,7 @@ jobs:
       - name: login
         uses: redhat-actions/podman-login@v1
         with:
+          registry: ghcr.io/${{ github.repository_owner }}
           username: ${{ env.REGISTRY_USER }}
           password: ${{ env.REGISTRY_PASSWORD }}
       - name: buildah
