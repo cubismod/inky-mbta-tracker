@@ -1,5 +1,5 @@
 FROM python:3.13 AS main
-COPY --from=ghcr.io/astral-sh/uv:0.5.31 /uvx /bin/
+COPY --from=ghcr.io/astral-sh/uv:0.5.31 /uv /uvx /bin/
 
 WORKDIR /app
 ADD pyproject.toml uv.lock ./
