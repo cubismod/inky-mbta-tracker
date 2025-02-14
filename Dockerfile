@@ -7,4 +7,4 @@ COPY . .
 RUN uv sync --frozen
 RUN uvx ruff check
 
-CMD ["python3", "inky-mbta-tracker/main.py"]
+CMD ["uv", "run", "inky-mbta-tracker/main.py"]
