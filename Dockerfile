@@ -2,7 +2,7 @@ FROM python:3.13 AS main
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
 WORKDIR /app
-COPY . .
+ADD . .
 
 RUN uv sync --frozen
 RUN uvx ruff check

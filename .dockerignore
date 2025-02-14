@@ -8,3 +8,4 @@ grafana-dashboard.json
 README.md
 requirements.txt
 Taskfile.yml
+.venv/
