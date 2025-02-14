@@ -1,0 +1,10 @@
+.github/
+.vscode/
+.tool-versions
+docker-compose.yaml
+Dockerfile
+grafana-dashboard.json
+*.png
+README.md
+requirements.txt
+Taskfile.yml
