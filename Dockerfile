@@ -1,17 +1,14 @@
-FROM python:3.13 AS builder
-
-COPY requirements.txt .
-RUN pip install --user -r requirements.txt
-
-FROM python:3.13-slim as main
+FROM python:3.13 AS main
+COPY --from=ghcr.io/astral-sh/uv:0.5.31 /uv /uvx /bin/
 
 WORKDIR /app
-COPY --from=builder /root/.local /root/.local
-COPY inky-mbta-tracker/ ./inky-mbta-tracker/
+ADD pyproject.toml uv.lock ./
 
-COPY pyproject.toml .
-ENV PATH=/root/.local:$PATH
+RUN uv sync --frozen --no-cache
 
-RUN python3 -m ruff check inky-mbta-tracker/
+ADD . .
 
-CMD ["python3", "inky-mbta-tracker/main.py"]
+RUN uv sync --frozen --no-cache
+RUN uvx ruff check
+
+CMD ["uv", "run", "inky-mbta-tracker/main.py"]

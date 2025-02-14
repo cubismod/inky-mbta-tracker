@@ -52,3 +52,4 @@ jobs:
           build_file: Dockerfile
           cache_registry: cache
           tag: ${{ github.sha }}
+          tag_with_latest: true
