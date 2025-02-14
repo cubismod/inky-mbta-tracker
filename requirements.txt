@@ -40,7 +40,7 @@ psutil==6.1.1
 pycares==4.5.0
 pycparser==2.22
 pydantic==2.10.6
-pydantic_core==2.27.2
+pydantic_core==2.29.0
 Pygments==2.19.1
 pyogrio==0.10.0
 pyproj==3.7.0
