@@ -1,10 +1,14 @@
 FROM python:3.13 AS main
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+COPY --from=ghcr.io/astral-sh/uv:0.5.31 /uvx /bin/
 
 WORKDIR /app
+ADD pyproject.toml uv.lock ./
+
+RUN uv sync --frozen --no-cache
+
 ADD . .
 
-RUN uv sync --frozen
+RUN uv sync --frozen --no-cache
 RUN uvx ruff check
 
 CMD ["uv", "run", "inky-mbta-tracker/main.py"]
