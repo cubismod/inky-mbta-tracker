@@ -174,3 +174,4 @@ vehicles.json
 profiles/
 *_shapes.json
 *_vehicles.json
+.venv/
