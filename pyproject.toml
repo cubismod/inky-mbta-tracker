@@ -43,7 +43,7 @@ dependencies = [
     "prettytable==3.14.0",
     "prometheus-client==0.21.1",
     "propcache==0.2.1",
-    "psutil==6.1.1",
+    "psutil==7.0.0",
     "pycares==4.5.0",
     "pycparser==2.22",
     "pydantic==2.10.6",
