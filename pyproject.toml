@@ -50,7 +50,7 @@ dependencies = [
     "pydantic-core==2.27.2",
     "pygments==2.19.1",
     "pyogrio==0.10.0",
-    "pyproj==3.7.0",
+    "pyproj==3.7.1",
     "python-dateutil==2.9.0.post0",
     "python-dotenv==1.0.1",
     "pytz==2025.1",
