@@ -40,8 +40,8 @@ jobs:
       - name: copy image
         uses: coscene-io/skopeo-copy-action@v1.0.0
         with:
-          src-image: ghcr.io/inky-mbta-tracker/inky-mbta-tracker:${{ github.sha }}
-          dst-image: ghcr.io/inky-mbta-tracker/inky-mbta-tracker-dev:${{ github.sha }}
+          src-image: ghcr.io/cubismod/inky-mbta-tracker/inky-mbta-tracker:${{ github.sha }}
+          dst-image: ghcr.io/cubismod/inky-mbta-tracker/inky-mbta-tracker-dev:${{ github.sha }}
           src-creds: cubismod:${{ secrets.GITHUB_TOKEN }}
           dst-creds: cubismod:${{ secrets.GITHUB_TOKEN }}
   pr-check:
