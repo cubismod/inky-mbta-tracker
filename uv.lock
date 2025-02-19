@@ -113,16 +113,16 @@ wheels = [
 
 [[package]]
 name = "boto3"
-version = "1.36.22"
+version = "1.36.23"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "botocore" },
     { name = "jmespath" },
     { name = "s3transfer" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/50/d0/4b0f04a8704cc303645e8c8f2f701ae01d802e73e755720a7e8be515736e/boto3-1.36.22.tar.gz", hash = "sha256:768c8a4d4a6227fe2258105efa086f1424cba5ca915a5eb2305b2cd979306ad1", size = 111038 }
+sdist = { url = "https://files.pythonhosted.org/packages/05/54/a91d274f50bbe8fbd16ecea8bfd60249d0dc1ca50874e3a06119c6e5723a/boto3-1.36.23.tar.gz", hash = "sha256:006800604c34382873521b20890b758eea7109d699696ece932131259d0a4658", size = 111094 }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/82/85/623948857076415334a85abcfaf05ad53856403129cc827c4990d82f0463/boto3-1.36.22-py3-none-any.whl", hash = "sha256:39957eabdce009353d72d131046489fbbfa15891865d5f069f1e8bfa414e6b81", size = 139177 },
+    { url = "https://files.pythonhosted.org/packages/e8/b5/2217a8ebb59bbc5f28dc10d3184b1f7e238f1929d211e69298421f912411/boto3-1.36.23-py3-none-any.whl", hash = "sha256:d59642672b1f35f55f47b317693241ce53333816f47c9e72fcc8fd0e9adc6a87", size = 139179 },
 ]
 
 [[package]]
@@ -418,7 +418,7 @@ requires-dist = [
     { name = "annotated-types", specifier = "==0.7.0" },
     { name = "anyio", specifier = "==4.8.0" },
     { name = "attrs", specifier = "==25.1.0" },
-    { name = "boto3", specifier = "==1.36.22" },
+    { name = "boto3", specifier = "==1.36.23" },
     { name = "botocore", specifier = "==1.36.23" },
     { name = "brotli", specifier = "==1.1.0" },
     { name = "certifi", specifier = "==2025.1.31" },
