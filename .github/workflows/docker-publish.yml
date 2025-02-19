@@ -38,14 +38,14 @@ jobs:
           tag: ${{ github.sha }}
           tag_with_latest: true
       - name: copy image
-        uses: coscene-io/skopeo-copy-action@v1.0.0
+        uses: coscene-io/skopeo-copy-action@a5fc4f79f7453c14fd572b68d0cb8467014e9b13 # v1.0.0
         with:
           src-image: ghcr.io/cubismod/inky-mbta-tracker/inky-mbta-tracker:${{ github.sha }}
           dst-image: ghcr.io/cubismod/inky-mbta-tracker/inky-mbta-tracker-dev:${{ github.sha }}
           src-creds: cubismod:${{ secrets.GITHUB_TOKEN }}
           dst-creds: cubismod:${{ secrets.GITHUB_TOKEN }}
       - name: tag latest image
-        uses: coscene-io/skopeo-copy-action@v1.0.0
+        uses: coscene-io/skopeo-copy-action@a5fc4f79f7453c14fd572b68d0cb8467014e9b13 # v1.0.0
         with:
           src-image: ghcr.io/cubismod/inky-mbta-tracker/inky-mbta-tracker-dev:${{ github.sha }}
           dst-image: ghcr.io/cubismod/inky-mbta-tracker/inky-mbta-tracker-dev:latest
