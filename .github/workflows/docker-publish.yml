@@ -44,6 +44,13 @@ jobs:
           dst-image: ghcr.io/cubismod/inky-mbta-tracker/inky-mbta-tracker-dev:${{ github.sha }}
           src-creds: cubismod:${{ secrets.GITHUB_TOKEN }}
           dst-creds: cubismod:${{ secrets.GITHUB_TOKEN }}
+      - name: tag latest image
+        uses: coscene-io/skopeo-copy-action@v1.0.0
+        with:
+          src-image: ghcr.io/cubismod/inky-mbta-tracker/inky-mbta-tracker-dev:${{ github.sha }}
+          dst-image: ghcr.io/cubismod/inky-mbta-tracker/inky-mbta-tracker-dev:latest
+          src-creds: cubismod:${{ secrets.GITHUB_TOKEN }}
+          dst-creds: cubismod:${{ secrets.GITHUB_TOKEN }}
   pr-check:
     if: startsWith(github.ref, 'refs/pull/')
     runs-on: ubuntu-latest
