@@ -11,8 +11,8 @@ permissions:
   id-token: write
 
 env:
-  cache_repo: ghcr.io/cubismod/inky-mbta-tracker:cache
-  repo: ghcr.io/cubismod/inky-mbta-tracker
+  CACHE_REPO: ghcr.io/cubismod/inky-mbta-tracker:cache
+  REPO: ghcr.io/cubismod/inky-mbta-tracker
 
 on:
   push:
@@ -38,24 +38,10 @@ jobs:
         with:
           context: .
           push: true
-          tags: ${{ var.repo }}:${{ github.sha }},latest
+          tags: $REPO:${{ github.sha }},latest
           platforms: linux/amd64,linux/arm64
-          cache-from: type=registry,ref=${{ var.cache_repo }}
-          cache-to: type=registry,ref=${{ var.cache_repo }},mode=max
-      - name: copy image
-        uses: coscene-io/skopeo-copy-action@a5fc4f79f7453c14fd572b68d0cb8467014e9b13 # v1.0.0
-        with:
-          src-image: ghcr.io/cubismod/inky-mbta-tracker/inky-mbta-tracker:${{ github.sha }}
-          dst-image: ghcr.io/cubismod/inky-mbta-tracker/inky-mbta-tracker-dev:${{ github.sha }}
-          src-creds: cubismod:${{ secrets.GITHUB_TOKEN }}
-          dst-creds: cubismod:${{ secrets.GITHUB_TOKEN }}
-      - name: tag latest image
-        uses: coscene-io/skopeo-copy-action@a5fc4f79f7453c14fd572b68d0cb8467014e9b13 # v1.0.0
-        with:
-          src-image: ghcr.io/cubismod/inky-mbta-tracker/inky-mbta-tracker-dev:${{ github.sha }}
-          dst-image: ghcr.io/cubismod/inky-mbta-tracker/inky-mbta-tracker-dev:latest
-          src-creds: cubismod:${{ secrets.GITHUB_TOKEN }}
-          dst-creds: cubismod:${{ secrets.GITHUB_TOKEN }}
+          cache-from: type=registry,ref=$CACHE_REPO
+          cache-to: type=registry,ref=$CACHE_REPO,mode=max
   pr-check:
     if: startsWith(github.ref, 'refs/pull/')
     runs-on: ubuntu-latest
@@ -73,7 +59,7 @@ jobs:
         with:
           context: .
           push: true
-          tags: ${{ var.repo }}:dev-${{ github.sha }},dev-latest
+          tags: $REPO:dev-${{ github.sha }},dev-latest
           platforms: linux/amd64,linux/arm64
-          cache-from: type=registry,ref=${{ var.cache_repo }}
-          cache-to: type=registry,ref=${{ var.cache_repo }},mode=max
+          cache-from: type=registry,ref=$CACHE_REPO
+          cache-to: type=registry,ref=$CACHE_REPO,mode=max
