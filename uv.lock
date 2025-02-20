@@ -390,7 +390,6 @@ dependencies = [
     { name = "rich" },
     { name = "ruff" },
     { name = "s3transfer" },
-    { name = "scalene" },
     { name = "scipy" },
     { name = "shapely" },
     { name = "six" },
@@ -463,7 +462,6 @@ requires-dist = [
     { name = "rich", specifier = "==13.9.4" },
     { name = "ruff", specifier = "==0.9.6" },
     { name = "s3transfer", specifier = "==0.11.2" },
-    { name = "scalene", specifier = "==1.5.51" },
     { name = "scipy", specifier = "==1.14.1" },
     { name = "shapely", specifier = "==2.0.6" },
     { name = "six", specifier = "==1.17.0" },
@@ -580,15 +578,6 @@ name = "numpy"
 version = "1.26.4"
 source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/65/6e/09db70a523a96d25e115e71cc56a6f9031e7b8cd166c1ac8438307c14058/numpy-1.26.4.tar.gz", hash = "sha256:2a02aba9ed12e4ac4eb3ea9421c420301a0c6460d9830d74a9df87efa4912010", size = 15786129 }
-
-[[package]]
-name = "nvidia-ml-py"
-version = "12.570.86"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/ad/6e/7b0c9b88c7d520fb8639024a1a3b6dd1db03bf2c17ae85040c8758d2eb6f/nvidia_ml_py-12.570.86.tar.gz", hash = "sha256:0508d4a0c7b6d015cf574530b95a62ed4fc89da3b8b47e1aefe6777db170ec8b", size = 43147 }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/d8/a8/ec37169be4e2b7063b9076ed3fe0661e87335fbca665eed3f48c415cb234/nvidia_ml_py-12.570.86-py3-none-any.whl", hash = "sha256:58907de35a845abd13dcb227f18298f3b5dd94a72d04c9e594e77711e95c0b51", size = 44442 },
-]
 
 [[package]]
 name = "packaging"
@@ -912,28 +901,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/62/45/2323b5928f86fd29f9afdcef4659f68fa73eaa5356912b774227f5cf46b5/s3transfer-0.11.2.tar.gz", hash = "sha256:3b39185cb72f5acc77db1a58b6e25b977f28d20496b6e58d6813d75f464d632f", size = 147885 }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/1b/ac/e7dc469e49048dc57f62e0c555d2ee3117fa30813d2a1a2962cce3a2a82a/s3transfer-0.11.2-py3-none-any.whl", hash = "sha256:be6ecb39fadd986ef1701097771f87e4d2f821f27f6071c872143884d2950fbc", size = 84151 },
-]
-
-[[package]]
-name = "scalene"
-version = "1.5.51"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "cloudpickle" },
-    { name = "jinja2" },
-    { name = "numpy" },
-    { name = "nvidia-ml-py", marker = "sys_platform != 'darwin'" },
-    { name = "psutil" },
-    { name = "pydantic" },
-    { name = "rich" },
-    { name = "wheel" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/4c/a4/e35a4e22a309ad6a886f0f3a66fd25ae1d0317d1aa81d21b79b3fe1b7cb9/scalene-1.5.51.tar.gz", hash = "sha256:ad33b6ce79239b5a6aff4ec78fa576fe2076b46f78c4c7e5fbc78a927b83374d", size = 9168270 }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/c2/33/b385ffba87420535353977d8f5cafe3c0678430681720f61c2bad677589b/scalene-1.5.51-cp313-cp313-macosx_13_0_universal2.whl", hash = "sha256:2a194c427fabff8e0a6b7fe2f3827b6e24db84f830c4bff8a0742d59fb2804ed", size = 973797 },
-    { url = "https://files.pythonhosted.org/packages/b4/a4/bc99cdab5309e5143d0c0780c44fa3bf747b550af2beaa9cbc2622a844bc/scalene-1.5.51-cp313-cp313-macosx_14_0_universal2.whl", hash = "sha256:d563356192ff59a4d5e80a921db6d960ebbda6a4e36765cebd2b57b7ca341cc4", size = 973208 },
-    { url = "https://files.pythonhosted.org/packages/23/98/587b1f21598fc4bba2195c9061ed76886419a1ec168e77865d0139de26eb/scalene-1.5.51-cp313-cp313-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:839c22aad181345ee19fdf8a7c91d9e232583f471df318e1683e381f8d7b28f0", size = 1247714 },
-    { url = "https://files.pythonhosted.org/packages/09/62/a3ea6afe4498a3cc2d45c7e544a766ff44449cc25596cbbea43df6c56d01/scalene-1.5.51-cp313-cp313-win_amd64.whl", hash = "sha256:bdb261a2f7f17724fe27e4c7d703136a75dd45da940c18db7c6cbe8937d5315f", size = 862381 },
 ]
 
 [[package]]
