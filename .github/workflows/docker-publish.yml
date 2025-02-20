@@ -39,7 +39,7 @@ jobs:
         with:
           context: .
           push: true
-          tags: ${{ env.REPO }}:${{ github.sha }},latest
+          tags: ${{ env.REPO }}:${{ github.sha }},${{ env.REPO }}:latest
           cache-from: type=registry,ref=${{ env.CACHE_REPO }}
           cache-to: type=registry,ref=${{ env.CACHE_REPO }},mode=max
   pr-check:
