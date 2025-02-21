@@ -42,7 +42,7 @@ dependencies = [
     "polyline==2.0.2",
     "prettytable==3.14.0",
     "prometheus-client==0.21.1",
-    "propcache==0.2.1",
+    "propcache==0.3.0",
     "psutil==7.0.0",
     "pycares==4.5.0",
     "pycparser==2.22",
