@@ -13,7 +13,7 @@ dependencies = [
     "annotated-types==0.7.0",
     "anyio==4.8.0",
     "attrs==25.1.0",
-    "boto3==1.36.25",
+    "boto3==1.36.26",
     "botocore==1.36.26",
     "brotli==1.1.0",
     "certifi==2025.1.31",
