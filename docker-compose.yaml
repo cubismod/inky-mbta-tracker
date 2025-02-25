@@ -1,6 +1,6 @@
 services:
   tracker-redis:
-    image: docker.io/library/redis:7.4@sha256:44b60362b01df5d9c8a726d0219452e493c94adc03620cc94e11de1479be0d09
+    image: docker.io/library/redis:7.4@sha256:1eeedfa9ae00ad214df5b7cf450313ca244a6bab51994cbd8d7f382d50828986
     restart: unless-stopped
     container_name: tracker-redis
     command: [ "redis-server", "--requirepass", "mbta"]
