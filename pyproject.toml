@@ -58,7 +58,7 @@ dependencies = [
     "rich==13.9.4",
     "ruff==0.9.7",
     "s3transfer==0.11.2",
-    "scipy==1.14.1",
+    "scipy==1.15.2",
     "shapely==2.0.6",
     "six==1.17.0",
     "smmap==5.0.2",
