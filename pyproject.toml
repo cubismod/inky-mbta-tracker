@@ -40,7 +40,7 @@ dependencies = [
     "paho-mqtt==2.1.0",
     "pandas==2.2.3",
     "polyline==2.0.2",
-    "prettytable==3.14.0",
+    "prettytable==3.15.1",
     "prometheus-client==0.21.1",
     "propcache==0.3.0",
     "psutil==7.0.0",
