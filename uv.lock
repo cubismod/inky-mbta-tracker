@@ -232,14 +232,14 @@ wheels = [
 
 [[package]]
 name = "expiring-dict"
-version = "1.1.1"
+version = "1.1.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "sortedcontainers" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/61/f8/74423159ad15b2f48f0dde2aea000a6892aed8a33171ec424104e5ad4740/expiring-dict-1.1.1.tar.gz", hash = "sha256:277942edc60d5b123457c1a468698c94923dbfac8d40b263b921c04e6940dc09", size = 3216 }
+sdist = { url = "https://files.pythonhosted.org/packages/2f/12/7e71bb6aaf95e1e27994bfb87d0b8e73b0e4cfcfa64b611abd5088c7ac99/expiring_dict-1.1.2.tar.gz", hash = "sha256:ca8cb802304eae5b33a23ec4c19019b610adfda50cbc4c9bfa3ad5c2cd387631", size = 3714 }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/00/bb/eb786bb0cbc257d9cba8bb0737223ffce336fa9b3e9ab6ddc6b337b0d6ba/expiring_dict-1.1.1-py3-none-any.whl", hash = "sha256:c5387bfc1cac9b4e78d37ab787a438ca29e20c6d360a230ed3ce8cfca088d53f", size = 3628 },
+    { url = "https://files.pythonhosted.org/packages/15/f7/be98b00881a13982675626ed20323ce276358b0d6bf9b370b030c6f6b22f/expiring_dict-1.1.2-py3-none-any.whl", hash = "sha256:fe5ac10c1e985edfba5f90666cf52ad295a93b4521f20dabcd769a9372d70905", size = 3764 },
 ]
 
 [[package]]
@@ -425,7 +425,7 @@ requires-dist = [
     { name = "charset-normalizer", specifier = "==3.4.1" },
     { name = "cloudpickle", specifier = "==3.1.1" },
     { name = "dictdiffer", specifier = "==0.9.0" },
-    { name = "expiring-dict", specifier = "==1.1.1" },
+    { name = "expiring-dict", specifier = "==1.1.2" },
     { name = "frozenlist", specifier = "==1.5.0" },
     { name = "geojson", specifier = "==3.1.0" },
     { name = "geopandas", specifier = "==1.0.1" },
