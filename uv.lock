@@ -70,14 +70,14 @@ wheels = [
 
 [[package]]
 name = "aiosseclient"
-version = "0.1.3"
+version = "0.1.6"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiohttp" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/de/dc/4b32285e4867dcde87522267646d43ad3a117035f66e778c960bea95efb6/aiosseclient-0.1.3.tar.gz", hash = "sha256:7a4ac27fa78936393185cdbd20cf5d904f926259cc967a283f99b36251ece316", size = 4483 }
+sdist = { url = "https://files.pythonhosted.org/packages/43/a7/af2375dba5e5c960281e6e415523826741c6530df29282268166040339d1/aiosseclient-0.1.6.tar.gz", hash = "sha256:e610bfdf9a8281e8cb90909d823d479ab22ee5269ef7c3b8d260d0f4cc5ea2a3", size = 4495 }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/84/9d/b00d787ec774af5128bfc16d323639d4a1f9a45ccf1ef1c44e7ed2aefd02/aiosseclient-0.1.3-py3-none-any.whl", hash = "sha256:b9a200b652c29363de47238ffa6774717a01e6742269ffe7456e525eb6acac11", size = 5075 },
+    { url = "https://files.pythonhosted.org/packages/02/61/e7e95236fd762e8dcd9c208258122699d22af689e7e03184f805f050c08d/aiosseclient-0.1.6-py3-none-any.whl", hash = "sha256:033921e5e20bbb358c25b3783cc1af01e6409d039d12e424d85fc032a9ca9976", size = 5072 },
 ]
 
 [[package]]
@@ -413,7 +413,7 @@ requires-dist = [
     { name = "aiohappyeyeballs", specifier = "==2.4.6" },
     { name = "aiohttp", specifier = "==3.11.13" },
     { name = "aiosignal", specifier = "==1.3.2" },
-    { name = "aiosseclient", specifier = "==0.1.3" },
+    { name = "aiosseclient", specifier = "==0.1.6" },
     { name = "annotated-types", specifier = "==0.7.0" },
     { name = "anyio", specifier = "==4.8.0" },
     { name = "attrs", specifier = "==25.1.0" },
