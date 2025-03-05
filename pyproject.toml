@@ -29,7 +29,7 @@ dependencies = [
     "httpcore==1.0.7",
     "humanize==4.12.1",
     "idna==3.10",
-    "jinja2==3.1.5",
+    "jinja2==3.1.6",
     "jmespath==1.0.1",
     "markdown-it-py==3.0.0",
     "markupsafe==3.0.2",
