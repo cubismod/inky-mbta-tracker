@@ -8,7 +8,7 @@ RUN uv sync --frozen --no-cache
 
 ADD . .
 
-RUN uv sync --frozen --no-cache && uv lock --check
+RUN uv lock --check
 RUN uvx ruff check
 
 CMD ["uv", "run", "inky-mbta-tracker/main.py"]
