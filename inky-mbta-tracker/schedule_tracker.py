@@ -253,7 +253,7 @@ class Tracker:
                 end=int(max_time.timestamp()),
                 byscore=True,
                 withscores=False,
-                num=26,
+                num=50,
                 offset=0,
             )
             for event in events:
@@ -262,7 +262,10 @@ class Tracker:
                     v_event = ScheduleEvent.model_validate_json(
                         res.decode("utf-8"), strict=False
                     )
-                    ret.append(v_event)
+                    if v_event.time - timedelta(
+                        minutes=v_event.transit_time_min
+                    ) > datetime.now().astimezone(UTC):
+                        ret.append(v_event)
         except ResponseError as err:
             logger.error("unable to run redis command", exc_info=err)
         except ValidationError as err:
