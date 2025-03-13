@@ -299,11 +299,11 @@ class Tracker:
                 topic = f"imt/destination_and_stop{i}"
                 payload = f"{self.get_route_icon(event)} [{event.route_id}] {event.headsign}: {event.stop}"
                 if event.id.startswith("prediction"):
-                    f"📶{payload}"
+                    payload = f"📶{payload}"
                 if event.alerting:
-                    f"⚠️{payload}"
+                    payload = f"⚠️{payload}"
                 if event.bikes_allowed:
-                    f"🚲{payload}"
+                    payload = f"🚲{payload}"
                 msgs.append({"topic": topic, "payload": payload})
             if len(msgs) > 0:
                 try:
