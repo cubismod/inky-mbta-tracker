@@ -6,3 +6,12 @@ services:
     command: [ "redis-server", "--requirepass", "mbta"]
     ports:
       - "6379:6379"
+  mosquitto:
+    image: eclipse-mosquitto:2.0.21@sha256:94f5a3d7deafa59fa3440d227ddad558f59d293c612138de841eec61bfa4d353
+    restart: always
+    ports:
+      - "1883:1883"
+      - "9001:9001"
+    volumes:
+      - "./mosquitto/passwd:/etc/mosquitto/password_file"
+      - "./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf"
