@@ -53,7 +53,7 @@ class VehicleRedisSchema(BaseModel):
     occupancy_status: Optional[str] = None
 
 
-def dummy_schedule_event(event_id: str):
+def dummy_schedule_event(event_id: str) -> ScheduleEvent:
     return ScheduleEvent(
         action="remove",
         headsign="N/A",
@@ -72,40 +72,42 @@ def dummy_schedule_event(event_id: str):
 class Tracker:
     redis: Redis
 
-    def __init__(self):
+    def __init__(self) -> None:
         r = Redis(
-            host=os.environ.get("IMT_REDIS_ENDPOINT"),
-            port=os.environ.get("IMT_REDIS_PORT", "6379"),
-            password=os.environ.get("IMT_REDIS_PASSWORD"),
+            host=os.environ.get("IMT_REDIS_ENDPOINT") or "",
+            port=int(os.environ.get("IMT_REDIS_PORT", "6379") or ""),
+            password=os.environ.get("IMT_REDIS_PASSWORD") or "",
         )
         self.redis = r
 
     @staticmethod
-    def str_timestamp(event: ScheduleEvent):
+    def str_timestamp(event: ScheduleEvent) -> str:
         return str(event.time.timestamp())
 
     @staticmethod
-    def calculate_time_diff(event: ScheduleEvent):
+    def calculate_time_diff(event: ScheduleEvent) -> timedelta:
         res = event.time - datetime.now().astimezone(UTC)
         if res < timedelta(seconds=5):
             return timedelta(minutes=5)
         return res
 
     @staticmethod
-    def log_prediction(event: ScheduleEvent):
+    def log_prediction(event: ScheduleEvent) -> None:
         logger.info(
             f"action={event.action} time={event.time.astimezone(ZoneInfo('US/Eastern')).strftime('%c')} route_id={event.route_id} route_type={event.route_type} headsign={event.headsign} stop={event.stop} id={event.id}, transit_time_min={event.transit_time_min}, alerting={event.alerting}, bikes_allowed={event.bikes_allowed}"
         )
 
     @staticmethod
-    def log_vehicle(event: VehicleRedisSchema):
+    def log_vehicle(event: VehicleRedisSchema) -> None:
         logger.debug(
             f"action={event.action} route={event.route} vehicle_id={event.id} lat={event.latitude} long={event.longitude} status={event.current_status} speed={event.speed}"
         )
 
     # calculate an approximate vehicle speed using the previous position and timestamp
     # returns (the speed, if this was an approximate calculation)
-    async def calculate_vehicle_speed(self, event: VehicleRedisSchema):
+    async def calculate_vehicle_speed(
+        self, event: VehicleRedisSchema
+    ) -> tuple[Optional[float], bool]:
         try:
             if event.current_status != "STOPPED_AT" and not event.speed:
                 last_event = await self.redis.get(f"vehicle-{event.id}")
@@ -142,13 +144,13 @@ class Tracker:
                         )
             if event.speed:
                 return event.speed, False
-            return None, False
         except ResponseError as err:
             logger.error("unable to get redis event", exc_info=err)
         except ValidationError as err:
             logger.error("unable to validate obj", exc_info=err)
+        return None, False
 
-    async def cleanup(self, pipeline: Pipeline):
+    async def cleanup(self, pipeline: Pipeline) -> None:
         try:
             obsolete_ids = await self.redis.zrange(
                 "time",
@@ -166,7 +168,7 @@ class Tracker:
 
     async def add(
         self, event: ScheduleEvent | VehicleRedisSchema, pipeline: Pipeline, action: str
-    ):
+    ) -> None:
         if isinstance(event, ScheduleEvent):
             # only add events in the future
             if event.time > datetime.now().astimezone(UTC):
@@ -206,11 +208,13 @@ class Tracker:
             await pipeline.set(
                 redis_key, event.model_dump_json(), ex=timedelta(minutes=10)
             )
-            await pipeline.sadd("pos-data", redis_key)
+            await pipeline.sadd("pos-data", redis_key)  # type: ignore[misc]
             vehicle_events.labels(action, event.route).inc()
             self.log_vehicle(event)
 
-    async def rm(self, event: ScheduleEvent | VehicleRedisSchema, pipeline: Pipeline):
+    async def rm(
+        self, event: ScheduleEvent | VehicleRedisSchema, pipeline: Pipeline
+    ) -> None:
         try:
             if isinstance(event, ScheduleEvent):
                 await pipeline.delete(event.id)
@@ -227,7 +231,7 @@ class Tracker:
             logger.error("unable to validate ScheduleEvent model", exc_info=err)
 
     @staticmethod
-    def __determine_color(event: ScheduleEvent):
+    def __determine_color(event: ScheduleEvent) -> str:
         if event.route_id == "Red":
             return "#DA291C"
         if event.route_id.startswith("Green"):
@@ -242,8 +246,8 @@ class Tracker:
             return "#80276C"
         return "black"
 
-    async def fetch_mqtt_events(self):
-        ret: list[ScheduleEvent] = list()
+    async def fetch_mqtt_events(self) -> list[ScheduleEvent]:
+        ret = list[ScheduleEvent]()
         try:
             now = datetime.now().astimezone(UTC)
             max_time = now + timedelta(hours=12)
@@ -274,7 +278,7 @@ class Tracker:
         return ret
 
     @staticmethod
-    def get_route_icon(event: ScheduleEvent):
+    def get_route_icon(event: ScheduleEvent) -> str:
         match event.route_type:
             case 0:
                 return "🚊"
@@ -286,15 +290,17 @@ class Tracker:
                 return "🚍"
             case 4:
                 return "⛴️"
+            case _:
+                return ""
 
-    async def send_mqtt(self):
+    async def send_mqtt(self) -> None:
         if os.getenv("IMT_ENABLE_MQTT", "true") == "true":
-            msgs = list()
+            msgs = list[tuple[str, str]]()
             events = await self.fetch_mqtt_events()
             for i, event in enumerate(events):
                 topic = f"imt/departure_time{i}"
                 payload = self.prediction_display(event)
-                msgs.append({"topic": topic, "payload": payload})
+                msgs.append((topic, payload))
 
                 topic = f"imt/destination_and_stop{i}"
                 payload = f"{self.get_route_icon(event)} [{event.route_id}] {event.headsign}: {event.stop}"
@@ -304,11 +310,11 @@ class Tracker:
                     payload = f"⚠️{payload}"
                 if event.bikes_allowed:
                     payload = f"🚲{payload}"
-                msgs.append({"topic": topic, "payload": payload})
+                msgs.append((topic, payload))
             if len(msgs) > 0:
                 try:
                     publish.multiple(
-                        msgs,
+                        msgs,  # type: ignore
                         hostname=os.getenv("IMT_MQTT_HOST", ""),
                         port=int(os.getenv("IMT_MQTT_PORT", "1883")),
                         auth={
@@ -320,7 +326,7 @@ class Tracker:
                     logger.error("unable to send messages to MQTT", exc_info=err)
 
     @staticmethod
-    def prediction_display(event: ScheduleEvent):
+    def prediction_display(event: ScheduleEvent) -> str:
         prediction_indicator = ""
 
         rounded_time = round(
@@ -332,10 +338,11 @@ class Tracker:
             return f"{prediction_indicator} BRD"
         if rounded_time < 0:
             return f"{prediction_indicator} DEP"
+        return ""
 
     async def process_queue_item(
         self, event: ScheduleEvent | VehicleRedisSchema, pipeline: Pipeline
-    ):
+    ) -> None:
         match event.action:
             case "reset":
                 await self.add(event, pipeline, "reset")
@@ -347,7 +354,9 @@ class Tracker:
                 await self.rm(event, pipeline)
 
 
-async def execute(tracker: Tracker, queue: Queue[ScheduleEvent | VehicleRedisSchema]):
+async def execute(
+    tracker: Tracker, queue: Queue[ScheduleEvent] | Queue[VehicleRedisSchema]
+) -> None:
     pipeline = tracker.redis.pipeline()
     while queue.qsize() != 0:
         try:
@@ -370,7 +379,7 @@ async def execute(tracker: Tracker, queue: Queue[ScheduleEvent | VehicleRedisSch
     wait=wait_random_exponential(multiplier=1, min=1),
     before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
 )
-def process_queue(queue: Queue[ScheduleEvent]):
+def process_queue(queue: Queue[ScheduleEvent]) -> None:
     tracker = Tracker()
     with Runner() as runner:
         while True:

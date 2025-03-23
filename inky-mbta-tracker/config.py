@@ -26,7 +26,7 @@ class Config(BaseModel):
     vehicle_git_email: Optional[str] = None
 
 
-def load_config():
+def load_config() -> Config:
     conf_location = os.getenv("IMT_CONFIG", "./config.json")
 
     json_conf = pathlib.Path(conf_location).read_text()

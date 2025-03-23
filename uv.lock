@@ -231,18 +231,6 @@ wheels = [
 ]
 
 [[package]]
-name = "expiring-dict"
-version = "1.1.2"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "sortedcontainers" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/2f/12/7e71bb6aaf95e1e27994bfb87d0b8e73b0e4cfcfa64b611abd5088c7ac99/expiring_dict-1.1.2.tar.gz", hash = "sha256:ca8cb802304eae5b33a23ec4c19019b610adfda50cbc4c9bfa3ad5c2cd387631", size = 3714 }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/15/f7/be98b00881a13982675626ed20323ce276358b0d6bf9b370b030c6f6b22f/expiring_dict-1.1.2-py3-none-any.whl", hash = "sha256:fe5ac10c1e985edfba5f90666cf52ad295a93b4521f20dabcd769a9372d70905", size = 3764 },
-]
-
-[[package]]
 name = "frozenlist"
 version = "1.5.0"
 source = { registry = "https://pypi.org/simple" }
@@ -353,7 +341,6 @@ dependencies = [
     { name = "charset-normalizer" },
     { name = "cloudpickle" },
     { name = "dictdiffer" },
-    { name = "expiring-dict" },
     { name = "frozenlist" },
     { name = "geojson" },
     { name = "geopandas" },
@@ -388,7 +375,6 @@ dependencies = [
     { name = "python-dotenv" },
     { name = "pytz" },
     { name = "redis" },
-    { name = "rich" },
     { name = "ruff" },
     { name = "s3transfer" },
     { name = "scipy" },
@@ -426,7 +412,6 @@ requires-dist = [
     { name = "charset-normalizer", specifier = "==3.4.1" },
     { name = "cloudpickle", specifier = "==3.1.1" },
     { name = "dictdiffer", specifier = "==0.9.0" },
-    { name = "expiring-dict", specifier = "==1.1.2" },
     { name = "frozenlist", specifier = "==1.5.0" },
     { name = "geojson", specifier = "==3.1.0" },
     { name = "geopandas", specifier = "==1.0.1" },
@@ -461,7 +446,6 @@ requires-dist = [
     { name = "python-dotenv", specifier = "==1.0.1" },
     { name = "pytz", specifier = "==2025.1" },
     { name = "redis", specifier = "==5.2.1" },
-    { name = "rich", specifier = "==13.9.4" },
     { name = "ruff", specifier = "==0.11.2" },
     { name = "s3transfer", specifier = "==0.11.4" },
     { name = "scipy", specifier = "==1.14.1" },
@@ -912,19 +896,6 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/47/da/d283a37303a995cd36f8b92db85135153dc4f7a8e4441aa827721b442cfb/redis-5.2.1.tar.gz", hash = "sha256:16f2e22dff21d5125e8481515e386711a34cbec50f0e44413dd7d9c060a54e0f", size = 4608355 }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/3c/5f/fa26b9b2672cbe30e07d9a5bdf39cf16e3b80b42916757c5f92bca88e4ba/redis-5.2.1-py3-none-any.whl", hash = "sha256:ee7e1056b9aea0f04c6c2ed59452947f34c4940ee025f5dd83e6a6418b6989e4", size = 261502 },
-]
-
-[[package]]
-name = "rich"
-version = "13.9.4"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "markdown-it-py" },
-    { name = "pygments" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/ab/3a/0316b28d0761c6734d6bc14e770d85506c986c85ffb239e688eeaab2c2bc/rich-13.9.4.tar.gz", hash = "sha256:439594978a49a09530cff7ebc4b5c7103ef57baf48d5ea3184f21d9a2befa098", size = 223149 }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/19/71/39c7c0d87f8d4e6c020a393182060eaefeeae6c01dab6a84ec346f2567df/rich-13.9.4-py3-none-any.whl", hash = "sha256:6049d5e6ec054bf2779ab3358186963bac2ea89175919d699e378b99738c2a90", size = 242424 },
 ]
 
 [[package]]

@@ -21,7 +21,6 @@ dependencies = [
     "charset-normalizer==3.4.1",
     "cloudpickle==3.1.1",
     "dictdiffer==0.9.0",
-    "expiring-dict==1.1.2",
     "frozenlist==1.5.0",
     "geojson==3.1.0",
     "geopandas==1.0.1",
@@ -56,7 +55,6 @@ dependencies = [
     "python-dotenv==1.0.1",
     "pytz==2025.1",
     "redis==5.2.1",
-    "rich==13.9.4",
     "ruff==0.11.2",
     "s3transfer==0.11.4",
     "scipy==1.14.1",
@@ -154,3 +152,13 @@ docstring-code-format = false
 # This only has an effect when the `docstring-code-format` setting is
 # enabled.
 docstring-code-line-length = "dynamic"
+
+[tool.mypy]
+files = ["inky-mbta-tracker"]
+plugins = ["pydantic.mypy"]
+check_untyped_defs = true
+warn_unused_ignores = true
+show_error_codes = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+ignore_missing_imports = true

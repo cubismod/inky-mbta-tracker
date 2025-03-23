@@ -149,7 +149,6 @@ class AlertAttributes(BaseModel):
 class AlertFacility(BaseModel):
     links: SelfAndRelated
     data: FacilityData
-    links: dict
     id: str
     attributes: AlertAttributes
 

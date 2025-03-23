@@ -54,7 +54,7 @@ class TaskTracker:
         self.event_type = event_type
 
 
-def queue_watcher(queue: Queue[ScheduleEvent]):
+def queue_watcher(queue: Queue[ScheduleEvent]) -> None:
     while True:
         item = queue.get()
         logging.info(item)
@@ -63,49 +63,51 @@ def queue_watcher(queue: Queue[ScheduleEvent]):
 
 # launches a departures tracking thread, target should either be "schedule" or "predictions"
 # returns a TaskTracker
-def start_thread(
+def start_thread(  # type: ignore
     target: EventType,
     queue: Queue[ScheduleEvent | VehicleRedisSchema],
     stop: Optional[StopSetup] = None,
     route_id: Optional[str] = None,
-):
+) -> Optional[TaskTracker]:
     exp_time = datetime.now().astimezone(UTC) + timedelta(
         minutes=randint(MIN_TASK_RESTART_MINS, MAX_TASK_RESTART_MINS)
     )
     match target:
         case EventType.SCHEDULES:
-            thr = threading.Thread(
-                target=thread_runner,
-                kwargs={
-                    "target": target,
-                    "stop_id": stop.stop_id,
-                    "route": stop.route_filter,
-                    "direction": stop.direction_filter,
-                    "queue": queue,
-                    "transit_time_min": stop.transit_time_min,
-                },
-                name=f"{stop.route_filter}_{stop.stop_id}_schedules",
-            )
-            thr.start()
-            return TaskTracker(task=thr, stop=stop, event_type=target)
+            if stop:
+                thr = threading.Thread(
+                    target=thread_runner,
+                    kwargs={
+                        "target": target,
+                        "stop_id": stop.stop_id,
+                        "route": stop.route_filter,
+                        "direction": stop.direction_filter,
+                        "queue": queue,
+                        "transit_time_min": stop.transit_time_min,
+                    },
+                    name=f"{stop.route_filter}_{stop.stop_id}_schedules",
+                )
+                thr.start()
+                return TaskTracker(task=thr, stop=stop, event_type=target)
         case EventType.PREDICTIONS:
-            thr = threading.Thread(
-                target=thread_runner,
-                kwargs={
-                    "target": target,
-                    "queue": queue,
-                    "transit_time_min": stop.transit_time_min,
-                    "stop_id": stop.stop_id,
-                    "route": stop.route_filter,
-                    "direction": stop.direction_filter,
-                    "expiration_time": exp_time,
-                },
-                name=f"{stop.route_filter}_{stop.stop_id}_predictions",
-            )
-            thr.start()
-            return TaskTracker(
-                task=thr, expiration_time=exp_time, stop=stop, event_type=target
-            )
+            if stop:
+                thr = threading.Thread(
+                    target=thread_runner,
+                    kwargs={
+                        "target": target,
+                        "queue": queue,
+                        "transit_time_min": stop.transit_time_min,
+                        "stop_id": stop.stop_id,
+                        "route": stop.route_filter,
+                        "direction": stop.direction_filter,
+                        "expiration_time": exp_time,
+                    },
+                    name=f"{stop.route_filter}_{stop.stop_id}_predictions",
+                )
+                thr.start()
+                return TaskTracker(
+                    task=thr, expiration_time=exp_time, stop=stop, event_type=target
+                )
         case EventType.VEHICLES:
             thr = threading.Thread(
                 target=thread_runner,
@@ -126,7 +128,7 @@ def start_thread(
             )
 
 
-async def __main__():
+async def __main__() -> None:
     config = load_config()
 
     profile_dir = os.getenv("IMT_PROFILE_DIR")
@@ -147,18 +149,22 @@ async def __main__():
     tasks.append(TaskTracker(process_thr, stop=None, event_type=EventType.OTHER))
     for stop in config.stops:
         if stop.schedule_only:
-            tasks.append(start_thread(EventType.SCHEDULES, stop=stop, queue=queue))
+            thr = start_thread(EventType.SCHEDULES, stop=stop, queue=queue)
+            if thr:
+                tasks.append(thr)
         else:
-            tasks.append(start_thread(EventType.PREDICTIONS, stop=stop, queue=queue))
-    if config.vehicles_by_route or os.getenv("IMT_TRACK_VEHICLES"):
+            thr = start_thread(EventType.PREDICTIONS, stop=stop, queue=queue)
+            if thr:
+                tasks.append(thr)
+    if config.vehicles_by_route:
         for route_id in config.vehicles_by_route:
-            tasks.append(
-                start_thread(
-                    EventType.VEHICLES,
-                    route_id=route_id,
-                    queue=queue,
-                )
+            thr = start_thread(
+                EventType.VEHICLES,
+                route_id=route_id,
+                queue=queue,
             )
+            if thr:
+                tasks.append(thr)
         geojson_thr = threading.Thread(
             target=run, daemon=True, args=[config], name="geojson"
         )
@@ -177,25 +183,25 @@ async def __main__():
                 tasks.remove(task)
                 match task.event_type:
                     case EventType.VEHICLES:
-                        tasks.append(
-                            start_thread(
-                                EventType.VEHICLES,
-                                route_id=task.route_id,
-                                queue=queue,
-                            )
+                        thr = start_thread(
+                            EventType.VEHICLES,
+                            route_id=task.route_id,
+                            queue=queue,
                         )
+                        if thr:
+                            tasks.append(thr)
                     case EventType.SCHEDULES:
-                        tasks.append(
-                            start_thread(
-                                EventType.SCHEDULES, stop=task.stop, queue=queue
-                            )
+                        thr = start_thread(
+                            EventType.SCHEDULES, stop=task.stop, queue=queue
                         )
+                        if thr:
+                            tasks.append(thr)
                     case EventType.PREDICTIONS:
-                        tasks.append(
-                            start_thread(
-                                EventType.PREDICTIONS, stop=task.stop, queue=queue
-                            )
+                        thr = start_thread(
+                            EventType.PREDICTIONS, stop=task.stop, queue=queue
                         )
+                        if thr:
+                            tasks.append(thr)
         if profile_dir and datetime.now().astimezone(UTC) > next_profile_time:
             if not yappi.is_running():
                 yappi.start()

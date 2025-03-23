@@ -23,7 +23,7 @@ from turfpy.measurement import bearing
 logger = logging.getLogger("geojson")
 
 
-def ret_color(vehicle: VehicleRedisSchema):
+def ret_color(vehicle: VehicleRedisSchema) -> str:
     if vehicle.route.startswith("Green"):
         return "#008150"
     if vehicle.route.startswith("Blue"):
@@ -38,12 +38,14 @@ def ret_color(vehicle: VehicleRedisSchema):
         return "#9A9C9D"
     elif vehicle.route.isdecimal():
         return "#907e00"
+        return "#907e00"
+    return ""
 
 
 # create an upload a geojson file to S3
-def create_and_upload_file(
+def create_and_upload_file(  # type: ignore
     resource, file_name: str, bucket_name: str, features: list[Feature]
-):
+) -> None:
     features_str = dumps(
         FeatureCollection(features),
         sort_keys=True,
@@ -67,7 +69,7 @@ def create_and_upload_file(
                 )
 
 
-def calculate_bearing(start: Point, end: Point):
+def calculate_bearing(start: Point, end: Point) -> float:
     return bearing(Feature(geometry=start), Feature(geometry=end))
 
 
@@ -75,11 +77,11 @@ def calculate_bearing(start: Point, end: Point):
     wait=wait_random_exponential(multiplier=1, min=1),
     before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
 )
-async def create_json(config: Config):
+async def create_json(config: Config) -> None:
     r = Redis(
-        host=os.environ.get("IMT_REDIS_ENDPOINT"),
-        port=os.environ.get("IMT_REDIS_PORT", "6379"),
-        password=os.environ.get("IMT_REDIS_PASSWORD"),
+        host=os.environ.get("IMT_REDIS_ENDPOINT", ""),
+        port=int(os.environ.get("IMT_REDIS_PORT", "6379")),
+        password=os.environ.get("IMT_REDIS_PASSWORD", ""),
     )
 
     # set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY env variables if you wish to use S3
@@ -88,110 +90,112 @@ async def create_json(config: Config):
     prefix = os.environ.get("IMT_S3_PREFIX", "")
 
     lines = list()
-    shapes = await get_shapes(config.vehicles_by_route)
-    if shapes:
-        for k, v in shapes.items():
-            for line in v:
-                if k.startswith("74") or k.startswith("75"):
-                    k = silver_line_lookup(k)
-                lines.append(
-                    Feature(
-                        geometry=LineString(coordinates=line),
-                        properties={"route": k},
-                    )
-                )
-    if s3_bucket:
-        resource = boto3.resource("s3")
-        create_and_upload_file(resource, f"{prefix}shapes.json", s3_bucket, lines)
-        while True:
-            try:
-                features = dict[str, Feature]()
-                pl = r.pipeline()
-
-                for vehicle in await r.smembers("pos-data"):
-                    dec_v = vehicle.decode("utf-8")
-                    if dec_v:
-                        await pl.get(vehicle)
-
-                results = await pl.execute()
-                for result in results:
-                    if result:
-                        vehicle_bearing = None
-                        vehicle_info = VehicleRedisSchema.model_validate_json(
-                            strict=False, json_data=result
+    if config.vehicles_by_route:
+        shapes = await get_shapes(config.vehicles_by_route)
+        if shapes:
+            for k, v in shapes.items():
+                for line in v:
+                    if k.startswith("74") or k.startswith("75"):
+                        k = silver_line_lookup(k)
+                    lines.append(
+                        Feature(
+                            geometry=LineString(coordinates=line),
+                            properties={"route": k},
                         )
-                        if vehicle_info.route:
-                            point = Point(
-                                (vehicle_info.longitude, vehicle_info.latitude)
-                            )
-                            stop = await light_get_stop(r, vehicle_info.stop)
-                            if stop[1]:
-                                vehicle_bearing = calculate_bearing(
-                                    point, Point(stop[1])
-                                )
+                    )
+        if s3_bucket:
+            resource = boto3.resource("s3")
+            create_and_upload_file(resource, f"{prefix}shapes.json", s3_bucket, lines)
+            while True:
+                try:
+                    features = dict[str, Feature]()
+                    pl = r.pipeline()
+                    for vehicle in await r.smembers("pos-data"):  # type: ignore
+                        dec_v = vehicle.decode("utf-8")
+                        if dec_v:
+                            await pl.get(vehicle)
 
-                            route_icon = "rail"
-                            if (
-                                vehicle_info.route.startswith("7")
-                                or vehicle_info.route.isdecimal()
-                            ):
-                                route_icon = "bus"
-                            if vehicle_info.route.startswith(
-                                "74"
-                            ) or vehicle_info.route.startswith("75"):
-                                vehicle_info.route = silver_line_lookup(
-                                    vehicle_info.route
+                    results = await pl.execute()
+                    for result in results:
+                        if result:
+                            vehicle_bearing = None
+                            vehicle_info: VehicleRedisSchema = (
+                                VehicleRedisSchema.model_validate_json(
+                                    strict=False, json_data=result
                                 )
-                            feature = Feature(
-                                geometry=point,
-                                id=vehicle_info.id,
-                                properties={
-                                    "route": vehicle_info.route,
-                                    "status": vehicle_info.current_status,
-                                    "marker-size": "medium",
-                                    "marker-symbol": route_icon,
-                                    "marker-color": ret_color(vehicle_info),
-                                    "speed": vehicle_info.speed,
-                                    "direction": vehicle_info.direction_id,
-                                    "id": vehicle_info.id,
-                                    "stop": stop[0],
-                                    "stop-coordinates": stop[1],
-                                    "bearing": vehicle_bearing,
-                                    "occupancy_status": vehicle_info.occupancy_status,
-                                    # https://tc39.es/ecma262/multipage/numbers-and-dates.html#sec-date-time-string-format
-                                    "approximate_speed": vehicle_info.approximate_speed,
-                                    "update_time": vehicle_info.update_time.strftime(
-                                        "%Y-%m-%dT%H:%M:%S.000Z"
-                                    ),
-                                },
                             )
-                            features[f"v-{vehicle_info.id}"] = feature
+                            if vehicle_info.route:
+                                point = Point(
+                                    (vehicle_info.longitude, vehicle_info.latitude)
+                                )
+                                stop = await light_get_stop(vehicle_info.stop)
+                                if stop[1]:
+                                    vehicle_bearing = calculate_bearing(
+                                        point, Point(stop[1])
+                                    )
 
-                            if stop[0] and vehicle_info.stop:
-                                stop_point = Point(stop[1])
-                                stop_feature = Feature(
-                                    geometry=stop_point,
-                                    id=vehicle_info.stop,
+                                route_icon = "rail"
+                                if (
+                                    vehicle_info.route.startswith("7")
+                                    or vehicle_info.route.isdecimal()
+                                ):
+                                    route_icon = "bus"
+                                if vehicle_info.route.startswith(
+                                    "74"
+                                ) or vehicle_info.route.startswith("75"):
+                                    vehicle_info.route = silver_line_lookup(
+                                        vehicle_info.route
+                                    )
+                                feature = Feature(
+                                    geometry=point,
+                                    id=vehicle_info.id,
                                     properties={
-                                        "marker-size": "small",
-                                        "marker-symbol": "building",
+                                        "route": vehicle_info.route,
+                                        "status": vehicle_info.current_status,
+                                        "marker-size": "medium",
+                                        "marker-symbol": route_icon,
                                         "marker-color": ret_color(vehicle_info),
-                                        "name": stop[0],
-                                        "id": vehicle_info.stop,
+                                        "speed": vehicle_info.speed,
+                                        "direction": vehicle_info.direction_id,
+                                        "id": vehicle_info.id,
+                                        "stop": stop[0],
+                                        "stop-coordinates": stop[1],
+                                        "bearing": vehicle_bearing,
+                                        "occupancy_status": vehicle_info.occupancy_status,
+                                        # https://tc39.es/ecma262/multipage/numbers-and-dates.html#sec-date-time-string-format
+                                        "approximate_speed": vehicle_info.approximate_speed,
+                                        "update_time": vehicle_info.update_time.strftime(
+                                            "%Y-%m-%dT%H:%M:%S.000Z"
+                                        ),
                                     },
                                 )
-                                features[f"v-{vehicle_info.stop}"] = stop_feature
-                vals = [v for _, v in features.items()]
-                create_and_upload_file(
-                    resource, f"{prefix}vehicles.json", s3_bucket, vals
-                )
-                await sleep(int(os.getenv("IMT_S3_REFRESH_TIME", "35")))
-            except ResponseError as err:
-                logger.error("unable to run redis command", exc_info=err)
-            except ValidationError as err:
-                logger.error("unable to validate model", exc_info=err)
+                                features[f"v-{vehicle_info.id}"] = feature
+
+                                if stop[0] and vehicle_info.stop:
+                                    stop_point = Point(stop[1])
+                                    stop_feature = Feature(
+                                        geometry=stop_point,
+                                        id=vehicle_info.stop,
+                                        properties={
+                                            "marker-size": "small",
+                                            "marker-symbol": "building",
+                                            "marker-color": ret_color(vehicle_info),
+                                            "name": stop[0],
+                                            "id": vehicle_info.stop,
+                                        },
+                                    )
+                                    features[f"v-{vehicle_info.stop}"] = stop_feature
+                    vals = [v for _, v in features.items()]
+                    create_and_upload_file(
+                        resource, f"{prefix}vehicles.json", s3_bucket, vals
+                    )
+                    await sleep(int(os.getenv("IMT_S3_REFRESH_TIME", "35")))
+                except ResponseError as err:
+                    logger.error("unable to run redis command", exc_info=err)
+                except ValidationError as err:
+                    logger.error("unable to validate model", exc_info=err)
 
 
-def run(config: Config):
+def run(config: Config) -> None:
     with Runner() as runner:
         runner.run(create_json(config))
