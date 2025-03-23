@@ -88,7 +88,7 @@ async def create_json(config: Config):
     prefix = os.environ.get("IMT_S3_PREFIX", "")
 
     lines = list()
-    shapes = await get_shapes(config.vehicles_by_route, r)
+    shapes = await get_shapes(config.vehicles_by_route)
     if shapes:
         for k, v in shapes.items():
             for line in v:

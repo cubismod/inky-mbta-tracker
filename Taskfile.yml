@@ -5,16 +5,17 @@ dotenv: ['.env']
 tasks:
   check:
     cmds:
-      - uvx ruff check inky-mbta-tracker
+      - uv run ruff check inky-mbta-tracker
+      - uv run mypy
   fix:
     cmds:
-      - uvx ruff check --fix inky-mbta-tracker
+      - uv run ruff check --fix inky-mbta-tracker
   format:
     cmds:
-      - uvx ruff format inky-mbta-tracker
+      - uv run ruff format inky-mbta-tracker
   run:
     cmds:
-      - uvx python3 inky-mbta-tracker/main.py
+      - uv run python3 inky-mbta-tracker/main.py
   logs:
     cmds:
       - uvx tail -f imt.log

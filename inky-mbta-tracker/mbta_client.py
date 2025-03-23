@@ -12,7 +12,6 @@ from typing import Optional
 import aiohttp
 from aiohttp import ClientSession
 from aiosseclient import aiosseclient
-from expiring_dict import ExpiringDict
 from geojson import Point
 from mbta_responses import (
     Alerts,
@@ -33,8 +32,6 @@ from mbta_responses import (
 from polyline import decode
 from prometheus import mbta_api_requests, tracker_executions
 from pydantic import TypeAdapter, ValidationError
-from redis import ResponseError
-from redis.asyncio import Redis
 from schedule_tracker import ScheduleEvent, VehicleRedisSchema, dummy_schedule_event
 from tenacity import (
     before_log,
@@ -45,9 +42,10 @@ from tenacity import (
 )
 from zoneinfo import ZoneInfo
 
-auth_token = os.environ.get("AUTH_TOKEN")
-mbta_v3 = "https://api-v3.mbta.com"
+MBTA_AUTH = os.environ.get("AUTH_TOKEN")
+MBTA_V3_ENDPOINT = "https://api-v3.mbta.com"
 logger = logging.getLogger(__name__)
+SHAPE_POLYLINES = set[str]()
 
 
 class EventType(Enum):
@@ -57,53 +55,39 @@ class EventType(Enum):
     VEHICLES = 2
 
 
-shape_polylines = set[str]()
-
-
 def parse_shape_data(shapes: Shapes):
     ret = list()
     for shape in shapes.data:
         if (
-            shape.attributes.polyline not in shape_polylines
+            shape.attributes.polyline not in SHAPE_POLYLINES
             and "canonical" in shape.id
             or shape.id.replace("_", "").isdecimal()
         ):
             ret.append(
                 [Point(i) for i in decode(shape.attributes.polyline, geojson=True)]
             )
-            shape_polylines.add(shape.attributes.polyline)
+            SHAPE_POLYLINES.add(shape.attributes.polyline)
     return ret
 
 
-# gets line geometry using Redis caching from the MBTA API
+# gets line (orange, blue, red, green, etc) geometry using MBTA API
+# redis expires in 24 hours
 @retry(
     wait=wait_random_exponential(multiplier=2, min=10),
     before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
 )
-async def get_shapes(routes: list[str], redis: Redis):
+async def get_shapes(routes: list[str]):
     ret = dict()
-    try:
-        async with aiohttp.ClientSession(mbta_v3) as session:
-            for route in routes:
-                shape_key = f"shape-{route}"
-                route_raw = await redis.get(shape_key)
-                if route_raw:
-                    shapes = Shapes.model_validate_json(route_raw, strict=False)
-                    ret[route] = parse_shape_data(shapes)
-                else:
-                    async with session.get(
-                        f"/shapes?filter[route]={route}&api_key={auth_token}"
-                    ) as response:
-                        body = await response.text()
-                        mbta_api_requests.labels("shapes").inc()
-                        shapes = Shapes.model_validate_json(body, strict=False)
-                        ret[route] = parse_shape_data(shapes)
-                        await redis.set(shape_key, shapes.model_dump_json())
-    except ResponseError as err:
-        logger.error("unable to run redis command", exc_info=err)
-    except ValidationError as err:
-        logger.error("unable to parse response", exc_info=err)
-    return ret
+    async with aiohttp.ClientSession(MBTA_V3_ENDPOINT) as session:
+        for route in routes:
+            async with session.get(
+                f"/shapes?filter[route]={route}&api_key={MBTA_AUTH}"
+            ) as response:
+                body = await response.text()
+                mbta_api_requests.labels("shapes").inc()
+                shapes = Shapes.model_validate_json(body, strict=False)
+                ret[route] = parse_shape_data(shapes)
+        return ret
 
 
 def silver_line_lookup(route_id: str):
@@ -125,38 +109,21 @@ def silver_line_lookup(route_id: str):
 
 
 # retrieves a rail/bus stop from Redis & returns the stop ID with optional coordinates
-async def light_get_stop(redis: Redis, stop_id: Optional[str]):
-    if stop_id:
-        key = f"stop-{stop_id}"
-        res = await redis.get(key)
-        if res:
-            dec_v = res.decode("utf-8")
-            if dec_v:
-                stop = Stop.model_validate_json(strict=False, json_data=dec_v)
-                if stop.data.attributes.description:
-                    stop_id = stop.data.attributes.description
-                elif stop.data.attributes.name:
-                    stop_id = stop.data.attributes.name
-                return stop_id, (
-                    stop.data.attributes.longitude,
-                    stop.data.attributes.latitude,
-                )
-        else:
-            async with aiohttp.ClientSession(mbta_v3) as session:
-                watcher = Watcher(stop_id=stop_id, watcher_type=EventType.OTHER)
-                # avoid rate-limiting by spacing out requests
-                await sleep(randint(1, 4))
-                stop = await watcher.get_stop(session, stop_id)
-                if stop and stop[0]:
-                    await redis.set(key, stop[0].model_dump_json())
-                    if stop[0].data.attributes.description:
-                        stop_id = stop[0].data.attributes.description
-                    elif stop[0].data.attributes.name:
-                        stop_id = stop[0].data.attributes.name
-                    return stop_id, (
-                        stop[0].data.attributes.longitude,
-                        stop[0].data.attributes.latitude,
-                    )
+async def light_get_stop(stop_id: str):
+    async with aiohttp.ClientSession(MBTA_V3_ENDPOINT) as session:
+        watcher = Watcher(stop_id=stop_id, watcher_type=EventType.OTHER)
+        # avoid rate-limiting by spacing out requests
+        await sleep(randint(1, 4))
+        stop = await watcher.get_stop(session, stop_id)
+        if stop and stop[0]:
+            if stop[0].data.attributes.description:
+                stop_id = stop[0].data.attributes.description
+            elif stop[0].data.attributes.name:
+                stop_id = stop[0].data.attributes.name
+            return stop_id, (
+                stop[0].data.attributes.longitude,
+                stop[0].data.attributes.latitude,
+            )
     return stop_id, None
 
 
@@ -167,9 +134,6 @@ class Watcher:
     stop_id: Optional[str]
     route: Optional[str]
     direction: Optional[str]
-    trips: ExpiringDict[str, TripResource]
-    # key is trip, value is if there is an active alert
-    alerts: ExpiringDict[str, bool]
     routes: dict[str, RouteResource]
     stop: Optional[Stop]
     schedule_only: bool
@@ -186,14 +150,9 @@ class Watcher:
         schedule_only=False,
         watcher_type=EventType.PREDICTIONS,
     ):
-        thirty_hours = 108000
-        thirty_min = 1800
-
         self.stop_id = stop_id
         self.route = route
         self.direction = direction
-        self.trips = ExpiringDict(thirty_hours)
-        self.alerts = ExpiringDict(thirty_min)
         self.routes = dict()
         self.expiration_time = expiration_time
         self.watcher_type = watcher_type
@@ -211,13 +170,12 @@ class Watcher:
         else:
             return None
 
-    def get_headsign(self, trip_id: str):
-        if trip_id in self.trips:
-            hs = self.trips[trip_id].attributes.headsign
-            if self.trips[trip_id].attributes.revenue_status == "NON_REVENUE":
-                return f"[NR] ${hs}"
-            return hs
-        return ""
+    async def get_headsign(self, trip_id: str):
+        trip = await self.get_trip(trip_id)
+        hs = trip.attributes.headsign
+        if trip.attributes.revenue_status == "NON_REVENUE":
+            return f"[NR] ${hs}"
+        return hs
 
     async def parse_live_api_response(
         self,
@@ -238,7 +196,6 @@ class Watcher:
                         ta = TypeAdapter(list[PredictionResource])
                         prediction = ta.validate_json(data, strict=False)
                         for item in prediction:
-                            await self.save_trip(item, session)
                             await self.queue_event(
                                 item,
                                 "reset",
@@ -266,7 +223,6 @@ class Watcher:
                         prediction = PredictionResource.model_validate_json(
                             data, strict=False
                         )
-                        await self.save_trip(prediction, session)
                         await self.queue_event(
                             prediction,
                             "add",
@@ -323,12 +279,15 @@ class Watcher:
             logger.error("Could not find prediction", exc_info=err)
 
     async def get_alerting_state(self, trip_id: str, session: ClientSession):
-        alerting = self.alerts.get(trip_id)
-        if alerting is None:
-            return await self.save_alert(trip_id, session)
-        return alerting
+        alerts = await self.get_alerts_for_trip(trip_id, session)
+        if alerts and len(alerts) > 0:
+            return True
+        else:
+            return False
 
     # checks if secure bike storage is available at the facility
+    # no parameters as this is associated with the stop set in the config
+    # of this watcher
     def check_secure_bike_storage(self):
         enclosed = False
         secured = False
@@ -374,7 +333,7 @@ class Watcher:
             if len(statuses) > 0:
                 count = Counter(statuses)
                 return count.most_common(1)[0][0]
-        return None
+        return ""
 
     # abbreviate common words to fit more on screen
     @staticmethod
@@ -404,7 +363,7 @@ class Watcher:
             if schedule_time and schedule_time > datetime.now().astimezone(UTC):
                 await self.save_route(item, session)
                 route_id = item.relationships.route.data.id
-                headsign = self.get_headsign(item.relationships.trip.data.id)
+                headsign = await self.get_headsign(item.relationships.trip.data.id)
 
                 # drop events that have the same stop & headsign as that train cannot be
                 # immediately boarded in most cases so there is no sense in showing it as a departure
@@ -421,14 +380,14 @@ class Watcher:
                     headsign = f"{headsign} - {line[1]} Ln"
                 route_type = self.routes[route_id].attributes.type
                 alerting = False
-                trip = ""
                 bikes_allowed = False
+                trip_id = ""
                 if item.relationships.trip.data:
-                    trip = item.relationships.trip.data.id
-                    if trip in self.trips:
-                        trip_info = self.trips[trip]
-                        bikes_allowed = self.bikes_allowed(trip_info)
-                    alerting = await self.get_alerting_state(trip, session)
+                    trip_id = item.relationships.trip.data.id
+                    trip = await self.get_trip(trip_id)
+                    if trip:
+                        bikes_allowed = self.bikes_allowed(trip)
+                        alerting = await self.get_alerting_state(trip, session)
 
                 event = ScheduleEvent(
                     action=event_type,
@@ -439,7 +398,7 @@ class Watcher:
                     id=item.id,
                     stop=self.abbreviate(self.stop.data.attributes.name),
                     transit_time_min=transit_time_min,
-                    trip_id=trip,
+                    trip_id=trip_id,
                     alerting=alerting,
                     bikes_allowed=bikes_allowed,
                 )
@@ -466,28 +425,26 @@ class Watcher:
                 event.stop = item.relationships.stop.data.id
             queue.put(event)
 
+    # redis expires in 24 hours
     @retry(
         wait=wait_random_exponential(multiplier=1, min=1),
         before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
     )
-    async def save_trip(
-        self, prediction: PredictionResource | ScheduleResource, session: ClientSession
-    ):
-        trip_id = prediction.relationships.trip.data.id
-        if trip_id and trip_id not in self.trips:
-            async with session.get(
-                f"trips?filter[id]={trip_id}&api_key={auth_token}"
-            ) as response:
-                try:
-                    body = await response.text()
-                    mbta_api_requests.labels("trips").inc()
+    async def get_trip(self, trip_id: str, session: ClientSession) -> Optional[Trips]:
+        async with session.get(
+            f"trips?filter[id]={trip_id}&api_key={MBTA_AUTH}"
+        ) as response:
+            try:
+                body = await response.text()
+                mbta_api_requests.labels("trips").inc()
 
-                    trip = Trips.model_validate_json(body, strict=False)
-                    for tr in trip.data:
-                        self.trips[trip_id] = tr
-                except ValidationError as err:
-                    logger.error(f"Unable to parse trip, {err}")
+                trip = Trips.model_validate_json(body, strict=False)
+                return trip
+            except ValidationError as err:
+                logger.error(f"Unable to parse trip, {err}")
+        return None
 
+    # saves a route to the dict of routes rather than redis
     @retry(
         wait=wait_random_exponential(multiplier=1, min=1),
         before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
@@ -498,7 +455,7 @@ class Watcher:
         route_id = prediction.relationships.route.data.id
         if route_id not in self.routes:
             async with session.get(
-                f"routes?filter[id]={route_id}&api_key={auth_token}"
+                f"routes?filter[id]={route_id}&api_key={MBTA_AUTH}"
             ) as response:
                 try:
                     body = await response.text()
@@ -514,19 +471,14 @@ class Watcher:
         wait=wait_random_exponential(multiplier=1, min=1),
         before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
     )
-    async def save_alert(self, trip_id: str, session: ClientSession):
-        endpoint = f"alerts?filter[trip]={trip_id}&api_key={auth_token}&filter[lifecycle]=NEW,ONGOING,ONGOING_UPCOMING&filter[datetime]=NOW&filter[severity]=3,4,5,6,7,8,9,10"
+    async def get_alerts_for_trip(self, trip_id: str, session: ClientSession):
+        endpoint = f"alerts?filter[trip]={trip_id}&api_key={MBTA_AUTH}&filter[lifecycle]=NEW,ONGOING,ONGOING_UPCOMING&filter[datetime]=NOW&filter[severity]=3,4,5,6,7,8,9,10"
         async with session.get(endpoint) as response:
             try:
                 body = await response.text()
                 mbta_api_requests.labels("alerts").inc()
                 alerts = Alerts.model_validate_json(strict=False, json_data=body)
-                if len(alerts.data) > 0:
-                    self.alerts[trip_id] = True
-                    return True
-                else:
-                    self.alerts[trip_id] = False
-                    return False
+                return alerts.data
             except ValidationError as err:
                 logger.error("Unable to parse alert", exc_info=err)
 
@@ -541,7 +493,7 @@ class Watcher:
         session: ClientSession,
         time_limit: Optional[timedelta] = None,
     ):
-        endpoint = f"schedules?filter[stop]={self.stop_id}&sort=time&api_key={auth_token}&filter[date]={datetime.now().date().isoformat()}"
+        endpoint = f"schedules?filter[stop]={self.stop_id}&sort=time&api_key={MBTA_AUTH}&filter[date]={datetime.now().date().isoformat()}"
         if self.route != "":
             endpoint += f"&filter[route]={self.route}"
         if self.direction != "":
@@ -562,7 +514,6 @@ class Watcher:
                 schedules = Schedules.model_validate_json(strict=False, json_data=body)
 
                 for item in schedules.data:
-                    await self.save_trip(item, session)
                     await self.save_route(item, session)
                     await self.queue_event(
                         item,
@@ -579,6 +530,7 @@ class Watcher:
         self.stop = stop_and_facilities[0]
         self.facilities = stop_and_facilities[1]
 
+    # 3 weeks of caching in redis as maybe a stop will change? idk
     @retry(
         wait=wait_random_exponential(multiplier=2, min=10),
         before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
@@ -586,7 +538,7 @@ class Watcher:
     async def get_stop(self, session: ClientSession, stop_id: str):
         stop = None
         facilities = None
-        async with session.get(f"/stops/{stop_id}?api_key={auth_token}") as response:
+        async with session.get(f"/stops/{stop_id}?api_key={MBTA_AUTH}") as response:
             try:
                 body = await response.text()
                 mbta_api_requests.labels("stops").inc()
@@ -658,7 +610,7 @@ async def watch_static_schedule(
             schedule_only=True,
             watcher_type=EventType.SCHEDULES,
         )
-        async with aiohttp.ClientSession(mbta_v3) as session:
+        async with aiohttp.ClientSession(MBTA_V3_ENDPOINT) as session:
             await watcher.save_own_stop(session)
             await watcher.save_schedule(transit_time_min, queue, session)
         await sleep(10800)  # 3 hours
@@ -675,7 +627,7 @@ async def watch_vehicles(
     expiration_time: datetime,
     route_id: str,
 ):
-    endpoint = f"{mbta_v3}/vehicles?fields[vehicle]=direction_id,latitude,longitude,speed,current_status,occupancy_status,carriages&filter[route]={route_id}&api_key={auth_token}"
+    endpoint = f"{MBTA_V3_ENDPOINT}/vehicles?fields[vehicle]=direction_id,latitude,longitude,speed,current_status,occupancy_status,carriages&filter[route]={route_id}&api_key={MBTA_AUTH}"
     mbta_api_requests.labels("vehicles").inc()
     headers = {"accept": "text/event-stream"}
     watcher = Watcher(
@@ -683,7 +635,7 @@ async def watch_vehicles(
         watcher_type=EventType.VEHICLES,
         expiration_time=expiration_time,
     )
-    async with aiohttp.ClientSession(mbta_v3) as session:
+    async with aiohttp.ClientSession(MBTA_V3_ENDPOINT) as session:
         tracker_executions.labels("vehicles").inc()
         await watch_server_side_events(
             watcher, endpoint, headers, queue, session=session
@@ -698,7 +650,9 @@ async def watch_station(
     transit_time_min: int,
     expiration_time: datetime,
 ):
-    endpoint = f"{mbta_v3}/predictions?filter[stop]={stop_id}&api_key={auth_token}"
+    endpoint = (
+        f"{MBTA_V3_ENDPOINT}/predictions?filter[stop]={stop_id}&api_key={MBTA_AUTH}"
+    )
     mbta_api_requests.labels("predictions").inc()
     if route != "":
         endpoint += f"&filter[route]={route}"
@@ -708,7 +662,7 @@ async def watch_station(
     watcher = Watcher(
         stop_id, route, direction, expiration_time, watcher_type=EventType.PREDICTIONS
     )
-    async with aiohttp.ClientSession(mbta_v3) as session:
+    async with aiohttp.ClientSession(MBTA_V3_ENDPOINT) as session:
         await watcher.save_own_stop(session)
         tracker_executions.labels(watcher.stop.data.attributes.name).inc()
         await watch_server_side_events(
