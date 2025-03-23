@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 class StopSetup(BaseModel):
     stop_id: str
     route_filter: str = Field(default="")
-    direction_filter: str = Field(default="")
+    direction_filter: int = Field(default=-1)
     transit_time_min: int
     schedule_only: bool = Field(default=False)
 

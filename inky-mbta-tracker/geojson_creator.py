@@ -38,7 +38,6 @@ def ret_color(vehicle: VehicleRedisSchema) -> str:
         return "#9A9C9D"
     elif vehicle.route.isdecimal():
         return "#907e00"
-        return "#907e00"
     return ""
 
 
@@ -91,7 +90,7 @@ async def create_json(config: Config) -> None:
 
     lines = list()
     if config.vehicles_by_route:
-        shapes = await get_shapes(config.vehicles_by_route)
+        shapes = await get_shapes(r, config.vehicles_by_route)
         if shapes:
             for k, v in shapes.items():
                 for line in v:
@@ -124,7 +123,7 @@ async def create_json(config: Config) -> None:
                                     strict=False, json_data=result
                                 )
                             )
-                            if vehicle_info.route:
+                            if vehicle_info.route and vehicle_info.stop:
                                 point = Point(
                                     (vehicle_info.longitude, vehicle_info.latitude)
                                 )

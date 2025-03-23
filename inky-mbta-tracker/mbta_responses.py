@@ -308,6 +308,11 @@ class Facilities(BaseModel):
     data: list[FacilityResource]
 
 
+class StopAndFacilities(BaseModel):
+    stop: Stop
+    facilities: Facilities
+
+
 class CarriageStatus(BaseModel):
     occupancy_status: Optional[str] = None
     occupancy_percentage: Optional[int] = None

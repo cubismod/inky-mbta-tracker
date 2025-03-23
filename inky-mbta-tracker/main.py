@@ -72,6 +72,9 @@ def start_thread(  # type: ignore
     exp_time = datetime.now().astimezone(UTC) + timedelta(
         minutes=randint(MIN_TASK_RESTART_MINS, MAX_TASK_RESTART_MINS)
     )
+    direction_filter = None
+    if stop and stop.direction_filter != -1:
+        direction_filter = stop.direction_filter
     match target:
         case EventType.SCHEDULES:
             if stop:
@@ -81,7 +84,7 @@ def start_thread(  # type: ignore
                         "target": target,
                         "stop_id": stop.stop_id,
                         "route": stop.route_filter,
-                        "direction": stop.direction_filter,
+                        "direction": direction_filter,
                         "queue": queue,
                         "transit_time_min": stop.transit_time_min,
                     },
@@ -99,7 +102,7 @@ def start_thread(  # type: ignore
                         "transit_time_min": stop.transit_time_min,
                         "stop_id": stop.stop_id,
                         "route": stop.route_filter,
-                        "direction": stop.direction_filter,
+                        "direction": direction_filter,
                         "expiration_time": exp_time,
                     },
                     name=f"{stop.route_filter}_{stop.stop_id}_predictions",

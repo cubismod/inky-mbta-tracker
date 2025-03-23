@@ -1,21 +1,23 @@
 import logging
-from functools import wraps
-from typing import Callable
+from typing import Optional
+
+from redis import ResponseError
+from redis.asyncio.client import Redis
+
+logger = logging.getLogger("redis_cache")
 
 
-class MissingKwargsError(Exception):
-    pass
+async def check_cache(redis: Redis, key: str) -> Optional[str]:
+    try:
+        item = await redis.get(key)
+        return item.decode("utf-8")
+    except ResponseError as err:
+        logger.error(err)
+    return None
 
 
-logger = logging.getLogger("decorators")
-
-
-def redis_cache(fn: Callable):
-    required_args = {"redis", "kwarg_keys", "exp_sec"}
-
-    @wraps(fn)
-    async def wrapper(*args, **kwargs):
-        if not kwargs.keys() & required_args:
-            raise MissingKwargsError(
-                f"You need to define the following arguments for this decorator: {required_args}"
-            )
+async def write_cache(redis: Redis, key: str, data: str, exp_sec: int) -> None:
+    try:
+        await redis.set(key, value=data, ex=exp_sec)
+    except ResponseError as err:
+        logger.error(err)
