@@ -43,7 +43,7 @@ from tenacity import (
     retry_if_not_exception_type,
     wait_random_exponential,
 )
-from times_in_seconds import DAY, FOUR_WEEKS
+from times_in_seconds import DAY, FOUR_WEEKS, TWO_MONTHS
 from zoneinfo import ZoneInfo
 
 MBTA_AUTH = os.environ.get("AUTH_TOKEN")
@@ -84,7 +84,7 @@ async def get_shapes(
     ret = dict[str, list[list[tuple]]]()
     async with aiohttp.ClientSession(MBTA_V3_ENDPOINT) as session:
         for route in routes:
-            key = f"shape_{route}"
+            key = f"shape-{route}"
             cached = await check_cache(r_client, key)
             body = ""
             if cached:
@@ -125,7 +125,7 @@ async def light_get_stop(stop_id: str) -> tuple[str, Optional[tuple[float, float
     async with aiohttp.ClientSession(MBTA_V3_ENDPOINT) as session:
         watcher = Watcher(stop_id=stop_id, watcher_type=EventType.OTHER)
         # avoid rate-limiting by spacing out requests
-        await sleep(randint(1, 4))
+        await sleep(1)
         stop = await watcher.get_stop(session, stop_id)
         if stop and stop[0]:
             if stop[0].data.attributes.description:
@@ -137,6 +137,15 @@ async def light_get_stop(stop_id: str) -> tuple[str, Optional[tuple[float, float
                 stop[0].data.attributes.latitude,
             )
     return stop_id, None
+
+
+async def light_get_alerts(route_id: str) -> Optional[list[AlertResource]]:
+    async with aiohttp.ClientSession(MBTA_V3_ENDPOINT) as session:
+        watcher = Watcher(route=route_id, watcher_type=EventType.VEHICLES)
+        alerts = await watcher.get_alerts(session, route_id=route_id)
+        if alerts:
+            return alerts
+    return None
 
 
 class Watcher:
@@ -453,7 +462,8 @@ class Watcher:
         before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
     )
     async def get_trip(self, trip_id: str, session: ClientSession) -> Optional[Trips]:
-        cached = await check_cache(self.r_client, trip_id)
+        key = f"tripc-{trip_id}"
+        cached = await check_cache(self.r_client, key)
         try:
             if cached:
                 trip = Trips.model_validate_json(cached, strict=False)
@@ -466,9 +476,7 @@ class Watcher:
                     mbta_api_requests.labels("trips").inc()
 
                     trip = Trips.model_validate_json(body, strict=False)
-                    await write_cache(
-                        self.r_client, trip_id, trip.model_dump_json(), DAY
-                    )
+                    await write_cache(self.r_client, key, trip.model_dump_json(), DAY)
                     return trip
         except ValidationError as err:
             logger.error(f"Unable to parse trip, {err}")
@@ -508,7 +516,7 @@ class Watcher:
         trip_id: Optional[str] = None,
         route_id: Optional[str] = None,
     ) -> Optional[list[AlertResource]]:
-        endpoint = "/alerts?"
+        endpoint = "alerts"
         if trip_id:
             endpoint += f"?filter[trip]={trip_id}"
         elif route_id:
@@ -585,9 +593,10 @@ class Watcher:
     async def get_stop(
         self, session: ClientSession, stop_id: str
     ) -> tuple[Optional[Stop], Optional[Facilities]]:
+        key = f"stop-{stop_id}"
         stop = None
         facilities = None
-        cached = await check_cache(self.r_client, stop_id)
+        cached = await check_cache(self.r_client, key)
         if cached:
             try:
                 s_and_f = StopAndFacilities.model_validate_json(cached)
@@ -614,9 +623,9 @@ class Watcher:
                     logger.error("Unable to parse facility", exc_info=err)
             await write_cache(
                 self.r_client,
-                stop_id,
+                key,
                 StopAndFacilities(stop=stop, facilities=facilities).model_dump_json(),
-                FOUR_WEEKS,
+                randint(FOUR_WEEKS, TWO_MONTHS),
             )
         return stop, facilities
 

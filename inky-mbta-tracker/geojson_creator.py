@@ -1,6 +1,8 @@
 import logging
 import os
 from asyncio import Runner, sleep
+from datetime import UTC, datetime, timedelta
+from typing import Optional
 
 import boto3
 from config import Config
@@ -11,7 +13,9 @@ from geojson import (
     Point,
     dumps,
 )
-from mbta_client import get_shapes, light_get_stop, silver_line_lookup
+from mbta_client import get_shapes, light_get_alerts, light_get_stop, silver_line_lookup
+from mbta_responses import AlertResource, Alerts
+from prometheus import redis_commands
 from pydantic import ValidationError
 from redis import ResponseError
 from redis.asyncio import Redis
@@ -41,20 +45,28 @@ def ret_color(vehicle: VehicleRedisSchema) -> str:
     return ""
 
 
-# create an upload a geojson file to S3
+# create an upload a geojson file or list of alerts to S3
 def create_and_upload_file(  # type: ignore
-    resource, file_name: str, bucket_name: str, features: list[Feature]
+    resource,
+    file_name: str,
+    bucket_name: str,
+    features: Optional[list[Feature]] = None,
+    alerts: Optional[list[AlertResource]] = None,
 ) -> None:
-    features_str = dumps(
-        FeatureCollection(features),
-        sort_keys=True,
-    )
-    if "geometry" in features_str:
+    write_str = ""
+    if features:
+        write_str = dumps(
+            FeatureCollection(features),
+            sort_keys=True,
+        )
+    elif alerts:
+        write_str = Alerts(data=alerts).model_dump_json()
+    if "geometry" in write_str or alerts:
         with open(
             file_name,
             "w",
         ) as file:
-            file.write(features_str)
+            file.write(write_str)
             bucket = resource.Bucket(bucket_name)
             obj = bucket.Object(file_name)
             try:
@@ -70,6 +82,16 @@ def create_and_upload_file(  # type: ignore
 
 def calculate_bearing(start: Point, end: Point) -> float:
     return bearing(Feature(geometry=start), Feature(geometry=end))
+
+
+async def collect_alerts(config: Config) -> list[AlertResource]:
+    alerts = list[AlertResource]()
+    if config.vehicles_by_route:
+        for v in config.vehicles_by_route:
+            al = await light_get_alerts(v)
+            if al:
+                alerts.extend(al)
+    return alerts
 
 
 @retry(
@@ -104,7 +126,10 @@ async def create_json(config: Config) -> None:
                     )
         if s3_bucket:
             resource = boto3.resource("s3")
-            create_and_upload_file(resource, f"{prefix}shapes.json", s3_bucket, lines)
+            create_and_upload_file(
+                resource, f"{prefix}shapes.json", s3_bucket, features=lines
+            )
+            next_alert_time = datetime.now().astimezone(UTC)
             while True:
                 try:
                     features = dict[str, Feature]()
@@ -113,6 +138,7 @@ async def create_json(config: Config) -> None:
                         dec_v = vehicle.decode("utf-8")
                         if dec_v:
                             await pl.get(vehicle)
+                            redis_commands.labels("get").inc()
 
                     results = await pl.execute()
                     for result in results:
@@ -188,6 +214,17 @@ async def create_json(config: Config) -> None:
                     create_and_upload_file(
                         resource, f"{prefix}vehicles.json", s3_bucket, vals
                     )
+                    if datetime.now().astimezone() > next_alert_time:
+                        logger.info("updating alerts")
+                        create_and_upload_file(
+                            resource,
+                            f"{prefix}alerts.json",
+                            alerts=await collect_alerts(config),
+                            bucket_name=s3_bucket,
+                        )
+                        next_alert_time = datetime.now().astimezone(UTC) + timedelta(
+                            minutes=10
+                        )
                     await sleep(int(os.getenv("IMT_S3_REFRESH_TIME", "35")))
                 except ResponseError as err:
                     logger.error("unable to run redis command", exc_info=err)

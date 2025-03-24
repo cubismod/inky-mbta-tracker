@@ -9,7 +9,7 @@ from typing import Optional
 import humanize
 from geojson import Feature, Point
 from paho.mqtt import MQTTException, publish
-from prometheus import schedule_events, vehicle_events
+from prometheus import redis_commands, schedule_events, vehicle_events
 from pydantic import BaseModel, ValidationError
 from redis import ResponseError
 from redis.asyncio.client import Pipeline, Redis
@@ -111,6 +111,8 @@ class Tracker:
         try:
             if event.current_status != "STOPPED_AT" and not event.speed:
                 last_event = await self.redis.get(f"vehicle-{event.id}")
+                redis_commands.labels("get").inc()
+
                 if last_event:
                     last_event_validated = VehicleRedisSchema.model_validate_json(
                         last_event, strict=False
@@ -159,6 +161,7 @@ class Tracker:
                 withscores=False,
                 byscore=True,
             )
+            redis_commands.labels("zrange").inc()
             for item in obsolete_ids:
                 dec_i = item.decode("utf-8")
                 if dec_i:
@@ -174,6 +177,7 @@ class Tracker:
             if event.time > datetime.now().astimezone(UTC):
                 trip_redis_key = f"trip-{event.trip_id}-{event.stop.replace(' ', '_')}"
                 existing_event = await self.redis.get(trip_redis_key)
+                redis_commands.labels("get").inc()
                 if existing_event:
                     dec_ee = existing_event.decode("utf-8")
                     if dec_ee != event.id and dec_ee.startswith("schedule"):
@@ -192,24 +196,34 @@ class Tracker:
                     ex=(event.time - datetime.now().astimezone(UTC))
                     + timedelta(hours=1),
                 )
+                redis_commands.labels("set").inc()
 
                 await pipeline.set(
                     event.id,
                     event.model_dump_json(exclude={"trip_id"}),
                     ex=self.calculate_time_diff(event) + timedelta(minutes=1),
                 )
+                redis_commands.labels("set").inc()
+
                 await pipeline.zadd("time", {event.id: int(event.time.timestamp())})
+                redis_commands.labels("zadd").inc()
+
                 schedule_events.labels(action, event.route_id, event.stop).inc()
                 self.log_prediction(event)
         if isinstance(event, VehicleRedisSchema):
             redis_key = f"vehicle-{event.id}"
             event.speed, approximate = await self.calculate_vehicle_speed(event)
             event.approximate_speed = approximate
+
             await pipeline.set(
                 redis_key, event.model_dump_json(), ex=timedelta(minutes=10)
             )
+            redis_commands.labels("set").inc()
+
             await pipeline.sadd("pos-data", redis_key)  # type: ignore[misc]
             vehicle_events.labels(action, event.route).inc()
+            redis_commands.labels("sadd").inc()
+
             self.log_vehicle(event)
 
     async def rm(
@@ -218,12 +232,17 @@ class Tracker:
         try:
             if isinstance(event, ScheduleEvent):
                 await pipeline.delete(event.id)
+                redis_commands.labels("delete").inc()
+
                 await pipeline.zrem("time", int(event.time.timestamp()))
+                redis_commands.labels("zrem").inc()
                 schedule_events.labels("remove", event.route_id, event.stop).inc()
                 self.log_prediction(event)
             if isinstance(event, VehicleRedisSchema):
-                vehicle_events.labels("remove", event.route).inc()
                 await pipeline.delete(f"vehicle-{event.id}")
+                redis_commands.labels("delete").inc()
+                vehicle_events.labels("remove", event.route).inc()
+
                 self.log_vehicle(event)
         except ResponseError as err:
             logger.error("unable to get key from redis", exc_info=err)
@@ -260,8 +279,10 @@ class Tracker:
                 num=50,
                 offset=0,
             )
+            redis_commands.labels("zrange").inc()
             for event in events:
                 res = await self.redis.get(event.decode("utf-8"))
+                redis_commands.labels("get").inc()
                 if res:
                     v_event = ScheduleEvent.model_validate_json(
                         res.decode("utf-8"), strict=False

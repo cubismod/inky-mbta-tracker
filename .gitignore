@@ -170,10 +170,12 @@ profile.*
 imt-out.json
 shapes.json
 vehicles.json
+alerts.json
 
 profiles/
 *_shapes.json
 *_vehicles.json
+*_alerts.json
 .venv/
 
 mosquitto/
