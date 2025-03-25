@@ -15,3 +15,5 @@ mbta_api_requests = Gauge(
 )
 
 running_threads = Gauge("imt_active_threads", "Active Threads")
+
+redis_commands = Gauge("imt_redis_cmds", "Redis commands made", ["name"])

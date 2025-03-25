@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 class StopSetup(BaseModel):
     stop_id: str
     route_filter: str = Field(default="")
-    direction_filter: str = Field(default="")
+    direction_filter: int = Field(default=-1)
     transit_time_min: int
     schedule_only: bool = Field(default=False)
 
@@ -26,7 +26,7 @@ class Config(BaseModel):
     vehicle_git_email: Optional[str] = None
 
 
-def load_config():
+def load_config() -> Config:
     conf_location = os.getenv("IMT_CONFIG", "./config.json")
 
     json_conf = pathlib.Path(conf_location).read_text()

@@ -111,56 +111,46 @@ class FacilityData(BaseModel):
 
 
 class ActivePeriod(BaseModel):
-    start: str
-    end: str
+    start: Optional[str] = None
+    end: Optional[str] = None
 
 
 class InformedEntity(BaseModel):
-    trip: str
-    stop: str
+    trip: Optional[str] = None
+    stop: Optional[str] = None
     route_type: int
-    route: str
-    facility: str
-    direction_id: int
+    route: Optional[str] = None
+    facility: Optional[str] = None
+    direction_id: Optional[int] = None
     activities: list[str]
-    image: str
-    service_effect: str
-    duration_certainty: str
-    description: str
-    security: int
+    image: Optional[str] = None
+    service_effect: Optional[str] = None
+    duration_certainty: Optional[str] = None
+    description: Optional[str] = None
 
 
 class AlertAttributes(BaseModel):
-    timeframe: str
-    image_alternative_text: str
+    timeframe: Optional[str] = None
+    image: Optional[str] = None
+    image_alternative_text: Optional[str] = None
     cause: str
     created_at: str
-    banner: str
+    banner: Optional[str] = None
     header: str
-    url: str
+    url: Optional[str] = None
     short_header: str
     effect: str
     updated_at: str
-    effect_name: str
-    active_period: ActivePeriod
-    informed_entity: InformedEntity
-
-
-class AlertFacility(BaseModel):
-    links: SelfAndRelated
-    data: FacilityData
-    links: dict
-    id: str
-    attributes: AlertAttributes
-
-
-class AlertRelationships(BaseModel):
-    facility: AlertFacility
+    effect_name: Optional[str] = None
+    active_period: list[ActivePeriod]
+    informed_entity: list[InformedEntity]
+    severity: int
 
 
 class AlertResource(BaseModel):
     type: str
-    relationships: Optional[AlertRelationships] = None
+    id: str
+    attributes: AlertAttributes
 
 
 class Alerts(BaseModel):
@@ -307,6 +297,11 @@ class Facility(BaseModel):
 class Facilities(BaseModel):
     links: Optional[dict] = None
     data: list[FacilityResource]
+
+
+class StopAndFacilities(BaseModel):
+    stop: Stop
+    facilities: Optional[Facilities] = None
 
 
 class CarriageStatus(BaseModel):
