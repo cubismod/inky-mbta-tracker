@@ -26,7 +26,7 @@ dependencies = [
     "geopandas==1.0.1",
     "h11==0.14.0",
     "httpcore==1.0.7",
-    "humanize==4.12.1",
+    "humanize==4.12.2",
     "idna==3.10",
     "jinja2==3.1.6",
     "jmespath==1.0.1",
