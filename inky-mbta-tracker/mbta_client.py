@@ -336,7 +336,7 @@ class Watcher:
     def check_secure_bike_storage(self) -> bool:
         enclosed = False
         secured = False
-        if self.facilities:
+        if self.facilities and self.facilities.data:
             for facility in self.facilities.data:
                 for prop in facility.attributes.properties:
                     if prop.name == "enclosed" and prop.value != 0:

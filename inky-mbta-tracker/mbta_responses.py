@@ -296,7 +296,7 @@ class Facility(BaseModel):
 
 class Facilities(BaseModel):
     links: Optional[dict] = None
-    data: list[FacilityResource]
+    data: Optional[list[FacilityResource]] = None
 
 
 class StopAndFacilities(BaseModel):
