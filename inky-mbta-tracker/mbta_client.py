@@ -32,7 +32,7 @@ from mbta_responses import (
 )
 from polyline import decode
 from prometheus import mbta_api_requests, tracker_executions
-from pydantic import TypeAdapter, ValidationError
+from pydantic import BaseModel, TypeAdapter, ValidationError
 from redis.asyncio.client import Redis
 from redis_cache import check_cache, write_cache
 from schedule_tracker import ScheduleEvent, VehicleRedisSchema, dummy_schedule_event
@@ -57,6 +57,12 @@ class EventType(Enum):
     PREDICTIONS = 0
     SCHEDULES = 1
     VEHICLES = 2
+
+
+class LightStop(BaseModel):
+    stop_id: str
+    long: Optional[float] = None
+    lat: Optional[float] = None
 
 
 def parse_shape_data(shapes: Shapes) -> list[list[tuple]]:
@@ -121,7 +127,16 @@ def silver_line_lookup(route_id: str) -> str:
 
 
 # retrieves a rail/bus stop from Redis & returns the stop ID with optional coordinates
-async def light_get_stop(stop_id: str) -> tuple[str, Optional[tuple[float, float]]]:
+async def light_get_stop(r_client: Redis, stop_id: str) -> Optional[LightStop]:
+    key = f"light-stop-{stop_id}"
+    cached = await check_cache(r_client, key)
+    if cached:
+        try:
+            cached_model = LightStop.model_validate_json(cached)
+            return cached_model
+        except ValidationError as err:
+            logger.error("unable to validate json", exc_info=err)
+    ls = None
     async with aiohttp.ClientSession(MBTA_V3_ENDPOINT) as session:
         watcher = Watcher(stop_id=stop_id, watcher_type=EventType.OTHER)
         # avoid rate-limiting by spacing out requests
@@ -132,11 +147,16 @@ async def light_get_stop(stop_id: str) -> tuple[str, Optional[tuple[float, float
                 stop_id = stop[0].data.attributes.description
             elif stop[0].data.attributes.name:
                 stop_id = stop[0].data.attributes.name
-            return stop_id, (
-                stop[0].data.attributes.longitude,
-                stop[0].data.attributes.latitude,
+            ls = LightStop(
+                stop_id=stop_id,
+                long=stop[0].data.attributes.longitude,
+                lat=stop[0].data.attributes.latitude,
             )
-    return stop_id, None
+        if ls:
+            await write_cache(
+                r_client, key, ls.model_dump_json(), randint(FOUR_WEEKS, TWO_MONTHS)
+            )
+    return ls
 
 
 async def light_get_alerts(route_id: str) -> Optional[list[AlertResource]]:
