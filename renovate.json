@@ -1,4 +1,10 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["github>cubismod/renovate-config"]
+  "extends": ["github>cubismod/renovate-config"],
+  "packageRules": [
+    {
+      "matchUpdateTypes": ["minor"],
+      "automerge": true
+    }
+  ]
 }
