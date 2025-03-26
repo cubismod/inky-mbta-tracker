@@ -60,7 +60,7 @@ def create_and_upload_file(  # type: ignore
             sort_keys=True,
         )
     elif alerts:
-        write_str = Alerts(data=alerts).model_dump_json()
+        write_str = Alerts(data=alerts).model_dump_json(exclude_unset=True)
     if "geometry" in write_str or alerts:
         with open(
             file_name,
@@ -153,63 +153,71 @@ async def create_json(config: Config) -> None:
                                 point = Point(
                                     (vehicle_info.longitude, vehicle_info.latitude)
                                 )
-                                stop = await light_get_stop(vehicle_info.stop)
-                                if stop[1]:
-                                    vehicle_bearing = calculate_bearing(
-                                        point, Point(stop[1])
-                                    )
+                                stop = await light_get_stop(r, vehicle_info.stop)
+                                if stop:
+                                    if stop.long and stop.lat:
+                                        vehicle_bearing = calculate_bearing(
+                                            point, Point((stop.long, stop.lat))
+                                        )
 
-                                route_icon = "rail"
-                                if (
-                                    vehicle_info.route.startswith("7")
-                                    or vehicle_info.route.isdecimal()
-                                ):
-                                    route_icon = "bus"
-                                if vehicle_info.route.startswith(
-                                    "74"
-                                ) or vehicle_info.route.startswith("75"):
-                                    vehicle_info.route = silver_line_lookup(
-                                        vehicle_info.route
-                                    )
-                                feature = Feature(
-                                    geometry=point,
-                                    id=vehicle_info.id,
-                                    properties={
-                                        "route": vehicle_info.route,
-                                        "status": vehicle_info.current_status,
-                                        "marker-size": "medium",
-                                        "marker-symbol": route_icon,
-                                        "marker-color": ret_color(vehicle_info),
-                                        "speed": vehicle_info.speed,
-                                        "direction": vehicle_info.direction_id,
-                                        "id": vehicle_info.id,
-                                        "stop": stop[0],
-                                        "stop-coordinates": stop[1],
-                                        "bearing": vehicle_bearing,
-                                        "occupancy_status": vehicle_info.occupancy_status,
-                                        # https://tc39.es/ecma262/multipage/numbers-and-dates.html#sec-date-time-string-format
-                                        "approximate_speed": vehicle_info.approximate_speed,
-                                        "update_time": vehicle_info.update_time.strftime(
-                                            "%Y-%m-%dT%H:%M:%S.000Z"
-                                        ),
-                                    },
-                                )
-                                features[f"v-{vehicle_info.id}"] = feature
-
-                                if stop[0] and vehicle_info.stop:
-                                    stop_point = Point(stop[1])
-                                    stop_feature = Feature(
-                                        geometry=stop_point,
-                                        id=vehicle_info.stop,
+                                    route_icon = "rail"
+                                    if (
+                                        vehicle_info.route.startswith("7")
+                                        or vehicle_info.route.isdecimal()
+                                    ):
+                                        route_icon = "bus"
+                                    if vehicle_info.route.startswith(
+                                        "74"
+                                    ) or vehicle_info.route.startswith("75"):
+                                        vehicle_info.route = silver_line_lookup(
+                                            vehicle_info.route
+                                        )
+                                    feature = Feature(
+                                        geometry=point,
+                                        id=vehicle_info.id,
                                         properties={
-                                            "marker-size": "small",
-                                            "marker-symbol": "building",
+                                            "route": vehicle_info.route,
+                                            "status": vehicle_info.current_status,
+                                            "marker-size": "medium",
+                                            "marker-symbol": route_icon,
                                             "marker-color": ret_color(vehicle_info),
-                                            "name": stop[0],
-                                            "id": vehicle_info.stop,
+                                            "speed": vehicle_info.speed,
+                                            "direction": vehicle_info.direction_id,
+                                            "id": vehicle_info.id,
+                                            "stop": stop.stop_id,
+                                            "stop-coordinates": (stop.long, stop.lat),
+                                            "bearing": vehicle_bearing,
+                                            "occupancy_status": vehicle_info.occupancy_status,
+                                            # https://tc39.es/ecma262/multipage/numbers-and-dates.html#sec-date-time-string-format
+                                            "approximate_speed": vehicle_info.approximate_speed,
+                                            "update_time": vehicle_info.update_time.strftime(
+                                                "%Y-%m-%dT%H:%M:%S.000Z"
+                                            ),
                                         },
                                     )
-                                    features[f"v-{vehicle_info.stop}"] = stop_feature
+                                    features[f"v-{vehicle_info.id}"] = feature
+
+                                    if (
+                                        stop.stop_id
+                                        and vehicle_info.stop
+                                        and stop.long
+                                        and stop.lat
+                                    ):
+                                        stop_point = Point((stop.long, stop.lat))
+                                        stop_feature = Feature(
+                                            geometry=stop_point,
+                                            id=vehicle_info.stop,
+                                            properties={
+                                                "marker-size": "small",
+                                                "marker-symbol": "building",
+                                                "marker-color": ret_color(vehicle_info),
+                                                "name": stop.stop_id,
+                                                "id": vehicle_info.stop,
+                                            },
+                                        )
+                                        features[f"v-{vehicle_info.stop}"] = (
+                                            stop_feature
+                                        )
                     vals = [v for _, v in features.items()]
                     create_and_upload_file(
                         resource, f"{prefix}vehicles.json", s3_bucket, vals
