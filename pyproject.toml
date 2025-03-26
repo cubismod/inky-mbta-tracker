@@ -52,7 +52,7 @@ dependencies = [
     "pyogrio==0.10.0",
     "pyproj==3.7.1",
     "python-dateutil==2.9.0.post0",
-    "python-dotenv==1.0.1",
+    "python-dotenv==1.1.0",
     "pytz==2025.1",
     "redis==5.2.1",
     "ruff==0.11.2",
