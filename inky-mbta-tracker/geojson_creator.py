@@ -85,13 +85,14 @@ def calculate_bearing(start: Point, end: Point) -> float:
 
 
 async def collect_alerts(config: Config) -> list[AlertResource]:
-    alerts = list[AlertResource]()
+    alerts = dict[str, AlertResource]()
     if config.vehicles_by_route:
         for v in config.vehicles_by_route:
             al = await light_get_alerts(v)
             if al:
-                alerts.extend(al)
-    return alerts
+                for a in al:
+                    alerts[a.id] = a
+    return list(alerts.values())
 
 
 @retry(
