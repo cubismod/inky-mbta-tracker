@@ -143,7 +143,7 @@ class AlertAttributes(BaseModel):
     updated_at: str
     effect_name: Optional[str] = None
     active_period: list[ActivePeriod]
-    informed_entity: list[InformedEntity]
+    # informed_entity: list[InformedEntity]
     severity: int
 
 
