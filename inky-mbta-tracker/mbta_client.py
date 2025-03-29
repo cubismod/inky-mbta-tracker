@@ -467,7 +467,11 @@ class Watcher:
                 trip_info = await self.get_trip(
                     item.relationships.trip.data.id, session
                 )
-                if trip_info and len(trip_info.data) > 0:
+                if (
+                    trip_info
+                    and len(trip_info.data) > 0
+                    and trip_info.data[0].attributes.name != ""
+                ):
                     trip_id = trip_info.data[0].attributes.name
             event = VehicleRedisSchema(  # type: ignore
                 action=event_type,
