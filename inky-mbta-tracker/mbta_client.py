@@ -459,11 +459,19 @@ class Watcher:
             if occupancy:
                 occupancy = self.occupancy_status_human_readable(occupancy)
             route = ""
+            trip_id = item.id
             if item.relationships.route.data:
                 route = item.relationships.route.data.id
+            if item.relationships.trip and item.relationships.trip.data:
+                # save the trip name as this is what the T uses to refer to specific trains
+                trip_info = await self.get_trip(
+                    item.relationships.trip.data.id, session
+                )
+                if trip_info and len(trip_info.data) > 0:
+                    trip_id = trip_info.data[0].attributes.name
             event = VehicleRedisSchema(  # type: ignore
                 action=event_type,
-                id=item.id,
+                id=trip_id,
                 current_status=item.attributes.current_status,
                 direction_id=item.attributes.direction_id,
                 latitude=item.attributes.latitude,
