@@ -92,7 +92,12 @@ async def collect_alerts(config: Config) -> list[AlertResource]:
             if al:
                 for a in al:
                     alerts[a.id] = a
-    return list(alerts.values())
+    collected_alerts = list(alerts.values())
+    collected_alerts.sort(
+        key=lambda alert: alert.attributes.updated_at or alert.attributes.created_at,
+        reverse=True,
+    )
+    return collected_alerts
 
 
 @retry(
