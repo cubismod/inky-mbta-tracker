@@ -460,7 +460,7 @@ requires-dist = [
     { name = "tzdata", specifier = "==2025.2" },
     { name = "urllib3", specifier = "==2.3.0" },
     { name = "wcwidth", specifier = "==0.2.13" },
-    { name = "wheel", specifier = "==0.45.1" },
+    { name = "wheel", specifier = "==0.46.0" },
     { name = "yappi", specifier = "==1.6.10" },
     { name = "yarl", specifier = "==1.18.3" },
 ]
@@ -1086,11 +1086,14 @@ wheels = [
 
 [[package]]
 name = "wheel"
-version = "0.45.1"
+version = "0.46.0"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/8a/98/2d9906746cdc6a6ef809ae6338005b3f21bb568bea3165cfc6a243fdc25c/wheel-0.45.1.tar.gz", hash = "sha256:661e1abd9198507b1409a20c02106d9670b2576e916d58f520316666abca6729", size = 107545 }
+dependencies = [
+    { name = "packaging" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/11/d9/f16ef50f69f8b85961f8df7a2bdad08a98a32e79dfabf9f14f250fc0324d/wheel-0.46.0.tar.gz", hash = "sha256:bd9fadc35ff6a3624bdd00bc78437bcded40e2edc1fbb29076308de503fe9a4b", size = 49842 }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/0b/2c/87f3254fd8ffd29e4c02732eee68a83a1d3c346ae39bc6822dcbcb697f2b/wheel-0.45.1-py3-none-any.whl", hash = "sha256:708e7481cc80179af0e556bbf0cc00b8444c7321e2700b8d8580231d13017248", size = 72494 },
+    { url = "https://files.pythonhosted.org/packages/f2/67/b488d1c2408bc619bdd9f8c929e67d7743087dfa00bbdc0c0c5db70161f9/wheel-0.46.0-py3-none-any.whl", hash = "sha256:8c1909305dc5a40979693cece1ec872eed10cc49af2038201213461b0688b7b4", size = 18426 },
 ]
 
 [[package]]
