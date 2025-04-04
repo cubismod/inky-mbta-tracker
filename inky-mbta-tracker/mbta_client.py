@@ -462,17 +462,21 @@ class Watcher:
             trip_id = item.id
             if item.relationships.route.data:
                 route = item.relationships.route.data.id
-            # if item.relationships.trip and item.relationships.trip.data:
-            #     # save the trip name as this is what the T uses to refer to specific trains
-            #     trip_info = await self.get_trip(
-            #         item.relationships.trip.data.id, session
-            #     )
-            #     if (
-            #         trip_info
-            #         and len(trip_info.data) > 0
-            #         and trip_info.data[0].attributes.name != ""
-            #     ):
-            #         trip_id = trip_info.data[0].attributes.name
+            if (
+                "CR" in route
+                and item.relationships.trip
+                and item.relationships.trip.data
+            ):
+                # save the trip name as this is what the T uses to refer to specific trains on commuter rail
+                trip_info = await self.get_trip(
+                    item.relationships.trip.data.id, session
+                )
+                if (
+                    trip_info
+                    and len(trip_info.data) > 0
+                    and trip_info.data[0].attributes.name != ""
+                ):
+                    trip_id = trip_info.data[0].attributes.name
             event = VehicleRedisSchema(  # type: ignore
                 action=event_type,
                 id=trip_id,
