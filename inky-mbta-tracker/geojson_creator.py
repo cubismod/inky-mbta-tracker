@@ -41,7 +41,7 @@ def ret_color(vehicle: VehicleRedisSchema) -> str:
     if vehicle.route.startswith("74") or vehicle.route.startswith("SL"):
         return "#9A9C9D"
     elif vehicle.route.isdecimal():
-        return "#907e00"
+        return "#FFFF00"
     return ""
 
 
@@ -208,6 +208,7 @@ async def create_json(config: Config) -> None:
                                         and vehicle_info.stop
                                         and stop.long
                                         and stop.lat
+                                        and not vehicle_info.route.isdecimal()
                                     ):
                                         stop_point = Point((stop.long, stop.lat))
                                         stop_feature = Feature(
