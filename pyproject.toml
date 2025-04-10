@@ -33,7 +33,7 @@ dependencies = [
     "markdown-it-py==3.0.0",
     "markupsafe==3.0.2",
     "mdurl==0.1.2",
-    "multidict==6.3.2",
+    "multidict==6.4.2",
     "mypy>=1.15.0",
     "numpy==1.26.4",
     "packaging==24.2",
