@@ -36,7 +36,7 @@ dependencies = [
     "multidict==6.4.3",
     "mypy>=1.15.0",
     "numpy==1.26.4",
-    "packaging==24.2",
+    "packaging==25.0",
     "paho-mqtt==2.1.0",
     "pandas==2.2.3",
     "polyline==2.0.2",
