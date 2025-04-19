@@ -56,7 +56,7 @@ dependencies = [
     "pytz==2025.2",
     "redis==5.2.1",
     "ruff==0.11.5",
-    "s3transfer==0.11.4",
+    "s3transfer==0.11.5",
     "scipy==1.14.1",
     "shapely==2.0.6",
     "six==1.17.0",
