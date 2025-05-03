@@ -5,7 +5,7 @@ description = "Redis backed application to track MBTA vehicle schedules & vehicl
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-    "aiodns==3.2.0",
+    "aiodns==3.3.0",
     "aiohappyeyeballs==2.6.1",
     "aiohttp==3.11.18",
     "aiosignal==1.3.2",
