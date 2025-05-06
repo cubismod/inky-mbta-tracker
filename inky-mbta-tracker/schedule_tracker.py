@@ -10,9 +10,10 @@ import humanize
 from geojson import Feature, Point
 from paho.mqtt import MQTTException, publish
 from prometheus import redis_commands, schedule_events, vehicle_events
-from pydantic import BaseModel, ValidationError
+from pydantic import ValidationError
 from redis import ResponseError
 from redis.asyncio.client import Pipeline, Redis
+from shared_types import ScheduleEvent, VehicleRedisSchema
 from tenacity import (
     before_sleep_log,
     retry,
@@ -22,35 +23,6 @@ from turfpy import measurement
 from zoneinfo import ZoneInfo
 
 logger = logging.getLogger("schedule_tracker")
-
-
-class ScheduleEvent(BaseModel):
-    action: str
-    time: datetime
-    route_id: str
-    route_type: int
-    headsign: str
-    stop: str
-    id: str
-    transit_time_min: int
-    trip_id: Optional[str] = None
-    alerting: bool = False
-    bikes_allowed: bool = False
-
-
-class VehicleRedisSchema(BaseModel):
-    action: str
-    id: str
-    current_status: str
-    direction_id: int
-    latitude: float
-    longitude: float
-    speed: Optional[float] = 0
-    stop: Optional[str] = None
-    route: str
-    update_time: datetime
-    approximate_speed: bool = False
-    occupancy_status: Optional[str] = None
 
 
 def dummy_schedule_event(event_id: str) -> ScheduleEvent:
