@@ -43,7 +43,7 @@ from tenacity import (
     retry_if_not_exception_type,
     wait_random_exponential,
 )
-from times_in_seconds import DAY, FOUR_WEEKS, TWO_MONTHS
+from times_in_seconds import DAY, FOUR_WEEKS, TWO_MONTHS, YEAR
 from zoneinfo import ZoneInfo
 
 MBTA_AUTH = os.environ.get("AUTH_TOKEN")
@@ -657,12 +657,18 @@ class Watcher:
                     facilities = Facilities.model_validate_json(body, strict=False)
                 except ValidationError as err:
                     logger.error("Unable to parse facility", exc_info=err)
-            await write_cache(
-                self.r_client,
-                key,
-                StopAndFacilities(stop=stop, facilities=facilities).model_dump_json(),
-                randint(FOUR_WEEKS, TWO_MONTHS),
-            )
+            if stop:
+                try:
+                    await write_cache(
+                        self.r_client,
+                        key,
+                        StopAndFacilities(
+                            stop=stop, facilities=facilities
+                        ).model_dump_json(),
+                        randint(TWO_MONTHS, YEAR),
+                    )
+                except ValidationError as err:
+                    logger.error("Unable to parse stop and facilities", exc_info=err)
         return stop, facilities
 
 

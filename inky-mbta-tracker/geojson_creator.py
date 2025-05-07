@@ -137,10 +137,11 @@ async def create_json(config: Config) -> None:
             )
             next_alert_time = datetime.now().astimezone(UTC)
             while True:
+                logger.info("uploading geojson")
                 try:
                     features = dict[str, Feature]()
                     pl = r.pipeline()
-                    for vehicle in await r.smembers("pos-data"):  # type: ignore
+                    for vehicle in await r.smembers("pos-data"):
                         dec_v = vehicle.decode("utf-8")
                         if dec_v:
                             await pl.get(vehicle)
