@@ -23,6 +23,7 @@ from s3transfer import S3UploadFailedError
 from schedule_tracker import VehicleRedisSchema
 from tenacity import before_sleep_log, retry, wait_random_exponential
 from turfpy.measurement import bearing
+from zoneinfo import ZoneInfo
 
 logger = logging.getLogger("geojson")
 
@@ -110,11 +111,10 @@ async def create_json(config: Config) -> None:
         port=int(os.environ.get("IMT_REDIS_PORT", "6379")),
         password=os.environ.get("IMT_REDIS_PASSWORD", ""),
     )
-
     # set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY env variables if you wish to use S3
     s3_bucket = os.environ.get("IMT_S3_BUCKET")
 
-    prefix = os.environ.get("IMT_S3_PREFIX", "")
+    prefix = os.environ.get("IMT_S3_PREFIX")
 
     lines = list()
     if config.vehicles_by_route:
@@ -141,7 +141,16 @@ async def create_json(config: Config) -> None:
                 try:
                     features = dict[str, Feature]()
                     pl = r.pipeline()
+
+                    # periodically clean up the set during overnight hours to avoid unnecessary redis calls
+                    delete_all_pos_data = False
+                    now = datetime.now().astimezone(ZoneInfo("US/Eastern"))
+                    if await r.scard("pos-data") > 500 and 4 > now.hour > 2:
+                        delete_all_pos_data = True
+
                     for vehicle in await r.smembers("pos-data"):
+                        if delete_all_pos_data:
+                            await r.srem("pos-data", vehicle)
                         dec_v = vehicle.decode("utf-8")
                         if dec_v:
                             await pl.get(vehicle)
