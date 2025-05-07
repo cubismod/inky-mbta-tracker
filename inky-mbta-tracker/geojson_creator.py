@@ -43,6 +43,8 @@ logger = logging.getLogger("geojson")
 def ret_color(vehicle: VehicleRedisSchema) -> str:
     if vehicle.route.startswith("Amtrak"):
         return "#18567D"
+    if vehicle.route.startswith("Amtrak"):
+        return "#18567D"
     if vehicle.route.startswith("Green"):
         return "#008150"
     if vehicle.route.startswith("Blue"):
