@@ -114,7 +114,7 @@ async def create_json(config: Config) -> None:
     # set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY env variables if you wish to use S3
     s3_bucket = os.environ.get("IMT_S3_BUCKET")
 
-    prefix = os.environ.get("IMT_S3_PREFIX")
+    prefix = os.environ.get("IMT_S3_PREFIX", "")
 
     lines = list()
     if config.vehicles_by_route:
