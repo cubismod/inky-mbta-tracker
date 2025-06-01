@@ -206,6 +206,7 @@ async def create_json(config: Config) -> None:
                                                     stop.long,
                                                     stop.lat,
                                                 ),
+                                                "carriages": vehicle_info.carriages,
                                                 "bearing": vehicle_bearing,
                                                 "occupancy_status": vehicle_info.occupancy_status,
                                                 # https://tc39.es/ecma262/multipage/numbers-and-dates.html#sec-date-time-string-format
