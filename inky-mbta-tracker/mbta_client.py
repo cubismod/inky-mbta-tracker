@@ -363,19 +363,22 @@ class Watcher:
         return occupancy.replace("_", " ").capitalize()
 
     @staticmethod
-    def calculate_carriage_occupancy(vehicle: Vehicle) -> str:
+    def get_carriages(vehicle: Vehicle) -> tuple[list[str], str]:
+        carriages = list[str]()
         if vehicle.attributes.carriages:
             statuses = list[str]()
-            [
-                statuses.append(carriage.occupancy_status)  # type: ignore
-                for carriage in vehicle.attributes.carriages
-                if carriage.occupancy_status
-                and carriage.occupancy_status != "NO_DATA_AVAILABLE"
-            ]
+            for carriage in vehicle.attributes.carriages:
+                if carriage.label:
+                    carriages.append(carriage.label)
+                if (
+                    carriage.occupancy_status
+                    and carriage.occupancy_status != "NO_DATA_AVAILABLE"
+                ):
+                    statuses.append(carriage.occupancy_status)
             if len(statuses) > 0:
                 count = Counter(statuses)
-                return count.most_common(1)[0][0]
-        return ""
+                return carriages, count.most_common(1)[0][0]
+        return carriages, ""
 
     # abbreviate common words to fit more on screen
     @staticmethod
@@ -454,8 +457,9 @@ class Watcher:
                     queue.put(event)
         else:
             occupancy = item.attributes.occupancy_status
+            carriage_ids = list[str]()
             if not occupancy:
-                occupancy = self.calculate_carriage_occupancy(item)
+                carriage_ids, occupancy = self.get_carriages(item)
             if occupancy:
                 occupancy = self.occupancy_status_human_readable(occupancy)
             route = ""
@@ -491,6 +495,8 @@ class Watcher:
             )
             if item.relationships.stop and item.relationships.stop.data:
                 event.stop = item.relationships.stop.data.id
+            if len(carriage_ids) > 0:
+                event.carriages = carriage_ids
             queue.put(event)
 
     @retry(
