@@ -31,3 +31,4 @@ class VehicleRedisSchema(BaseModel):
     update_time: datetime
     approximate_speed: bool = False
     occupancy_status: Optional[str] = None
+    carriages: Optional[list[str]] = None
