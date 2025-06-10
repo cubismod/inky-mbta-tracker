@@ -71,7 +71,7 @@ dependencies = [
     "wcwidth==0.2.13",
     "wheel==0.46.1",
     "yappi==1.6.10",
-    "yarl==1.20.0",
+    "yarl==1.20.1",
 ]
 
 [tool.ruff]
