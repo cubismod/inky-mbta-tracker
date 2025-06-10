@@ -21,7 +21,7 @@ dependencies = [
     "charset-normalizer==3.4.2",
     "cloudpickle==3.1.1",
     "dictdiffer==0.9.0",
-    "frozenlist==1.6.2",
+    "frozenlist==1.7.0",
     "geojson==3.1.0",
     "geopandas==1.0.1",
     "h11==0.16.0",
