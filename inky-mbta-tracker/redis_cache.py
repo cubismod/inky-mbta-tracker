@@ -1,5 +1,4 @@
 import logging
-from functools import lru_cache
 from typing import Optional
 
 from async_lru import alru_cache
@@ -8,6 +7,7 @@ from redis import ResponseError
 from redis.asyncio.client import Redis
 
 logger = logging.getLogger("redis_cache")
+
 
 @alru_cache(ttl=5)
 async def check_cache(redis: Redis, key: str) -> Optional[str]:
