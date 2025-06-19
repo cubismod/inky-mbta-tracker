@@ -68,7 +68,7 @@ dependencies = [
     "turfpy==0.0.8",
     "typing-extensions==4.14.0",
     "tzdata==2025.2",
-    "urllib3==2.4.0",
+    "urllib3==2.5.0",
     "wcwidth==0.2.13",
     "wheel==0.46.1",
     "yappi==1.6.10",
