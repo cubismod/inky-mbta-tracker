@@ -3,6 +3,7 @@ import os
 from asyncio import Runner, sleep
 from datetime import UTC, datetime, timedelta
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 import boto3
 from config import Config
@@ -23,7 +24,6 @@ from s3transfer import S3UploadFailedError
 from schedule_tracker import VehicleRedisSchema
 from tenacity import before_sleep_log, retry, wait_random_exponential
 from turfpy.measurement import bearing
-from zoneinfo import ZoneInfo
 
 logger = logging.getLogger("geojson")
 

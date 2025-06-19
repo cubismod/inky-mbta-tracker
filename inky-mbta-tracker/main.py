@@ -9,6 +9,7 @@ from pathlib import Path
 from queue import Queue
 from random import getrandbits, randint
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 import yappi
 from config import StopSetup, load_config
@@ -18,7 +19,6 @@ from mbta_client import EventType, thread_runner
 from prometheus import running_threads
 from prometheus_client import start_http_server
 from schedule_tracker import ScheduleEvent, VehicleRedisSchema, process_queue
-from zoneinfo import ZoneInfo
 
 load_dotenv()
 

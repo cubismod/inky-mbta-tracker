@@ -5,6 +5,7 @@ from asyncio import QueueEmpty, Runner
 from datetime import UTC, datetime, timedelta
 from queue import Queue
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 import humanize
 from geojson import Feature, Point
@@ -20,7 +21,6 @@ from tenacity import (
     wait_random_exponential,
 )
 from turfpy import measurement
-from zoneinfo import ZoneInfo
 
 logger = logging.getLogger("schedule_tracker")
 

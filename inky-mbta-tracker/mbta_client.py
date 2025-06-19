@@ -7,6 +7,7 @@ from enum import Enum
 from queue import Queue
 from random import randint
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 import aiohttp
 from aiohttp import ClientSession
@@ -44,7 +45,6 @@ from tenacity import (
     wait_random_exponential,
 )
 from times_in_seconds import DAY, FOUR_WEEKS, TWO_MONTHS, YEAR
-from zoneinfo import ZoneInfo
 
 MBTA_AUTH = os.environ.get("AUTH_TOKEN")
 MBTA_V3_ENDPOINT = "https://api-v3.mbta.com"
