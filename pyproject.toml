@@ -24,7 +24,7 @@ dependencies = [
     "dictdiffer==0.9.0",
     "frozenlist==1.7.0",
     "geojson==3.2.0",
-    "geopandas==1.0.1",
+    "geopandas==1.1.0",
     "h11==0.16.0",
     "httpcore==1.0.9",
     "humanize==4.12.3",
