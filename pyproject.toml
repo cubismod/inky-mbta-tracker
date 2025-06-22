@@ -48,7 +48,7 @@ dependencies = [
     "pycares==4.9.0",
     "pycparser==2.22",
     "pydantic==2.11.7",
-    "pydantic-core==2.33.2",
+    "pydantic-core==2.35.1",
     "pygments==2.19.2",
     "pyogrio==0.11.0",
     "pyproj==3.7.1",
