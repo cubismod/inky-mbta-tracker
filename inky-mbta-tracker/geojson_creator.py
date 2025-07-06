@@ -199,7 +199,7 @@ async def create_json(config: Config) -> None:
                                             lat = stop.lat
                                             if (
                                                 vehicle_info.speed
-                                                and vehicle_info.speed > 0
+                                                and vehicle_info.speed >= 10
                                             ):
                                                 stop_eta = calculate_stop_eta(
                                                     Feature(geometry=stop_point),
