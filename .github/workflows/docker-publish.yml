@@ -9,6 +9,7 @@ permissions:
   packages: write
   attestations: write
   id-token: write
+  security-events: write
 
 env:
   CACHE_REPO: ghcr.io/cubismod/inky-mbta-tracker/cache
