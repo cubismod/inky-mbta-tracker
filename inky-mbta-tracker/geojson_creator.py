@@ -6,6 +6,7 @@ from typing import Optional
 from zoneinfo import ZoneInfo
 
 import boto3
+import humanize
 from config import Config
 from geojson import (
     Feature,
@@ -23,7 +24,7 @@ from redis.asyncio import Redis
 from s3transfer import S3UploadFailedError
 from schedule_tracker import VehicleRedisSchema
 from tenacity import before_sleep_log, retry, wait_random_exponential
-from turfpy.measurement import bearing
+from turfpy.measurement import bearing, distance
 
 logger = logging.getLogger("geojson")
 
@@ -46,6 +47,13 @@ def ret_color(vehicle: VehicleRedisSchema) -> str:
     elif vehicle.route.isdecimal():
         return "#FFFF00"
     return ""
+
+
+def calculate_stop_eta(stop: Feature, vehicle: Feature, speed: float) -> str:
+    dis = distance(stop, vehicle, "mi")
+    # mi / mph = hr
+    elapsed = dis / speed
+    return humanize.naturaldelta(timedelta(hours=elapsed))
 
 
 # create an upload a geojson file or list of alerts to S3
@@ -176,17 +184,28 @@ async def create_json(config: Config) -> None:
                                 long = None
                                 lat = None
                                 route_icon = "rail"
+                                stop_eta = None
 
                                 if not vehicle_info.route.startswith("Amtrak"):
                                     stop = await light_get_stop(r, vehicle_info.stop)
                                     if stop:
                                         stop_id = stop.stop_id
                                         if stop.long and stop.lat:
+                                            stop_point = Point((stop.long, stop.lat))
                                             vehicle_bearing = calculate_bearing(
-                                                point, Point((stop.long, stop.lat))
+                                                point, stop_point
                                             )
                                             long = stop.long
                                             lat = stop.lat
+                                            if (
+                                                vehicle_info.speed
+                                                and vehicle_info.speed > 0
+                                            ):
+                                                stop_eta = calculate_stop_eta(
+                                                    Feature(geometry=stop_point),
+                                                    Feature(geometry=point),
+                                                    vehicle_info.speed,
+                                                )
                                 else:
                                     route_icon = "rail_amtrak"
                                     stop_id = vehicle_info.stop
@@ -215,6 +234,7 @@ async def create_json(config: Config) -> None:
                                         "direction": vehicle_info.direction_id,
                                         "id": vehicle_info.id,
                                         "stop": stop_id,
+                                        "stop_eta": stop_eta,
                                         "stop-coordinates": (
                                             long,
                                             lat,
