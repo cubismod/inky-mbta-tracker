@@ -63,3 +63,13 @@ jobs:
           tags: ${{ env.REPO }}:${{ github.sha }},${{ env.REPO }}:dev-latest
           cache-from: type=registry,ref=${{ env.CACHE_REPO }}
           cache-to: type=registry,ref=${{ env.CACHE_REPO }},mode=max
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: '${{ env.REPO }}:${{ github.sha }}'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+      - name: Upload Trivy scan results to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: 'trivy-results.sarif'
