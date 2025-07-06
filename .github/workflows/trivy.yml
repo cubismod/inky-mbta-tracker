@@ -6,6 +6,6 @@ on:
 jobs:
   scan:
     runs-on: ubuntu-latest
-  steps:
-  - name: Aqua Security Trivy
-    uses: aquasecurity/trivy-action@0.32.0
+    steps:
+    - name: Aqua Security Trivy
+      uses: aquasecurity/trivy-action@0.32.0
