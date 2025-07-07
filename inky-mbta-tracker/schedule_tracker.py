@@ -193,6 +193,10 @@ class Tracker:
                     route = "Commuter Rail"
                 if route.startswith("7"):
                     route = "Silver Line"
+                if route.startswith("Green"):
+                    route = "Green"
+                if route in ["Green", "Red", "Blue", "Orange", "Mattapan"]:
+                    route += " Line"
                 vehicle_speeds.labels(route_id=route, vehicle_id=event.id).set(
                     event.speed
                 )
