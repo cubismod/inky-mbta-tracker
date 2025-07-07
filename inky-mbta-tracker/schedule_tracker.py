@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 import humanize
 from geojson import Feature, Point
 from paho.mqtt import MQTTException, publish
-from prometheus import redis_commands, schedule_events, vehicle_events
+from prometheus import redis_commands, schedule_events, vehicle_events, vehicle_speeds
 from pydantic import ValidationError
 from redis import ResponseError
 from redis.asyncio.client import Pipeline, Redis
@@ -186,6 +186,16 @@ class Tracker:
             redis_key = f"vehicle-{event.id}"
             event.speed, approximate = await self.calculate_vehicle_speed(event)
             event.approximate_speed = approximate
+
+            if event.speed:
+                route = event.route
+                if route.startswith("CR"):
+                    route = "Commuter Rail"
+                if route.startswith("7"):
+                    route = "Silver Line"
+                vehicle_speeds.labels(route_id=route, vehicle_id=event.id).set(
+                    event.speed
+                )
 
             await pipeline.set(
                 redis_key, event.model_dump_json(), ex=timedelta(minutes=10)
