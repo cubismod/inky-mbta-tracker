@@ -75,6 +75,18 @@ class Tracker:
             f"action={event.action} route={event.route} vehicle_id={event.id} lat={event.latitude} long={event.longitude} status={event.current_status} speed={event.speed}"
         )
 
+    @staticmethod
+    def is_speed_reasonable(speed: float, line: str) -> bool:
+        if (
+            line == "Orange" or line == "Red" or line == "Blue" or line.startswith("7")
+        ) and speed < 65:
+            return True
+        if line.startswith("CR") and speed < 90:
+            return True
+        if (line.startswith("Green") or line == "Mattapan") and speed < 50:
+            return True
+        return False
+
     # calculate an approximate vehicle speed using the previous position and timestamp
     # returns (the speed, if this was an approximate calculation)
     async def calculate_vehicle_speed(
@@ -105,7 +117,11 @@ class Tracker:
                     if distance > 0 and duration.seconds > 0:
                         meters_per_second = distance / duration.seconds
                         speed = meters_per_second * 2.2369362921
-                        if not event.route.startswith("CR") and speed > 57:
+
+                        if not self.is_speed_reasonable(speed, event.route):
+                            logger.info(
+                                f"lol lmao imagine a {event.route} train/bus going {speed} mph"
+                            )
                             # throw out insane predictions
                             return None, False
                         else:
