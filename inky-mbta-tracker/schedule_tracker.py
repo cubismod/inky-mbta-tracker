@@ -77,13 +77,15 @@ class Tracker:
 
     @staticmethod
     def is_speed_reasonable(speed: float, line: str) -> bool:
-        if (
-            line == "Orange" or line == "Red" or line == "Blue" or line.startswith("7")
-        ) and speed < 65:
+        if (line == "Orange" or line == "Red") and speed <= 56:
             return True
-        if line.startswith("CR") and speed < 90:
+        if line == "Blue" and speed <= 50:
             return True
-        if (line.startswith("Green") or line == "Mattapan") and speed < 50:
+        if line.startswith("7") and speed <= 66:
+            return True
+        if line.startswith("CR") and speed <= 86:
+            return True
+        if (line.startswith("Green") or line == "Mattapan") and speed <= 40:
             return True
         return False
 
