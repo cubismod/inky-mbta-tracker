@@ -9,6 +9,6 @@ RUN uv venv && uv sync --frozen --no-cache
 ADD . .
 
 RUN uv lock --check
-RUN uvx ruff check
+RUN uv run ruff check && uv run mypy
 
 CMD ["uv", "run", "inky-mbta-tracker"]
