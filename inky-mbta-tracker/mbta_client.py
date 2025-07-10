@@ -843,6 +843,7 @@ async def watch_static_schedule(
     direction: int | None,
     queue: Queue[ScheduleEvent | VehicleRedisSchema],
     transit_time_min: int,
+    show_on_display: bool,
 ) -> None:
     while True:
         watcher = Watcher(
@@ -851,6 +852,7 @@ async def watch_static_schedule(
             direction_filter=direction,
             schedule_only=True,
             watcher_type=EventType.SCHEDULES,
+            show_on_display=show_on_display,
         )
         async with aiohttp.ClientSession(MBTA_V3_ENDPOINT) as session:
             await watcher.save_own_stop(session)
@@ -891,6 +893,7 @@ async def watch_station(
     queue: Queue[ScheduleEvent | VehicleRedisSchema],
     transit_time_min: int,
     expiration_time: Optional[datetime],
+    show_on_display: bool,
 ) -> None:
     endpoint = (
         f"{MBTA_V3_ENDPOINT}/predictions?filter[stop]={stop_id}&api_key={MBTA_AUTH}"
@@ -907,6 +910,7 @@ async def watch_station(
         direction_filter,
         expiration_time,
         watcher_type=EventType.PREDICTIONS,
+        show_on_display=show_on_display,
     )
     async with aiohttp.ClientSession(MBTA_V3_ENDPOINT) as session:
         await watcher.save_own_stop(session)
@@ -930,6 +934,7 @@ def thread_runner(
     route: Optional[str] = None,
     direction_filter: Optional[int] = None,
     expiration_time: Optional[datetime] = None,
+    show_on_display: bool = True,
 ) -> None:
     with Runner() as runner:
         match target:
@@ -942,6 +947,7 @@ def thread_runner(
                             direction_filter,
                             queue,
                             transit_time_min,
+                            show_on_display,
                         )
                     )
             case EventType.PREDICTIONS:
@@ -953,6 +959,7 @@ def thread_runner(
                         queue,
                         transit_time_min,
                         expiration_time,
+                        show_on_display,
                     )
                 )
             case EventType.VEHICLES:

@@ -88,6 +88,7 @@ def start_thread(  # type: ignore
                         "direction_filter": direction_filter,
                         "queue": queue,
                         "transit_time_min": stop.transit_time_min,
+                        "show_on_display": stop.show_on_display,
                     },
                     name=f"{stop.route_filter}_{stop.stop_id}_schedules",
                 )

@@ -17,6 +17,7 @@ app = FastAPI(
     title="MBTA Track Prediction API",
     description="API for predicting commuter rail track assignments",
     version="1.0.0",
+    docs_url="/",
 )
 
 # Initialize track predictor
@@ -144,21 +145,21 @@ async def get_historical_assignments(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@app.get("/")
-async def root() -> dict:
-    """Root endpoint with API information"""
-    return {
-        "name": "MBTA Track Prediction API",
-        "version": "1.0.0",
-        "description": "API for predicting commuter rail track assignments",
-        "endpoints": {
-            "predictions": "/predictions/{station_id}",
-            "generate": "/predictions (POST)",
-            "stats": "/stats/{station_id}/{route_id}",
-            "historical": "/historical/{station_id}/{route_id}",
-            "health": "/health",
-        },
-    }
+# @app.get("/")
+# async def root() -> dict:
+#     """Root endpoint with API information"""
+#     return {
+#         "name": "MBTA Track Prediction API",
+#         "version": "1.0.0",
+#         "description": "API for predicting commuter rail track assignments",
+#         "endpoints": {
+#             "predictions": "/predictions/{station_id}",
+#             "generate": "/predictions (POST)",
+#             "stats": "/stats/{station_id}/{route_id}",
+#             "historical": "/historical/{station_id}/{route_id}",
+#             "health": "/health",
+#         },
+#     }
 
 
 @click.command()
