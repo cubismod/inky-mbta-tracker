@@ -11,6 +11,7 @@ from random import getrandbits, randint
 from typing import Optional
 from zoneinfo import ZoneInfo
 
+import click
 import yappi
 from config import StopSetup, load_config
 from dotenv import load_dotenv
@@ -240,6 +241,7 @@ async def __main__() -> None:
             yappi.clear_stats()
 
 
-if __name__ == "__main__":
+@click.command(name="inky-mbta-tracker")
+def run_main() -> None:
     with Runner() as runner:
         runner.run(__main__())

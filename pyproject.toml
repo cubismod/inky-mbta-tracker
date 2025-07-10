@@ -20,8 +20,10 @@ dependencies = [
     "certifi==2025.7.9",
     "cffi==1.17.1",
     "charset-normalizer==3.4.2",
+    "click>=8.2.1",
     "cloudpickle==3.1.1",
     "dictdiffer==0.9.0",
+    "fastapi==0.115.7",
     "frozenlist==1.7.0",
     "geojson==3.1.0",
     "geopandas==1.0.1",
@@ -69,11 +71,16 @@ dependencies = [
     "typing-extensions==4.14.1",
     "tzdata==2025.2",
     "urllib3==2.5.0",
+    "uvicorn==0.34.0",
     "wcwidth==0.2.13",
     "wheel==0.46.1",
     "yappi==1.6.10",
     "yarl==1.20.1",
 ]
+
+[project.scripts]
+inky-mbta-tracker = "inky_mbta_tracker.main:run_main"
+prediction-api = "inky_mbta_tracker.track_prediction_api:run_main"
 
 [tool.ruff]
 # Exclude a variety of commonly ignored directories.

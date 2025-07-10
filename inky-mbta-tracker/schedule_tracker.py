@@ -323,6 +323,8 @@ class Tracker:
             msgs = list[tuple[str, str]]()
             events = await self.fetch_mqtt_events()
             for i, event in enumerate(events):
+                if not event.show_on_display:
+                    continue
                 topic = f"imt/departure_time{i}"
                 payload = self.prediction_display(event)
                 msgs.append((topic, payload))
@@ -335,7 +337,7 @@ class Tracker:
                     payload = f"⚠️{payload}"
                 if event.bikes_allowed:
                     payload = f"🚲{payload}"
-                msgs.append((topic, payload))
+
             if len(msgs) > 0:
                 try:
                     publish.multiple(

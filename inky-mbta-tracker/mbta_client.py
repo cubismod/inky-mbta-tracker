@@ -38,6 +38,7 @@ from pydantic import BaseModel, TypeAdapter, ValidationError
 from redis.asyncio.client import Redis
 from redis_cache import check_cache, write_cache
 from schedule_tracker import ScheduleEvent, VehicleRedisSchema, dummy_schedule_event
+from shared_types import TrackAssignment
 from tenacity import (
     before_log,
     before_sleep_log,
@@ -46,6 +47,7 @@ from tenacity import (
     wait_random_exponential,
 )
 from times_in_seconds import DAY, FOUR_WEEKS, TWO_MONTHS, YEAR
+from track_predictor import TrackPredictor
 
 MBTA_AUTH = os.environ.get("AUTH_TOKEN")
 MBTA_V3_ENDPOINT = "https://api-v3.mbta.com"
@@ -184,6 +186,8 @@ class Watcher:
     facilities: Optional[Facilities]
     expiration_time: Optional[datetime]
     r_client: Redis
+    track_predictor: TrackPredictor
+    show_on_display: bool
 
     def __init__(
         self,
@@ -194,6 +198,7 @@ class Watcher:
         route_type: Optional[str] = None,
         schedule_only: bool = False,
         watcher_type: EventType = EventType.PREDICTIONS,
+        show_on_display: bool = True,
     ):
         self.stop_id = stop_id
         self.route = route
@@ -210,6 +215,8 @@ class Watcher:
             port=int(os.environ.get("IMT_REDIS_PORT", "6379")),
             password=os.environ.get("IMT_REDIS_PASSWORD", ""),
         )
+        self.track_predictor = TrackPredictor()
+        self.show_on_display = show_on_display
 
     @staticmethod
     def determine_time(
@@ -444,6 +451,98 @@ class Watcher:
                     if self.stop:
                         stop_name = self.stop.data.attributes.name
 
+                    # Track prediction integration
+                    platform_code = None
+                    platform_name = None
+                    predicted_track = None
+                    track_confidence = None
+
+                    # Get detailed stop information for track data
+                    if item.relationships.stop and item.relationships.stop.data:
+                        stop_data = await self.get_stop(
+                            session, item.relationships.stop.data.id
+                        )
+                        if stop_data[0]:  # stop_data is a tuple (Stop, Facilities)
+                            stop_info = stop_data[0]
+                            platform_code = stop_info.data.attributes.platform_code
+                            platform_name = stop_info.data.attributes.platform_name
+
+                            # For commuter rail, store historical assignment and generate prediction
+                            if route_id.startswith("CR") and (
+                                platform_code or platform_name
+                            ):
+                                # Store historical track assignment
+                                try:
+                                    assignment = TrackAssignment(
+                                        station_id=self.stop_id
+                                        or item.relationships.stop.data.id,
+                                        route_id=route_id,
+                                        trip_id=trip_id,
+                                        headsign=headsign,
+                                        direction_id=item.attributes.direction_id,
+                                        platform_code=platform_code,
+                                        platform_name=platform_name,
+                                        scheduled_time=schedule_time,
+                                        actual_time=schedule_time,  # For predictions, use scheduled time
+                                        recorded_time=datetime.now(UTC),
+                                        day_of_week=schedule_time.weekday(),
+                                        hour=schedule_time.hour,
+                                        minute=schedule_time.minute,
+                                    )
+                                    await self.track_predictor.store_historical_assignment(
+                                        assignment
+                                    )
+
+                                    # Validate previous predictions
+                                    await self.track_predictor.validate_prediction(
+                                        assignment.station_id,
+                                        route_id,
+                                        trip_id,
+                                        schedule_time,
+                                        platform_code,
+                                        platform_name,
+                                    )
+
+                                # TODO: narrow exceptions
+                                except Exception as e:
+                                    logger.error(
+                                        f"Failed to store historical assignment: {e}"
+                                    )
+
+                            # Generate prediction for future trips (only for commuter rail)
+                            elif route_id.startswith("CR") and not (
+                                platform_code or platform_name
+                            ):
+                                try:
+                                    prediction = (
+                                        await self.track_predictor.predict_track(
+                                            station_id=self.stop_id
+                                            or item.relationships.stop.data.id,
+                                            route_id=route_id,
+                                            trip_id=trip_id,
+                                            headsign=headsign,
+                                            direction_id=item.attributes.direction_id,
+                                            scheduled_time=schedule_time,
+                                        )
+                                    )
+
+                                    if prediction:
+                                        predicted_track = (
+                                            prediction.predicted_platform_code
+                                            or prediction.predicted_platform_name
+                                        )
+                                        track_confidence = prediction.confidence_score
+                                        logger.info(
+                                            f"Generated track prediction: {route_id} {headsign} -> {predicted_track} "
+                                            f"(confidence: {track_confidence:.2f})"
+                                        )
+
+                                # TODO: narrow exceptions
+                                except Exception as e:
+                                    logger.error(
+                                        f"Failed to generate track prediction: {e}"
+                                    )
+
                     event = ScheduleEvent(
                         action=event_type,
                         time=schedule_time,
@@ -456,6 +555,11 @@ class Watcher:
                         trip_id=trip_id,
                         alerting=alerting,
                         bikes_allowed=bikes_allowed,
+                        platform_code=platform_code,
+                        platform_name=platform_name,
+                        predicted_track=predicted_track,
+                        track_confidence=track_confidence,
+                        show_on_display=self.show_on_display,
                     )
                     queue.put(event)
         else:
@@ -498,7 +602,7 @@ class Watcher:
             )
             if item.relationships.stop and item.relationships.stop.data:
                 event.stop = item.relationships.stop.data.id
-            if len(carriage_ids) > 0:
+            if len(carriage_ids) > 0 and isinstance(event, VehicleRedisSchema):
                 event.carriages = carriage_ids
             queue.put(event)
 
