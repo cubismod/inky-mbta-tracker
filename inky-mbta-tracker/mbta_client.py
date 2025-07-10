@@ -93,7 +93,7 @@ async def get_shapes(
     ret = dict[str, list[list[tuple]]]()
     async with aiohttp.ClientSession(MBTA_V3_ENDPOINT) as session:
         for route in routes:
-            key = f"shape-{route}"
+            key = f"shape:{route}"
             cached = await check_cache(r_client, key)
             body = ""
             if cached:
@@ -133,7 +133,7 @@ def silver_line_lookup(route_id: str) -> str:
 
 # retrieves a rail/bus stop from Redis & returns the stop ID with optional coordinates
 async def light_get_stop(r_client: Redis, stop_id: str) -> Optional[LightStop]:
-    key = f"light-stop-{stop_id}"
+    key = f"stop:{stop_id}:light"
     cached = await check_cache(r_client, key)
     if cached:
         try:
@@ -427,7 +427,7 @@ class Watcher:
                     # drop events that have the same stop & headsign as that train cannot be
                     # immediately boarded in most cases so there is no sense in showing it as a departure
                     if self.stop and headsign == self.stop.data.attributes.name:
-                        logger.info(
+                        logger.warning(
                             f"Dropping invalid schedule event {headsign}/{headsign}"
                         )
                         return
@@ -549,7 +549,7 @@ class Watcher:
                         route_id=route_id,
                         route_type=route_type,
                         headsign=self.abbreviate(headsign),
-                        id=item.id,
+                        id=item.id.replace("-", ":"),
                         stop=self.abbreviate(stop_name),
                         transit_time_min=transit_time_min,
                         trip_id=trip_id,
@@ -611,7 +611,7 @@ class Watcher:
         before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
     )
     async def get_trip(self, trip_id: str, session: ClientSession) -> Optional[Trips]:
-        key = f"tripc-{trip_id}"
+        key = f"trip:{trip_id}:full"
         cached = await check_cache(self.r_client, key)
         try:
             if cached:
@@ -751,7 +751,7 @@ class Watcher:
     async def get_stop(
         self, session: ClientSession, stop_id: str
     ) -> tuple[Optional[Stop], Optional[Facilities]]:
-        key = f"stop-{stop_id}"
+        key = f"stop:{stop_id}:full"
         stop = None
         facilities = None
         cached = await check_cache(self.r_client, key)
