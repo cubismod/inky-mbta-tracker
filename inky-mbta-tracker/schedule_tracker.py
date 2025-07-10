@@ -65,7 +65,7 @@ class Tracker:
 
     @staticmethod
     def log_prediction(event: ScheduleEvent) -> None:
-        logger.info(
+        logger.debug(
             f"action={event.action} time={event.time.astimezone(ZoneInfo('US/Eastern')).strftime('%c')} route_id={event.route_id} route_type={event.route_type} headsign={event.headsign} stop={event.stop} id={event.id}, transit_time_min={event.transit_time_min}, alerting={event.alerting}, bikes_allowed={event.bikes_allowed}"
         )
 
@@ -165,7 +165,7 @@ class Tracker:
         if isinstance(event, ScheduleEvent):
             # only add events in the future
             if event.time > datetime.now().astimezone(UTC):
-                trip_redis_key = f"trip-{event.trip_id}-{event.stop.replace(' ', '_')}"
+                trip_redis_key = f"trip:{event.trip_id}:{event.stop.replace(' ', '_')}"
                 existing_event = await self.redis.get(trip_redis_key)
                 redis_commands.labels("get").inc()
                 if existing_event:
@@ -201,7 +201,7 @@ class Tracker:
                 schedule_events.labels(action, event.route_id, event.stop).inc()
                 self.log_prediction(event)
         if isinstance(event, VehicleRedisSchema):
-            redis_key = f"vehicle-{event.id}"
+            redis_key = f"vehicle:{event.id}"
             event.speed, approximate = await self.calculate_vehicle_speed(event)
             event.approximate_speed = approximate
 

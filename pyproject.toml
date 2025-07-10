@@ -28,7 +28,6 @@ dependencies = [
     "geojson==3.1.0",
     "geopandas==1.0.1",
     "h11==0.16.0",
-    "hatchling>=1.27.0",
     "httpcore==1.0.9",
     "humanize==4.12.3",
     "idna==3.10",
@@ -172,8 +171,8 @@ disallow_incomplete_defs = true
 ignore_missing_imports = true
 
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
 
-[tool.hatch.build.targets.wheel]
-only-include = ["inky-mbta-tracker"]
+[tool.setuptools.packages.find]
+where = ["inky-mbta-tracker"]
