@@ -305,10 +305,13 @@ class TrackPredictor:
             # Store prediction for later validation
             await self._store_prediction(prediction)
 
+            logger.debug(
+                f"Predicted track={prediction.predicted_platform_code}/{prediction.predicted_platform_name}, station_id={station_id}, route_id={route_id}, trip_id={trip_id}, headsign={headsign}, direction_id={direction_id}, scheduled_time={scheduled_time}, confidence={confidence}, method={method}, historical_matches={historical_matches}"
+            )
+
             return prediction
 
-        # TODO: narrow exception
-        except Exception as e:
+        except ValidationError as e:
             logger.error(f"Failed to predict track: {e}")
             return None
 
