@@ -387,7 +387,7 @@ wheels = [
 [[package]]
 name = "inky-mbta-tracker"
 version = "0.1.0"
-source = { virtual = "." }
+source = { editable = "." }
 dependencies = [
     { name = "aiodns" },
     { name = "aiohappyeyeballs" },

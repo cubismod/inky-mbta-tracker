@@ -241,7 +241,7 @@ async def __main__() -> None:
             yappi.clear_stats()
 
 
-@click.command(name="inky-mbta-tracker")
+@click.command()
 def run_main() -> None:
     with Runner() as runner:
         runner.run(__main__())

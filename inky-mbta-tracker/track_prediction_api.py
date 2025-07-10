@@ -161,7 +161,7 @@ async def root() -> dict:
     }
 
 
-@click.command(name="prediction-api")
+@click.command()
 def run_main() -> None:
     port = int(os.environ.get("IMT_TRACK_API_PORT", "8080"))
     uvicorn.run(app, host="0.0.0.0", port=port)

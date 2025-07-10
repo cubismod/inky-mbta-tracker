@@ -79,8 +79,8 @@ dependencies = [
 ]
 
 [project.scripts]
-inky-mbta-tracker = "inky_mbta_tracker.main:run_main"
-prediction-api = "inky_mbta_tracker.track_prediction_api:run_main"
+inky-mbta-tracker = "main:run_main"
+prediction-api = "track_prediction_api:run_main"
 
 [tool.ruff]
 # Exclude a variety of commonly ignored directories.
@@ -169,3 +169,10 @@ show_error_codes = true
 disallow_untyped_defs = true
 disallow_incomplete_defs = true
 ignore_missing_imports = true
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["inky-mbta-tracker"]
