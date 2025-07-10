@@ -203,10 +203,15 @@ class TrackPredictor:
             # Convert to probabilities
             if combined_scores:
                 total_score = sum(combined_scores.values())
-                return {
+                total = {
                     track: score / total_score
                     for track, score in combined_scores.items()
                 }
+                logger.debug(
+                    f"Calculated pattern for station_id={station_id}, route_id={route_id}, trip_id={trip_headsign}, direction_id={direction_id}"
+                )
+                logger.debug(f"Total score={total_score}, total={total}")
+                return total
 
             return {}
 
