@@ -284,7 +284,7 @@ async def create_json(config: Config) -> None:
                             bucket_name=s3_bucket,
                         )
                         next_alert_time = datetime.now().astimezone(UTC) + timedelta(
-                            minutes=10
+                            minutes=4
                         )
                     await sleep(int(os.getenv("IMT_S3_REFRESH_TIME", "35")))
                 except ResponseError as err:
