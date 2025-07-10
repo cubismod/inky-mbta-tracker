@@ -139,7 +139,7 @@ class AlertAttributes(BaseModel):
     header: str
     url: Optional[str] = None
     short_header: str
-    effect: str
+    effect: Optional[str] = None
     updated_at: str
     effect_name: Optional[str] = None
     active_period: list[ActivePeriod]
