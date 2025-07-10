@@ -427,7 +427,7 @@ class Watcher:
                     # drop events that have the same stop & headsign as that train cannot be
                     # immediately boarded in most cases so there is no sense in showing it as a departure
                     if self.stop and headsign == self.stop.data.attributes.name:
-                        logger.warning(
+                        logger.debug(
                             f"Dropping invalid schedule event {headsign}/{headsign}"
                         )
                         return
