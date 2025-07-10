@@ -15,7 +15,10 @@ tasks:
       - uv run ruff format inky-mbta-tracker
   run:
     cmds:
-      - uv run python3 inky-mbta-tracker/main.py
+      - uv run inky-mbta-tracker
+  prediction-api:
+    cmds:
+      - uv run prediction-api
   logs:
     cmds:
       - uvx tail -f imt.log
