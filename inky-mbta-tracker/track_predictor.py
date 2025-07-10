@@ -162,8 +162,10 @@ class TrackPredictor:
 
                 if track_id:
                     # Exact match (same headsign, time window, direction)
+                    # we append the commuter rail line to the headsign when processing
+                    # in mbta_client.py so we do a substring match here
                     if (
-                        assignment.headsign == trip_headsign
+                        trip_headsign in assignment.headsign
                         and assignment.direction_id == direction_id
                         and abs(assignment.hour - target_hour) <= 1
                     ):
@@ -171,7 +173,7 @@ class TrackPredictor:
 
                     # Headsign match
                     if (
-                        assignment.headsign == trip_headsign
+                        trip_headsign in assignment.headsign
                         and assignment.direction_id == direction_id
                     ):
                         patterns["headsign_match"][track_id] += 5
