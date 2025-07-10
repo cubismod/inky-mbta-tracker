@@ -118,11 +118,11 @@ class ActivePeriod(BaseModel):
 class InformedEntity(BaseModel):
     trip: Optional[str] = None
     stop: Optional[str] = None
-    route_type: int
+    route_type: Optional[int] = None
     route: Optional[str] = None
     facility: Optional[str] = None
     direction_id: Optional[int] = None
-    activities: list[str]
+    activities: Optional[list[str]] = None
     image: Optional[str] = None
     service_effect: Optional[str] = None
     duration_certainty: Optional[str] = None
@@ -131,9 +131,9 @@ class InformedEntity(BaseModel):
 
 class AlertAttributes(BaseModel):
     timeframe: Optional[str] = None
-    image: Optional[str] = None
     image_alternative_text: Optional[str] = None
     cause: str
+    image: Optional[str] = None
     created_at: str
     banner: Optional[str] = None
     header: str
