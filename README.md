@@ -130,7 +130,7 @@ Note that you will also need to add the following stations to your configuration
     {
       "stop_id": "place-north",
       "show_on_display": false,
-      "transit_time_min": 1
+      "transit_time_min": 1,
     },
     {
       "stop_id": "place-sstat",
