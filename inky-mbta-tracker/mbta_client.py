@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo
 import aiohttp
 from aiohttp import ClientSession
 from aiosseclient import aiosseclient
+from exceptions import RateLimitExceeded
 from mbta_responses import (
     AlertResource,
     Alerts,
@@ -99,6 +100,8 @@ async def get_shapes(
                 async with session.get(
                     f"/shapes?filter[route]={route}&api_key={MBTA_AUTH}"
                 ) as response:
+                    if response.status == 429:
+                        raise RateLimitExceeded()
                     body = await response.text()
                     mbta_api_requests.labels("shapes").inc()
                     # 4 weeks
@@ -514,6 +517,8 @@ class Watcher:
                 async with session.get(
                     f"trips?filter[id]={trip_id}&api_key={MBTA_AUTH}"
                 ) as response:
+                    if response.status == 429:
+                        raise RateLimitExceeded()
                     body = await response.text()
                     mbta_api_requests.labels("trips").inc()
 
@@ -539,6 +544,8 @@ class Watcher:
                     f"routes?filter[id]={route_id}&api_key={MBTA_AUTH}"
                 ) as response:
                     try:
+                        if response.status == 429:
+                            raise RateLimitExceeded()
                         body = await response.text()
                         mbta_api_requests.labels("routes").inc()
                         route = Route.model_validate_json(body, strict=False)
@@ -570,12 +577,15 @@ class Watcher:
 
         async with session.get(endpoint) as response:
             try:
+                if response.status == 429:
+                    raise RateLimitExceeded()
                 body = await response.text()
                 mbta_api_requests.labels("alerts").inc()
                 alerts = Alerts.model_validate_json(strict=False, json_data=body)
                 return alerts.data
             except ValidationError as err:
                 logger.error("Unable to parse alert", exc_info=err)
+                logger.debug(f"Alert body: {body}")
         return None
 
     @retry(
@@ -605,6 +615,8 @@ class Watcher:
                 endpoint += f"&filter[max_time]={diff.strftime('%H:%M')}"
         async with session.get(endpoint) as response:
             try:
+                if response.status == 429:
+                    raise RateLimitExceeded()
                 body = await response.text()
                 mbta_api_requests.labels("schedules").inc()
                 schedules = Schedules.model_validate_json(strict=False, json_data=body)
@@ -648,6 +660,8 @@ class Watcher:
         else:
             async with session.get(f"/stops/{stop_id}?api_key={MBTA_AUTH}") as response:
                 try:
+                    if response.status == 429:
+                        raise RateLimitExceeded()
                     body = await response.text()
                     mbta_api_requests.labels("stops").inc()
                     stop = Stop.model_validate_json(body, strict=False)
@@ -658,6 +672,8 @@ class Watcher:
                 f"/facilities/?filter[stop]={self.stop_id}&filter[type]=BIKE_STORAGE"
             ) as response:
                 try:
+                    if response.status == 429:
+                        raise RateLimitExceeded()
                     body = await response.text()
                     mbta_api_requests.labels("facilities").inc()
                     facilities = Facilities.model_validate_json(body, strict=False)
