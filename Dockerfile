@@ -4,11 +4,11 @@ COPY --from=ghcr.io/astral-sh/uv:0.7.19@sha256:2dcbc74e60ed6d842122ed538f5267c80
 WORKDIR /app
 ADD README.md pyproject.toml uv.lock ./
 
-RUN uv venv && uv sync --frozen --no-cache
+RUN uv venv && uv sync --frozen --no-cache --no-install-project
 
 ADD . .
 
-RUN uv lock --check
+RUN uv sync && uv lock --check
 RUN uv run ruff check && uv run mypy
 
 CMD ["uv", "run", "inky-mbta-tracker"]
