@@ -285,6 +285,9 @@ class TrackPredictor:
 
             # Only make predictions if confidence is above threshold
             if confidence < 0.3:  # 30% confidence threshold
+                logger.debug(
+                    f"No prediction made for station_id={station_id}, route_id={route_id}, trip_id={trip_id}, headsign={headsign}, direction_id={direction_id}, scheduled_time={scheduled_time}, confidence={confidence}"
+                )
                 return None
 
             # Determine prediction method
@@ -296,6 +299,9 @@ class TrackPredictor:
             else:
                 method = "low_confidence_pattern"
 
+            logger.debug(
+                f"Predicting track for station_id={station_id}, route_id={route_id}, trip_id={trip_id}, headsign={headsign}, direction_id={direction_id}, scheduled_time={scheduled_time}, confidence={confidence}, method={method}"
+            )
             # Count historical matches
             historical_matches = sum(
                 1
@@ -306,7 +312,7 @@ class TrackPredictor:
                     scheduled_time,
                 )
             )
-
+            logger.debug(f"Historical matches={historical_matches}")
             # Create prediction
             prediction = TrackPrediction(
                 station_id=station_id,
@@ -324,7 +330,6 @@ class TrackPredictor:
                 historical_matches=historical_matches,
                 created_at=datetime.now(UTC),
             )
-
             # Store prediction for later validation
             await self._store_prediction(prediction)
 
