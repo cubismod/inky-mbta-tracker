@@ -6,7 +6,9 @@ from typing import List
 import click
 import uvicorn
 from fastapi import FastAPI, HTTPException, Query
-from track_predictor import TrackPredictor
+from pydantic import BaseModel
+from shared_types import TrackAssignment, TrackPrediction
+from track_predictor import TrackPredictionStats, TrackPredictor
 
 # This is intended as a separate entrypoint to be run as a separate container
 
@@ -25,6 +27,16 @@ app = FastAPI(
 track_predictor = TrackPredictor()
 
 
+class TrackPredictionResponse(BaseModel):
+    success: bool
+    prediction: TrackPrediction | str
+
+
+class TrackPredictionStatsResponse(BaseModel):
+    success: bool
+    stats: TrackPredictionStats | str
+
+
 @app.get("/health")
 async def health_check() -> dict:
     """Health check endpoint"""
@@ -39,20 +51,9 @@ async def generate_track_prediction(
     headsign: str,
     direction_id: int,
     scheduled_time: datetime,
-) -> dict:
+) -> TrackPredictionResponse:
     """
-    Generate a track prediction for a specific trip.
-
-    Args:
-        station_id: The MBTA station ID
-        route_id: The route ID
-        trip_id: The trip ID
-        headsign: The trip headsign
-        direction_id: The direction ID
-        scheduled_time: The scheduled departure time
-
-    Returns:
-        Track prediction or error message
+    Generate a track prediction based on historical data.
     """
     try:
         prediction = await track_predictor.predict_track(
@@ -65,15 +66,15 @@ async def generate_track_prediction(
         )
 
         if prediction:
-            return {
-                "success": True,
-                "prediction": prediction.model_dump(),
-            }
+            return TrackPredictionResponse(
+                success=True,
+                prediction=prediction,
+            )
         else:
-            return {
-                "success": False,
-                "message": "No prediction could be generated",
-            }
+            return TrackPredictionResponse(
+                success=False,
+                prediction="No prediction could be generated",
+            )
 
     except Exception as e:
         logging.error(f"Error generating prediction: {e}")
@@ -84,30 +85,23 @@ async def generate_track_prediction(
 async def get_prediction_stats(
     station_id: str,
     route_id: str,
-) -> dict:
+) -> TrackPredictionStatsResponse:
     """
     Get prediction statistics for a station and route.
-
-    Args:
-        station_id: The MBTA station ID
-        route_id: The route ID
-
-    Returns:
-        Prediction statistics
     """
     try:
         stats = await track_predictor.get_prediction_stats(station_id, route_id)
 
         if stats:
-            return {
-                "success": True,
-                "stats": stats.model_dump(),
-            }
+            return TrackPredictionStatsResponse(
+                success=True,
+                stats=stats,
+            )
         else:
-            return {
-                "success": False,
-                "message": "No statistics available",
-            }
+            return TrackPredictionStatsResponse(
+                success=False,
+                stats="No statistics available",
+            )
 
     except Exception as e:
         logging.error(f"Error getting stats for {station_id}/{route_id}: {e}")
@@ -119,17 +113,9 @@ async def get_historical_assignments(
     station_id: str,
     route_id: str,
     days: int = Query(30, description="Number of days to look back"),
-) -> List[dict]:
+) -> List[TrackAssignment]:
     """
     Get historical track assignments for analysis.
-
-    Args:
-        station_id: The MBTA station ID
-        route_id: The route ID
-        days: Number of days to look back
-
-    Returns:
-        List of historical track assignments
     """
     try:
         end_date = datetime.now()
@@ -139,7 +125,7 @@ async def get_historical_assignments(
             station_id, route_id, start_date, end_date
         )
 
-        return [assignment.model_dump() for assignment in assignments]
+        return [assignment for assignment in assignments]
 
     except Exception as e:
         logging.error(f"Error getting historical data for {station_id}/{route_id}: {e}")

@@ -66,6 +66,7 @@ class LightStop(BaseModel):
     stop_id: str
     long: Optional[float] = None
     lat: Optional[float] = None
+    platform_prediction: Optional[str] = None
 
 
 def parse_shape_data(shapes: Shapes) -> list[list[tuple]]:
@@ -571,23 +572,24 @@ class Watcher:
                 occupancy = self.occupancy_status_human_readable(occupancy)
             route = ""
             trip_id = item.id
+            trip_info = None
             if item.relationships.route.data:
                 route = item.relationships.route.data.id
-            if (
-                "CR" in route
-                and item.relationships.trip
-                and item.relationships.trip.data
-            ):
+            if item.relationships.trip and item.relationships.trip.data:
                 # save the trip name as this is what the T uses to refer to specific trains on commuter rail
                 trip_info = await self.get_trip(
                     item.relationships.trip.data.id, session
                 )
                 if (
                     trip_info
+                    and "CR" in route
                     and len(trip_info.data) > 0
                     and trip_info.data[0].attributes.name != ""
                 ):
                     trip_id = trip_info.data[0].attributes.name
+            headsign = None
+            if trip_info and len(trip_info.data) > 0:
+                headsign = trip_info.data[0].attributes.headsign
             event = VehicleRedisSchema(  # type: ignore
                 action=event_type,
                 id=trip_id,
@@ -599,6 +601,7 @@ class Watcher:
                 route=route,
                 update_time=datetime.now().astimezone(UTC),
                 occupancy_status=occupancy,
+                headsign=headsign,
             )
             if item.relationships.stop and item.relationships.stop.data:
                 event.stop = item.relationships.stop.data.id
