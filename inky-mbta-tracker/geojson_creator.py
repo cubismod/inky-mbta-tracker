@@ -15,7 +15,13 @@ from geojson import (
     Point,
     dumps,
 )
-from mbta_client import get_shapes, light_get_alerts, light_get_stop, silver_line_lookup
+from mbta_client import (
+    determine_station_id,
+    get_shapes,
+    light_get_alerts,
+    light_get_stop,
+    silver_line_lookup,
+)
 from mbta_responses import AlertResource, Alerts
 from prometheus import redis_commands
 from pydantic import ValidationError
@@ -110,18 +116,6 @@ async def collect_alerts(config: Config) -> list[AlertResource]:
         reverse=True,
     )
     return collected_alerts
-
-
-def determine_station_id(stop_id: str) -> str:
-    if "North Station" in stop_id:
-        return "place-north"
-    if "South Station" in stop_id:
-        return "place-sstat"
-    if "Back Bay" in stop_id:
-        return "place-bbsta"
-    if "Ruggles" in stop_id:
-        return "place-ruggles"
-    return stop_id
 
 
 @retry(

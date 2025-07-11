@@ -6,11 +6,19 @@ from typing import List
 import click
 import uvicorn
 from fastapi import FastAPI, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
+from mbta_client import determine_station_id
 from pydantic import BaseModel
 from shared_types import TrackAssignment, TrackPrediction
 from track_predictor import TrackPredictionStats, TrackPredictor
 
 # This is intended as a separate entrypoint to be run as a separate container
+
+origins = [
+    "http://localhost:8080",
+    "https://mbta.ryanwallace.cloud",
+    "http://h.cubemoji.art:54478",
+]
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO"),
@@ -21,6 +29,14 @@ app = FastAPI(
     description="API for predicting commuter rail track assignments",
     version="1.0.0",
     docs_url="/",
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # Initialize track predictor
@@ -57,7 +73,7 @@ async def generate_track_prediction(
     """
     try:
         prediction = await track_predictor.predict_track(
-            station_id=station_id,
+            station_id=determine_station_id(station_id),
             route_id=route_id,
             trip_id=trip_id,
             headsign=headsign,
@@ -90,7 +106,9 @@ async def get_prediction_stats(
     Get prediction statistics for a station and route.
     """
     try:
-        stats = await track_predictor.get_prediction_stats(station_id, route_id)
+        stats = await track_predictor.get_prediction_stats(
+            determine_station_id(station_id), route_id
+        )
 
         if stats:
             return TrackPredictionStatsResponse(
@@ -122,7 +140,7 @@ async def get_historical_assignments(
         start_date = end_date - timedelta(days=days)
 
         assignments = await track_predictor.get_historical_assignments(
-            station_id, route_id, start_date, end_date
+            determine_station_id(station_id), route_id, start_date, end_date
         )
 
         return [assignment for assignment in assignments]

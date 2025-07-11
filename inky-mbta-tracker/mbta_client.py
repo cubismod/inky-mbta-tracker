@@ -973,3 +973,17 @@ def thread_runner(
                         route or "Red",
                     )
                 )
+
+
+def determine_station_id(stop_id: str) -> str:
+    if "North Station" in stop_id or "BNT" in stop_id:
+        return "place-north"
+    if "South Station" in stop_id or "NEC-2287" in stop_id:
+        return "place-sstat"
+    if "Back Bay" in stop_id or "NEC-1851" in stop_id:
+        return "place-bbsta"
+    if "Ruggles" in stop_id or "NEC-2265" in stop_id:
+        return "place-rugg"
+    if "Providence" in stop_id or "NEC-1851" in stop_id:
+        return "place-NEC-1851"
+    return stop_id
