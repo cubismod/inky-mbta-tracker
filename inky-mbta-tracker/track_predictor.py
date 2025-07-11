@@ -4,11 +4,13 @@ from collections import defaultdict
 from datetime import UTC, datetime, timedelta
 from typing import Dict, List, Optional
 
+import textdistance
+from async_lru import alru_cache
 from pydantic import ValidationError
 from redis.asyncio.client import Redis
 from redis_cache import check_cache, write_cache
 from shared_types import TrackAssignment, TrackPrediction, TrackPredictionStats
-from times_in_seconds import DAY, WEEK
+from times_in_seconds import DAY, MINUTE, WEEK
 
 logger = logging.getLogger(__name__)
 
@@ -164,11 +166,16 @@ class TrackPredictor:
                 track_id = assignment.platform_code or assignment.platform_name
 
                 if track_id:
+                    headsign_similarity = (
+                        textdistance.levenshtein.normalized_similarity(
+                            trip_headsign, assignment.headsign
+                        )
+                    )
                     # Exact match (same headsign, time window, direction)
                     # we append the commuter rail line to the headsign when processing
                     # in mbta_client.py so we do a substring match here
                     if (
-                        trip_headsign in assignment.headsign
+                        headsign_similarity > 0.7
                         and assignment.direction_id == direction_id
                         and abs(assignment.hour - target_hour) <= 1
                     ):
@@ -179,7 +186,7 @@ class TrackPredictor:
 
                     # Headsign match
                     if (
-                        trip_headsign in assignment.headsign
+                        headsign_similarity > 0.7
                         and assignment.direction_id == direction_id
                     ):
                         logger.debug(
@@ -243,6 +250,7 @@ class TrackPredictor:
             logger.error(f"Failed to analyze patterns: {e}")
             return {}
 
+    @alru_cache(ttl=30 * MINUTE)
     async def predict_track(
         self,
         station_id: str,

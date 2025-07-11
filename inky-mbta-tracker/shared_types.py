@@ -38,6 +38,7 @@ class VehicleRedisSchema(BaseModel):
     approximate_speed: bool = False
     occupancy_status: Optional[str] = None
     carriages: Optional[list[str]] = None
+    headsign: Optional[str] = None
 
 
 class TrackAssignment(BaseModel):
