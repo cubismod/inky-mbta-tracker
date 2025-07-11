@@ -10,9 +10,10 @@ from track_predictor import TrackPredictor
 
 # This is intended as a separate entrypoint to be run as a separate container
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
+logging.basicConfig(
+    level=os.getenv("LOG_LEVEL", "INFO"),
+    format="%(levelname)-8s %(message)s",
+)
 app = FastAPI(
     title="MBTA Track Prediction API",
     description="API for predicting commuter rail track assignments",
@@ -75,7 +76,7 @@ async def generate_track_prediction(
             }
 
     except Exception as e:
-        logger.error(f"Error generating prediction: {e}")
+        logging.error(f"Error generating prediction: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
@@ -109,7 +110,7 @@ async def get_prediction_stats(
             }
 
     except Exception as e:
-        logger.error(f"Error getting stats for {station_id}/{route_id}: {e}")
+        logging.error(f"Error getting stats for {station_id}/{route_id}: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
@@ -141,7 +142,7 @@ async def get_historical_assignments(
         return [assignment.model_dump() for assignment in assignments]
 
     except Exception as e:
-        logger.error(f"Error getting historical data for {station_id}/{route_id}: {e}")
+        logging.error(f"Error getting historical data for {station_id}/{route_id}: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
