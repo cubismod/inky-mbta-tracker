@@ -139,6 +139,9 @@ class TrackPredictor:
             )
 
             if not assignments:
+                logger.debug(
+                    f"No historical assignments found for station_id={station_id}, route_id={route_id}, trip_id={trip_headsign}, direction_id={direction_id}, scheduled_time={scheduled_time}"
+                )
                 return {}
 
             # Analyze patterns by different criteria
@@ -169,6 +172,9 @@ class TrackPredictor:
                         and assignment.direction_id == direction_id
                         and abs(assignment.hour - target_hour) <= 1
                     ):
+                        logger.debug(
+                            f"Exact match found for station_id={station_id}, route_id={route_id}, trip_id={trip_headsign}, direction_id={direction_id}, scheduled_time={scheduled_time}, track_id={track_id}"
+                        )
                         patterns["exact_match"][track_id] += 10
 
                     # Headsign match
@@ -176,6 +182,9 @@ class TrackPredictor:
                         trip_headsign in assignment.headsign
                         and assignment.direction_id == direction_id
                     ):
+                        logger.debug(
+                            f"Headsign match found for station_id={station_id}, route_id={route_id}, trip_id={trip_headsign}, direction_id={direction_id}, scheduled_time={scheduled_time}, track_id={track_id}"
+                        )
                         patterns["headsign_match"][track_id] += 5
 
                     # Time match (±30 minutes)
@@ -186,14 +195,23 @@ class TrackPredictor:
                         - target_minute
                     )
                     if time_diff <= 30:
+                        logger.debug(
+                            f"Time match found for station_id={station_id}, route_id={route_id}, trip_id={trip_headsign}, direction_id={direction_id}, scheduled_time={scheduled_time}, track_id={track_id}"
+                        )
                         patterns["time_match"][track_id] += 3
 
                     # Direction match
                     if assignment.direction_id == direction_id:
+                        logger.debug(
+                            f"Direction match found for station_id={station_id}, route_id={route_id}, trip_id={trip_headsign}, direction_id={direction_id}, scheduled_time={scheduled_time}, track_id={track_id}"
+                        )
                         patterns["direction_match"][track_id] += 2
 
                     # Day of week match
                     if assignment.day_of_week == target_dow:
+                        logger.debug(
+                            f"Day of week match found for station_id={station_id}, route_id={route_id}, trip_id={trip_headsign}, direction_id={direction_id}, scheduled_time={scheduled_time}, track_id={track_id}"
+                        )
                         patterns["day_of_week_match"][track_id] += 1
 
             # Combine all patterns with weights
@@ -215,6 +233,9 @@ class TrackPredictor:
                 logger.debug(f"Total score={total_score}, total={total}")
                 return total
 
+            logger.debug(
+                f"No patterns found for station_id={station_id}, route_id={route_id}, trip_id={trip_headsign}, direction_id={direction_id}, scheduled_time={scheduled_time}"
+            )
             return {}
 
         # TODO: narrow exception
