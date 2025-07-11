@@ -82,7 +82,7 @@ def parse_shape_data(shapes: Shapes) -> list[list[tuple]]:
 # gets line (orange, blue, red, green, etc) geometry using MBTA API
 # redis expires in 24 hours
 @retry(
-    wait=wait_random_exponential(multiplier=2, min=10),
+    wait=wait_random_exponential(multiplier=3, min=10),
     before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
 )
 async def get_shapes(
@@ -503,7 +503,7 @@ class Watcher:
             queue.put(event)
 
     @retry(
-        wait=wait_random_exponential(multiplier=1, min=1),
+        wait=wait_random_exponential(multiplier=3, min=1),
         before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
     )
     async def get_trip(self, trip_id: str, session: ClientSession) -> Optional[Trips]:
@@ -531,7 +531,7 @@ class Watcher:
 
     # saves a route to the dict of routes rather than redis
     @retry(
-        wait=wait_random_exponential(multiplier=1, min=1),
+        wait=wait_random_exponential(multiplier=3, min=1),
         before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
     )
     async def save_route(
@@ -556,7 +556,7 @@ class Watcher:
                         logger.error(f"Unable to parse route, {err}")
 
     @retry(
-        wait=wait_random_exponential(multiplier=1, min=1),
+        wait=wait_random_exponential(multiplier=3, min=1),
         before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
     )
     async def get_alerts(
@@ -589,7 +589,7 @@ class Watcher:
         return None
 
     @retry(
-        wait=wait_random_exponential(multiplier=1, min=1),
+        wait=wait_random_exponential(multiplier=3, min=1),
         before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
     )
     async def save_schedule(
@@ -641,7 +641,7 @@ class Watcher:
 
     # 3 weeks of caching in redis as maybe a stop will change? idk
     @retry(
-        wait=wait_random_exponential(multiplier=2, min=10),
+        wait=wait_random_exponential(multiplier=3, min=10),
         before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
     )
     async def get_stop(
@@ -695,7 +695,7 @@ class Watcher:
 
 
 @retry(
-    wait=wait_random_exponential(multiplier=1),
+    wait=wait_random_exponential(multiplier=3),
     before=before_log(logger, logging.INFO),
     before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
     retry=retry_if_not_exception_type(CancelledError),
@@ -728,7 +728,7 @@ async def watch_server_side_events(
 
 
 @retry(
-    wait=wait_random_exponential(multiplier=1),
+    wait=wait_random_exponential(multiplier=3),
     before=before_log(logger, logging.INFO),
     before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
     retry=retry_if_not_exception_type(CancelledError),
@@ -755,7 +755,7 @@ async def watch_static_schedule(
 
 
 @retry(
-    wait=wait_random_exponential(multiplier=1),
+    wait=wait_random_exponential(multiplier=3),
     before=before_log(logger, logging.INFO),
     before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
     retry=retry_if_not_exception_type(CancelledError),
