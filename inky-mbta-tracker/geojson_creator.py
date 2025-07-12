@@ -227,7 +227,7 @@ async def create_json(config: Config) -> None:
                                                 scheduled_time=vehicle_info.update_time,
                                             )
                                             if prediction:
-                                                platform_prediction = f"{prediction.predicted_platform_code or prediction.predicted_platform_name} ({round(prediction.confidence_score * 100)}% confidence)"
+                                                platform_prediction = f"{prediction.track_number} ({round(prediction.confidence_score * 100)}% confidence)"
                                 else:
                                     route_icon = "rail_amtrak"
                                     stop_id = vehicle_info.stop

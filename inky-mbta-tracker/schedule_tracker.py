@@ -14,7 +14,7 @@ from prometheus import redis_commands, schedule_events, vehicle_events, vehicle_
 from pydantic import ValidationError
 from redis import ResponseError
 from redis.asyncio.client import Pipeline, Redis
-from shared_types import ScheduleEvent, VehicleRedisSchema
+from shared_types.shared_types import ScheduleEvent, VehicleRedisSchema
 from tenacity import (
     before_sleep_log,
     retry,

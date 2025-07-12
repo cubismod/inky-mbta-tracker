@@ -39,7 +39,6 @@ from pydantic import BaseModel, TypeAdapter, ValidationError
 from redis.asyncio.client import Redis
 from redis_cache import check_cache, write_cache
 from schedule_tracker import ScheduleEvent, VehicleRedisSchema, dummy_schedule_event
-from shared_types.schema_versioner import schema_versioner
 from shared_types.shared_types import TrackAssignment, TrackAssignmentType
 from tenacity import (
     before_log,
@@ -235,9 +234,6 @@ class MBTAApi:
             return datetime.fromisoformat(attributes.departure_time).astimezone(UTC)
         else:
             return None
-
-    async def perform_schema_versioning(self) -> None:
-        await schema_versioner(self.r_client)
 
     async def get_headsign(self, trip_id: str, session: ClientSession) -> str:
         hs = ""
@@ -525,7 +521,7 @@ class MBTAApi:
                                         )
 
                                     if prediction:
-                                        track_number = prediction.predicted_track_number
+                                        track_number = prediction.track_number
                                         track_confidence = prediction.confidence_score
                                         logger.info(
                                             f"Generated track prediction: {route_id} {headsign} -> {track_number}"
@@ -852,7 +848,6 @@ async def watch_static_schedule(
             watcher_type=EventType.SCHEDULES,
             show_on_display=show_on_display,
         )
-        await watcher.perform_schema_versioning()
         async with aiohttp.ClientSession(MBTA_V3_ENDPOINT) as session:
             await watcher.save_own_stop(session)
             await watcher.save_schedule(transit_time_min, queue, session)
@@ -878,7 +873,6 @@ async def watch_vehicles(
         watcher_type=EventType.VEHICLES,
         expiration_time=expiration_time,
     )
-    await watcher.perform_schema_versioning()
     async with aiohttp.ClientSession(MBTA_V3_ENDPOINT) as session:
         tracker_executions.labels("vehicles").inc()
         await watch_server_side_events(
@@ -912,7 +906,6 @@ async def watch_station(
         watcher_type=EventType.PREDICTIONS,
         show_on_display=show_on_display,
     )
-    await watcher.perform_schema_versioning()
     async with aiohttp.ClientSession(MBTA_V3_ENDPOINT) as session:
         await watcher.save_own_stop(session)
         if watcher.stop:
