@@ -94,6 +94,16 @@ async def schema_versioner() -> None:
                 class_hashes.SHAPEATTRIBUTES_HASH,
             },
         ),
+        RedisSchema(
+            id="trip",
+            key_prefixes=["trip"],
+            hashes={
+                class_hashes.TRIPS_HASH,
+                class_hashes.TRIPRESOURCE_HASH,
+                class_hashes.TRIPATTRIBUTES_HASH,
+                class_hashes.TRIPGENERIC_HASH,
+            },
+        ),
     ]
 
     for schema in schemas:
