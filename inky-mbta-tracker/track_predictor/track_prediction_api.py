@@ -1,16 +1,13 @@
-import asyncio
 import logging
 import os
 from datetime import datetime, timedelta
 from typing import List
 
-import click
 import uvicorn
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from mbta_client import determine_station_id
 from pydantic import BaseModel, ValidationError
-from shared_types.schema_versioner import schema_versioner
 from shared_types.shared_types import TrackAssignment, TrackPrediction
 
 from track_predictor.track_predictor import TrackPredictionStats, TrackPredictor
@@ -179,24 +176,6 @@ async def get_historical_assignments(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-# @app.get("/")
-# async def root() -> dict:
-#     """Root endpoint with API information"""
-#     return {
-#         "name": "MBTA Track Prediction API",
-#         "version": "1.0.0",
-#         "description": "API for predicting commuter rail track assignments",
-#         "endpoints": {
-#             "predictions": "/predictions/{station_id}",
-#             "generate": "/predictions (POST)",
-#             "stats": "/stats/{station_id}/{route_id}",
-#             "historical": "/historical/{station_id}/{route_id}",
-#             "health": "/health",
-#         },
-#     }
-
-
-@click.command()
 def run_main() -> None:
     port = int(os.environ.get("IMT_TRACK_API_PORT", "8080"))
     uvicorn.run(app, host="0.0.0.0", port=port)

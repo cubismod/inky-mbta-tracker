@@ -21,6 +21,7 @@ from prometheus import running_threads
 from prometheus_client import start_http_server
 from schedule_tracker import ScheduleEvent, VehicleRedisSchema, process_queue
 from shared_types.schema_versioner import schema_versioner
+from track_predictor import track_prediction_api
 
 load_dotenv()
 
@@ -246,6 +247,10 @@ async def __main__() -> None:
 
 
 @click.command()
-def run_main() -> None:
-    with Runner() as runner:
-        runner.run(__main__())
+@click.option("--prediction-api", is_flag=True, default=False)
+def run_main(prediction_api: bool) -> None:
+    if prediction_api:
+        track_prediction_api.run_main()
+    else:
+        with Runner() as runner:
+            runner.run(__main__())
