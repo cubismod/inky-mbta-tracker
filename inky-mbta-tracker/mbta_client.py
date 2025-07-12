@@ -517,10 +517,15 @@ class MBTAApi:
                                             track_number,
                                         )
 
-                                # TODO: narrow exceptions
-                                except Exception as e:
+                                except (ConnectionError, TimeoutError) as e:
                                     logger.error(
-                                        f"Failed to store historical assignment: {e}"
+                                        f"Failed to store historical assignment due to Redis connection issue: {e}",
+                                        exc_info=True,
+                                    )
+                                except ValidationError as e:
+                                    logger.error(
+                                        f"Failed to store historical assignment due to validation error: {e}",
+                                        exc_info=True,
                                     )
 
                             # Generate prediction for future trips (only for commuter rail)
@@ -545,10 +550,15 @@ class MBTAApi:
                                             f"(confidence: {track_confidence:.2f})"
                                         )
 
-                                # TODO: narrow exceptions
-                                except Exception as e:
+                                except (ConnectionError, TimeoutError) as e:
                                     logger.error(
-                                        f"Failed to generate track prediction: {e}"
+                                        f"Failed to generate track prediction due to connection issue: {e}",
+                                        exc_info=True,
+                                    )
+                                except ValidationError as e:
+                                    logger.error(
+                                        f"Failed to generate track prediction due to validation error: {e}",
+                                        exc_info=True,
                                     )
 
                     # drop events that have the same stop & headsign as that train cannot be

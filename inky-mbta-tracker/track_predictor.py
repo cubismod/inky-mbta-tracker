@@ -70,9 +70,16 @@ class TrackPredictor:
                 f"Stored track assignment: {assignment.station_id} {assignment.route_id} -> {assignment.track_number}"
             )
 
-        # TODO: narrow exception handling
-        except Exception as e:
-            logger.error(f"Failed to store track assignment: {e}")
+        except (ConnectionError, TimeoutError) as e:
+            logger.error(
+                f"Failed to store track assignment due to Redis connection issue: {e}",
+                exc_info=True,
+            )
+        except ValidationError as e:
+            logger.error(
+                f"Failed to store track assignment due to validation error: {e}",
+                exc_info=True,
+            )
 
     async def get_historical_assignments(
         self, station_id: str, route_id: str, start_date: datetime, end_date: datetime
@@ -111,9 +118,17 @@ class TrackPredictor:
 
             return results
 
-        # TODO: narrow exception
-        except Exception as e:
-            logger.error(f"Failed to retrieve historical assignments: {e}")
+        except (ConnectionError, TimeoutError) as e:
+            logger.error(
+                f"Failed to retrieve historical assignments due to Redis connection issue: {e}",
+                exc_info=True,
+            )
+            return []
+        except ValidationError as e:
+            logger.error(
+                f"Failed to retrieve historical assignments due to validation error: {e}",
+                exc_info=True,
+            )
             return []
 
     async def analyze_patterns(
@@ -249,9 +264,17 @@ class TrackPredictor:
             )
             return {}
 
-        # TODO: narrow exception
-        except Exception as e:
-            logger.error(f"Failed to analyze patterns: {e}")
+        except (ConnectionError, TimeoutError) as e:
+            logger.error(
+                f"Failed to analyze patterns due to Redis connection issue: {e}",
+                exc_info=True,
+            )
+            return {}
+        except ValidationError as e:
+            logger.error(
+                f"Failed to analyze patterns due to validation error: {e}",
+                exc_info=True,
+            )
             return {}
 
     @alru_cache(ttl=30 * MINUTE)
@@ -372,9 +395,16 @@ class TrackPredictor:
                 prediction.model_dump_json(),
                 WEEK,  # Store for 1 week
             )
-        # TODO: narrow exception
-        except Exception as e:
-            logger.error(f"Failed to store prediction: {e}")
+        except (ConnectionError, TimeoutError) as e:
+            logger.error(
+                f"Failed to store prediction due to Redis connection issue: {e}",
+                exc_info=True,
+            )
+        except ValidationError as e:
+            logger.error(
+                f"Failed to store prediction due to validation error: {e}",
+                exc_info=True,
+            )
 
     async def validate_prediction(
         self,
@@ -416,8 +446,16 @@ class TrackPredictor:
                 f"Validated prediction for {station_id} {route_id}: {'CORRECT' if is_correct else 'INCORRECT'}"
             )
 
-        except Exception as e:
-            logger.error(f"Failed to validate prediction: {e}")
+        except (ConnectionError, TimeoutError) as e:
+            logger.error(
+                f"Failed to validate prediction due to Redis connection issue: {e}",
+                exc_info=True,
+            )
+        except ValidationError as e:
+            logger.error(
+                f"Failed to validate prediction due to validation error: {e}",
+                exc_info=True,
+            )
 
     async def _update_prediction_stats(
         self, station_id: str, route_id: str, is_correct: bool, confidence: float
@@ -462,9 +500,16 @@ class TrackPredictor:
                 30 * DAY,  # Store for 30 days
             )
 
-        # TODO: narrow exception
-        except Exception as e:
-            logger.error(f"Failed to update prediction stats: {e}")
+        except (ConnectionError, TimeoutError) as e:
+            logger.error(
+                f"Failed to update prediction stats due to Redis connection issue: {e}",
+                exc_info=True,
+            )
+        except ValidationError as e:
+            logger.error(
+                f"Failed to update prediction stats due to validation error: {e}",
+                exc_info=True,
+            )
 
     async def get_prediction_stats(
         self, station_id: str, route_id: str
@@ -478,7 +523,15 @@ class TrackPredictor:
                 return TrackPredictionStats.model_validate_json(stats_data)
             return None
 
-        # TODO: narrow exception
-        except Exception as e:
-            logger.error(f"Failed to get prediction stats: {e}")
+        except (ConnectionError, TimeoutError) as e:
+            logger.error(
+                f"Failed to get prediction stats due to Redis connection issue: {e}",
+                exc_info=True,
+            )
+            return None
+        except ValidationError as e:
+            logger.error(
+                f"Failed to get prediction stats due to validation error: {e}",
+                exc_info=True,
+            )
             return None

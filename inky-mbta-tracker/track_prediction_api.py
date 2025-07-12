@@ -9,7 +9,7 @@ import uvicorn
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from mbta_client import determine_station_id
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 from shared_types.schema_versioner import schema_versioner
 from shared_types.shared_types import TrackAssignment, TrackPrediction
 from track_predictor import TrackPredictionStats, TrackPredictor
@@ -95,8 +95,15 @@ async def generate_track_prediction(
                 prediction="No prediction could be generated",
             )
 
-    except Exception as e:
-        logging.error(f"Error generating prediction: {e}")
+    except (ConnectionError, TimeoutError) as e:
+        logging.error(
+            f"Error generating prediction due to connection issue: {e}", exc_info=True
+        )
+        raise HTTPException(status_code=500, detail="Internal server error")
+    except ValidationError as e:
+        logging.error(
+            f"Error generating prediction due to validation error: {e}", exc_info=True
+        )
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
@@ -124,8 +131,17 @@ async def get_prediction_stats(
                 stats="No statistics available",
             )
 
-    except Exception as e:
-        logging.error(f"Error getting stats for {station_id}/{route_id}: {e}")
+    except (ConnectionError, TimeoutError) as e:
+        logging.error(
+            f"Error getting stats for {station_id}/{route_id} due to connection issue: {e}",
+            exc_info=True,
+        )
+        raise HTTPException(status_code=500, detail="Internal server error")
+    except ValidationError as e:
+        logging.error(
+            f"Error getting stats for {station_id}/{route_id} due to validation error: {e}",
+            exc_info=True,
+        )
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
@@ -148,8 +164,17 @@ async def get_historical_assignments(
 
         return [assignment for assignment in assignments]
 
-    except Exception as e:
-        logging.error(f"Error getting historical data for {station_id}/{route_id}: {e}")
+    except (ConnectionError, TimeoutError) as e:
+        logging.error(
+            f"Error getting historical data for {station_id}/{route_id} due to connection issue: {e}",
+            exc_info=True,
+        )
+        raise HTTPException(status_code=500, detail="Internal server error")
+    except ValidationError as e:
+        logging.error(
+            f"Error getting historical data for {station_id}/{route_id} due to validation error: {e}",
+            exc_info=True,
+        )
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
