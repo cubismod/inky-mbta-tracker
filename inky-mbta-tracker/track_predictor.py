@@ -284,11 +284,13 @@ class TrackPredictor:
                 return None
 
             # it makes more sense to get the headsign client-side using the exact trip_id due to API rate limits
-            api = mbta_client.MBTAApi(watcher_type=mbta_client.EventType.OTHER)
             async with aiohttp.ClientSession(MBTA_V3_ENDPOINT) as session:
-                new_hs = await api.get_headsign(trip_id, session)
-                if new_hs != "":
-                    headsign = new_hs
+                async with mbta_client.MBTAApi(
+                    watcher_type=mbta_client.EventType.OTHER
+                ) as api:
+                    new_hs = await api.get_headsign(trip_id, session)
+                    if new_hs != "":
+                        headsign = new_hs
 
             # Analyze patterns
             patterns = await self.analyze_patterns(

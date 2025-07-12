@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 from enum import Enum
 from queue import Queue
 from random import randint
+from types import TracebackType
 from typing import Optional
 from zoneinfo import ZoneInfo
 
@@ -88,29 +89,28 @@ def parse_shape_data(shapes: Shapes) -> list[list[tuple]]:
     before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
 )
 async def get_shapes(
-    r_client: Redis, routes: list[str]
+    r_client: Redis, routes: list[str], session: ClientSession
 ) -> dict[str, list[list[tuple]]]:
     ret = dict[str, list[list[tuple]]]()
-    async with aiohttp.ClientSession(MBTA_V3_ENDPOINT) as session:
-        for route in routes:
-            key = f"shape:{route}"
-            cached = await check_cache(r_client, key)
-            body = ""
-            if cached:
-                body = cached
-            else:
-                async with session.get(
-                    f"/shapes?filter[route]={route}&api_key={MBTA_AUTH}"
-                ) as response:
-                    if response.status == 429:
-                        raise RateLimitExceeded()
-                    body = await response.text()
-                    mbta_api_requests.labels("shapes").inc()
-                    # 4 weeks
-                    await write_cache(r_client, key, body, 2419200)
-            shapes = Shapes.model_validate_json(body, strict=False)
-            ret[route] = parse_shape_data(shapes)
-        return ret
+    for route in routes:
+        key = f"shape:{route}"
+        cached = await check_cache(r_client, key)
+        body = ""
+        if cached:
+            body = cached
+        else:
+            async with session.get(
+                f"/shapes?filter[route]={route}&api_key={MBTA_AUTH}"
+            ) as response:
+                if response.status == 429:
+                    raise RateLimitExceeded()
+                body = await response.text()
+                mbta_api_requests.labels("shapes").inc()
+                # 4 weeks
+                await write_cache(r_client, key, body, 2419200)
+        shapes = Shapes.model_validate_json(body, strict=False)
+        ret[route] = parse_shape_data(shapes)
+    return ret
 
 
 def silver_line_lookup(route_id: str) -> str:
@@ -132,7 +132,9 @@ def silver_line_lookup(route_id: str) -> str:
 
 
 # retrieves a rail/bus stop from Redis & returns the stop ID with optional coordinates
-async def light_get_stop(r_client: Redis, stop_id: str) -> Optional[LightStop]:
+async def light_get_stop(
+    r_client: Redis, stop_id: str, session: ClientSession
+) -> Optional[LightStop]:
     key = f"stop:{stop_id}:light"
     cached = await check_cache(r_client, key)
     if cached:
@@ -142,8 +144,7 @@ async def light_get_stop(r_client: Redis, stop_id: str) -> Optional[LightStop]:
         except ValidationError as err:
             logger.error("unable to validate json", exc_info=err)
     ls = None
-    async with aiohttp.ClientSession(MBTA_V3_ENDPOINT) as session:
-        watcher = MBTAApi(stop_id=stop_id, watcher_type=EventType.OTHER)
+    async with MBTAApi(stop_id=stop_id, watcher_type=EventType.OTHER) as watcher:
         # avoid rate-limiting by spacing out requests
         await sleep(1)
         stop = await watcher.get_stop(session, stop_id)
@@ -164,9 +165,10 @@ async def light_get_stop(r_client: Redis, stop_id: str) -> Optional[LightStop]:
     return ls
 
 
-async def light_get_alerts(route_id: str) -> Optional[list[AlertResource]]:
-    async with aiohttp.ClientSession(MBTA_V3_ENDPOINT) as session:
-        watcher = MBTAApi(route=route_id, watcher_type=EventType.VEHICLES)
+async def light_get_alerts(
+    route_id: str, session: ClientSession
+) -> Optional[list[AlertResource]]:
+    async with MBTAApi(route=route_id, watcher_type=EventType.VEHICLES) as watcher:
         alerts = await watcher.get_alerts(session, route_id=route_id)
         if alerts:
             return alerts
@@ -223,6 +225,21 @@ class MBTAApi:
         )
         self.track_predictor = None
         self.show_on_display = show_on_display
+
+    async def __aenter__(self) -> "MBTAApi":
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: Optional[BaseException],
+        exc_value: Optional[BaseException],
+        traceback: Optional[TracebackType],
+    ) -> Optional[bool]:
+        await self.r_client.aclose()
+        if exc_value:
+            logger.error(f"Error in MBTAApi {exc_type}: {exc_value}\n{traceback}")
+            return True
+        return False
 
     @staticmethod
     def determine_time(
@@ -840,17 +857,17 @@ async def watch_static_schedule(
     show_on_display: bool,
 ) -> None:
     while True:
-        watcher = MBTAApi(
-            stop_id=stop_id,
-            route=route,
-            direction_filter=direction,
-            schedule_only=True,
-            watcher_type=EventType.SCHEDULES,
-            show_on_display=show_on_display,
-        )
         async with aiohttp.ClientSession(MBTA_V3_ENDPOINT) as session:
-            await watcher.save_own_stop(session)
-            await watcher.save_schedule(transit_time_min, queue, session)
+            async with MBTAApi(
+                stop_id=stop_id,
+                route=route,
+                direction_filter=direction,
+                schedule_only=True,
+                watcher_type=EventType.SCHEDULES,
+                show_on_display=show_on_display,
+            ) as watcher:
+                await watcher.save_own_stop(session)
+                await watcher.save_schedule(transit_time_min, queue, session)
         await sleep(10800)  # 3 hours
 
 
@@ -868,16 +885,16 @@ async def watch_vehicles(
     endpoint = f"{MBTA_V3_ENDPOINT}/vehicles?fields[vehicle]=direction_id,latitude,longitude,speed,current_status,occupancy_status,carriages&filter[route]={route_id}&api_key={MBTA_AUTH}"
     mbta_api_requests.labels("vehicles").inc()
     headers = {"accept": "text/event-stream"}
-    watcher = MBTAApi(
+    async with MBTAApi(
         route=route_id,
         watcher_type=EventType.VEHICLES,
         expiration_time=expiration_time,
-    )
-    async with aiohttp.ClientSession(MBTA_V3_ENDPOINT) as session:
-        tracker_executions.labels("vehicles").inc()
-        await watch_server_side_events(
-            watcher, endpoint, headers, queue, session=session, transit_time_min=0
-        )
+    ) as watcher:
+        async with aiohttp.ClientSession(MBTA_V3_ENDPOINT) as session:
+            tracker_executions.labels("vehicles").inc()
+            await watch_server_side_events(
+                watcher, endpoint, headers, queue, session=session, transit_time_min=0
+            )
 
 
 async def watch_station(
@@ -898,18 +915,19 @@ async def watch_station(
     if direction_filter != "":
         endpoint += f"&filter[direction_id]={direction_filter}"
     headers = {"accept": "text/event-stream"}
-    watcher = MBTAApi(
-        stop_id,
-        route,
-        direction_filter,
-        expiration_time,
-        watcher_type=EventType.PREDICTIONS,
-        show_on_display=show_on_display,
-    )
+
     async with aiohttp.ClientSession(MBTA_V3_ENDPOINT) as session:
-        await watcher.save_own_stop(session)
-        if watcher.stop:
-            tracker_executions.labels(watcher.stop.data.attributes.name).inc()
+        async with MBTAApi(
+            stop_id,
+            route,
+            direction_filter,
+            expiration_time,
+            watcher_type=EventType.PREDICTIONS,
+            show_on_display=show_on_display,
+        ) as watcher:
+            await watcher.save_own_stop(session)
+            if watcher.stop:
+                tracker_executions.labels(watcher.stop.data.attributes.name).inc()
         await watch_server_side_events(
             watcher,
             endpoint,
