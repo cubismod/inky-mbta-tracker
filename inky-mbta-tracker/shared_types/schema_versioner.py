@@ -1,10 +1,11 @@
 import logging
+import os
 from typing import Optional
 
 from pydantic import BaseModel, ValidationError
 from redis import ResponseError
 from redis.asyncio.client import Redis
-from redis_lock import RedisLock
+from redis_lock.asyncio import RedisLock
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 import shared_types.class_hashes as class_hashes
@@ -35,7 +36,12 @@ async def get_schema_version(redis: Redis, schema_key: str) -> Optional[RedisSch
 # this function is called each time an MBTAApi client is started and manages schema versioning by deleting keys associated with outdated schemas
 # the tracker is able to gracefully recreate missing keys using the MBTA API
 @retry(stop=stop_after_attempt(5), wait=wait_exponential(multiplier=1, min=4, max=15))
-async def schema_versioner(redis: Redis) -> None:
+async def schema_versioner() -> None:
+    redis = Redis(
+        host=os.environ.get("IMT_REDIS_ENDPOINT", ""),
+        port=int(os.environ.get("IMT_REDIS_PORT", "6379")),
+        password=os.environ.get("IMT_REDIS_PASSWORD", ""),
+    )
     schemas = [
         RedisSchema(
             id="schedule_event",
@@ -93,23 +99,25 @@ async def schema_versioner(redis: Redis) -> None:
     for schema in schemas:
         schema_key = f"schema:{schema.id}"
         schema_version = await get_schema_version(redis, schema_key)
-        if schema_version is None:
-            logger.error(f"Schema version not found for {schema.id}")
-            continue
-
-        if schema_version.hashes != schema.hashes:
+        if schema_version is None or schema_version.hashes != schema.hashes:
             logger.warning(
                 f"Schema version mismatch for {schema.id}. Removing keys associated with this schema."
             )
             try:
                 async with RedisLock(
-                    redis, f"schema_versioner:{schema.id}", blocking_timeout=30
+                    redis,
+                    f"schema_versioner:{schema.id}",
+                    blocking_timeout=30,
+                    expire_timeout=120,
                 ):
                     for key_prefix in schema.key_prefixes:
                         keys = await redis.keys(f"{key_prefix}*")
+                        pl = redis.pipeline()
                         for key in keys:
-                            await redis.delete(key)
+                            pl.delete(key)
+                        await pl.execute()
                     await redis.set(schema_key, schema.model_dump_json())
+                    logger.info(f"{schema.id} set to {schema.model_dump_json()}")
             except ResponseError:
                 logger.error(
                     f"Unable to perform schema versioning for {schema.id}",

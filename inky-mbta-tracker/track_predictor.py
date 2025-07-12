@@ -12,7 +12,6 @@ from consts import DAY, MBTA_V3_ENDPOINT, MINUTE, WEEK
 from pydantic import ValidationError
 from redis.asyncio.client import Redis
 from redis_cache import check_cache, write_cache
-from shared_types.schema_versioner import schema_versioner
 from shared_types.shared_types import (
     TrackAssignment,
     TrackPrediction,
@@ -36,9 +35,6 @@ class TrackPredictor:
             port=int(os.environ.get("IMT_REDIS_PORT", "6379")),
             password=os.environ.get("IMT_REDIS_PASSWORD", ""),
         )
-
-    async def perform_schema_versioning(self) -> None:
-        await schema_versioner(self.redis)
 
     async def store_historical_assignment(self, assignment: TrackAssignment) -> None:
         """
@@ -71,7 +67,7 @@ class TrackPredictor:
             await self.redis.expire(time_series_key, 6 * 30 * DAY)
 
             logger.debug(
-                f"Stored track assignment: {assignment.station_id} {assignment.route_id} -> {assignment.platform_code or assignment.platform_name}"
+                f"Stored track assignment: {assignment.station_id} {assignment.route_id} -> {assignment.track_number}"
             )
 
         # TODO: narrow exception handling
@@ -170,12 +166,10 @@ class TrackPredictor:
             target_minute = scheduled_time.minute
 
             for assignment in assignments:
-                if not (assignment.platform_code or assignment.platform_name):
+                if not assignment.track_number:
                     continue
 
-                track_id = assignment.platform_code or assignment.platform_name
-
-                if track_id:
+                if assignment.track_number:
                     headsign_similarity = (
                         textdistance.levenshtein.normalized_similarity(
                             trip_headsign, assignment.headsign
@@ -190,9 +184,9 @@ class TrackPredictor:
                         and abs(assignment.hour - target_hour) <= 1
                     ):
                         logger.debug(
-                            f"Exact match found for station_id={station_id}, route_id={route_id}, trip_id={trip_headsign}, direction_id={direction_id}, scheduled_time={scheduled_time}, track_id={track_id}"
+                            f"Exact match found for station_id={station_id}, route_id={route_id}, trip_id={trip_headsign}, direction_id={direction_id}, scheduled_time={scheduled_time}, track_id={assignment.track_number}"
                         )
-                        patterns["exact_match"][track_id] += 10
+                        patterns["exact_match"][assignment.track_number] += 10
 
                     # Headsign match
                     if (
@@ -200,9 +194,9 @@ class TrackPredictor:
                         and assignment.direction_id == direction_id
                     ):
                         logger.debug(
-                            f"Headsign match found for station_id={station_id}, route_id={route_id}, trip_id={trip_headsign}, direction_id={direction_id}, scheduled_time={scheduled_time}, track_id={track_id}"
+                            f"Headsign match found for station_id={station_id}, route_id={route_id}, trip_id={trip_headsign}, direction_id={direction_id}, scheduled_time={scheduled_time}, track_id={assignment.track_number}"
                         )
-                        patterns["headsign_match"][track_id] += 5
+                        patterns["headsign_match"][assignment.track_number] += 5
 
                     # Time match (±30 minutes)
                     time_diff = abs(
@@ -213,23 +207,23 @@ class TrackPredictor:
                     )
                     if time_diff <= 30:
                         logger.debug(
-                            f"Time match found for station_id={station_id}, route_id={route_id}, trip_id={trip_headsign}, direction_id={direction_id}, scheduled_time={scheduled_time}, track_id={track_id}"
+                            f"Time match found for station_id={station_id}, route_id={route_id}, trip_id={trip_headsign}, direction_id={direction_id}, scheduled_time={scheduled_time}, track_id={assignment.track_number}"
                         )
-                        patterns["time_match"][track_id] += 3
+                        patterns["time_match"][assignment.track_number] += 3
 
                     # Direction match
                     if assignment.direction_id == direction_id:
                         logger.debug(
-                            f"Direction match found for station_id={station_id}, route_id={route_id}, trip_id={trip_headsign}, direction_id={direction_id}, scheduled_time={scheduled_time}, track_id={track_id}"
+                            f"Direction match found for station_id={station_id}, route_id={route_id}, trip_id={trip_headsign}, direction_id={direction_id}, scheduled_time={scheduled_time}, track_id={assignment.track_number}"
                         )
-                        patterns["direction_match"][track_id] += 2
+                        patterns["direction_match"][assignment.track_number] += 2
 
                     # Day of week match
                     if assignment.day_of_week == target_dow:
                         logger.debug(
-                            f"Day of week match found for station_id={station_id}, route_id={route_id}, trip_id={trip_headsign}, direction_id={direction_id}, scheduled_time={scheduled_time}, track_id={track_id}"
+                            f"Day of week match found for station_id={station_id}, route_id={route_id}, trip_id={trip_headsign}, direction_id={direction_id}, scheduled_time={scheduled_time}, track_id={assignment.track_number}"
                         )
-                        patterns["day_of_week_match"][track_id] += 1
+                        patterns["day_of_week_match"][assignment.track_number] += 1
 
             # Combine all patterns with weights
             combined_scores: dict[str, float] = defaultdict(float)
@@ -357,7 +351,7 @@ class TrackPredictor:
             await self._store_prediction(prediction)
 
             logger.debug(
-                f"Predicted track={prediction.predicted_platform_code}/{prediction.predicted_platform_name}, station_id={station_id}, route_id={route_id}, trip_id={trip_id}, headsign={headsign}, direction_id={direction_id}, scheduled_time={scheduled_time}, confidence={confidence}, method={method}, historical_matches={historical_matches}"
+                f"Predicted track={prediction.track_number}, station_id={station_id}, route_id={route_id}, trip_id={trip_id}, headsign={headsign}, direction_id={direction_id}, scheduled_time={scheduled_time}, confidence={confidence}, method={method}, historical_matches={historical_matches}"
             )
 
             return prediction
@@ -409,7 +403,7 @@ class TrackPredictor:
             prediction = TrackPrediction.model_validate_json(prediction_data)
 
             # Check if prediction was correct
-            is_correct = prediction.predicted_track_number == actual_track_number
+            is_correct = prediction.track_number == actual_track_number
 
             # Update statistics
             await self._update_prediction_stats(

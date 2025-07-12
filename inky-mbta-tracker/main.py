@@ -20,6 +20,7 @@ from mbta_client import EventType, thread_runner
 from prometheus import running_threads
 from prometheus_client import start_http_server
 from schedule_tracker import ScheduleEvent, VehicleRedisSchema, process_queue
+from shared_types.schema_versioner import schema_versioner
 
 load_dotenv()
 
@@ -143,6 +144,8 @@ async def __main__() -> None:
 
     queue = Queue[ScheduleEvent | VehicleRedisSchema]()
     tasks = list[TaskTracker]()
+
+    await schema_versioner()
 
     start_http_server(int(os.getenv("IMT_PROM_PORT", "8000")))
 
