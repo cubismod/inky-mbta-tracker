@@ -5,10 +5,10 @@ from datetime import UTC, datetime, timedelta
 from typing import Dict, List, Optional
 
 import aiohttp
+import mbta_client
 import textdistance
 from async_lru import alru_cache
 from consts import DAY, MBTA_V3_ENDPOINT, MINUTE, WEEK
-from mbta_client import EventType, MBTAApi
 from pydantic import ValidationError
 from redis.asyncio.client import Redis
 from redis_cache import check_cache, write_cache
@@ -282,7 +282,7 @@ class TrackPredictor:
                 return None
 
             # it makes more sense to get the headsign client-side using the exact trip_id due to API rate limits
-            api = MBTAApi(watcher_type=EventType.OTHER)
+            api = mbta_client.MBTAApi(watcher_type=mbta_client.EventType.OTHER)
             async with aiohttp.ClientSession(MBTA_V3_ENDPOINT) as session:
                 new_hs = await api.get_headsign(trip_id, session)
                 if new_hs != "":
