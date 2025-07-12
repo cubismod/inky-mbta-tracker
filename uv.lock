@@ -442,6 +442,7 @@ dependencies = [
     { name = "python-dotenv" },
     { name = "pytz" },
     { name = "redis" },
+    { name = "redis-lock-py" },
     { name = "ruff" },
     { name = "s3transfer" },
     { name = "scipy" },
@@ -518,6 +519,7 @@ requires-dist = [
     { name = "python-dotenv", specifier = "==1.1.1" },
     { name = "pytz", specifier = "==2025.2" },
     { name = "redis", specifier = "==6.2.0" },
+    { name = "redis-lock-py", specifier = ">=1.1.1" },
     { name = "ruff", specifier = "==0.12.2" },
     { name = "s3transfer", specifier = "==0.13.0" },
     { name = "scipy", specifier = "==1.14.1" },
@@ -991,6 +993,18 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/ea/9a/0551e01ba52b944f97480721656578c8a7c46b51b99d66814f85fe3a4f3e/redis-6.2.0.tar.gz", hash = "sha256:e821f129b75dde6cb99dd35e5c76e8c49512a5a0d8dfdc560b2fbd44b85ca977", size = 4639129, upload-time = "2025-05-28T05:01:18.91Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/13/67/e60968d3b0e077495a8fee89cf3f2373db98e528288a48f1ee44967f6e8c/redis-6.2.0-py3-none-any.whl", hash = "sha256:c8ddf316ee0aab65f04a11229e94a64b2618451dab7a67cb2f77eb799d872d5e", size = 278659, upload-time = "2025-05-28T05:01:16.955Z" },
+]
+
+[[package]]
+name = "redis-lock-py"
+version = "1.1.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "redis" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/17/b3/895706e0318d9ae8a4aa43fcb36047845a7377796e7396611343156b62bc/redis_lock_py-1.1.1.tar.gz", hash = "sha256:8de4804d09ea0355a6e4157a7aedccc5c9cdcc02d0830d830b3072601f74c010", size = 6871, upload-time = "2024-11-02T16:45:33.209Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/10/fc/28a50686926352548d9e841ccfdcc5408dbf09fce49d54fcb6068deba21b/redis_lock_py-1.1.1-py3-none-any.whl", hash = "sha256:24039e42bd1156d22552ecd94662b965fe54ba97614f4675e8976b7512fc3555", size = 8433, upload-time = "2024-11-02T16:45:31.808Z" },
 ]
 
 [[package]]

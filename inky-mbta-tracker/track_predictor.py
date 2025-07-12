@@ -12,7 +12,12 @@ from consts import DAY, MBTA_V3_ENDPOINT, MINUTE, WEEK
 from pydantic import ValidationError
 from redis.asyncio.client import Redis
 from redis_cache import check_cache, write_cache
-from shared_types import TrackAssignment, TrackPrediction, TrackPredictionStats
+from shared_types.schema_versioner import schema_versioner
+from shared_types.shared_types import (
+    TrackAssignment,
+    TrackPrediction,
+    TrackPredictionStats,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +36,9 @@ class TrackPredictor:
             port=int(os.environ.get("IMT_REDIS_PORT", "6379")),
             password=os.environ.get("IMT_REDIS_PASSWORD", ""),
         )
+
+    async def perform_schema_versioning(self) -> None:
+        await schema_versioner(self.redis)
 
     async def store_historical_assignment(self, assignment: TrackAssignment) -> None:
         """
@@ -339,10 +347,7 @@ class TrackPredictor:
                 headsign=headsign,
                 direction_id=direction_id,
                 scheduled_time=scheduled_time,
-                predicted_platform_code=best_track if best_track.isdigit() else None,
-                predicted_platform_name=best_track
-                if not best_track.isdigit()
-                else None,
+                track_number=best_track,
                 confidence_score=confidence,
                 prediction_method=method,
                 historical_matches=historical_matches,
@@ -381,8 +386,7 @@ class TrackPredictor:
         route_id: str,
         trip_id: str,
         scheduled_time: datetime,
-        actual_platform_code: Optional[str],
-        actual_platform_name: Optional[str],
+        actual_track_number: Optional[str],
     ) -> None:
         """
         Validate a previous prediction against actual track assignment.
@@ -405,12 +409,7 @@ class TrackPredictor:
             prediction = TrackPrediction.model_validate_json(prediction_data)
 
             # Check if prediction was correct
-            predicted_track = (
-                prediction.predicted_platform_code or prediction.predicted_platform_name
-            )
-            actual_track = actual_platform_code or actual_platform_name
-
-            is_correct = predicted_track == actual_track
+            is_correct = prediction.predicted_track_number == actual_track_number
 
             # Update statistics
             await self._update_prediction_stats(

@@ -39,7 +39,8 @@ from pydantic import BaseModel, TypeAdapter, ValidationError
 from redis.asyncio.client import Redis
 from redis_cache import check_cache, write_cache
 from schedule_tracker import ScheduleEvent, VehicleRedisSchema, dummy_schedule_event
-from shared_types import TrackAssignment
+from shared_types.schema_versioner import schema_versioner
+from shared_types.shared_types import TrackAssignment, TrackAssignmentType
 from tenacity import (
     before_log,
     before_sleep_log,
@@ -234,6 +235,9 @@ class MBTAApi:
             return datetime.fromisoformat(attributes.departure_time).astimezone(UTC)
         else:
             return None
+
+    async def perform_schema_versioning(self) -> None:
+        await schema_versioner(self.r_client)
 
     async def get_headsign(self, trip_id: str, session: ClientSession) -> str:
         hs = ""
@@ -451,9 +455,7 @@ class MBTAApi:
                         stop_name = self.stop.data.attributes.name
 
                     # Track prediction integration
-                    platform_code = None
-                    platform_name = None
-                    predicted_track = None
+                    track_number = None
                     track_confidence = None
 
                     # Get detailed stop information for track data
@@ -463,13 +465,13 @@ class MBTAApi:
                         )
                         if stop_data[0]:  # stop_data is a tuple (Stop, Facilities)
                             stop_info = stop_data[0]
-                            platform_code = stop_info.data.attributes.platform_code
-                            platform_name = stop_info.data.attributes.platform_name
+                            track_number = (
+                                stop_info.data.attributes.platform_code
+                                or stop_info.data.attributes.platform_name
+                            )
 
                             # For commuter rail, store historical assignment and generate prediction
-                            if route_id.startswith("CR") and (
-                                platform_code or platform_name
-                            ):
+                            if route_id.startswith("CR") and (track_number):
                                 # Store historical track assignment
                                 try:
                                     assignment = TrackAssignment(
@@ -479,8 +481,8 @@ class MBTAApi:
                                         trip_id=trip_id,
                                         headsign=headsign,
                                         direction_id=item.attributes.direction_id,
-                                        platform_code=platform_code,
-                                        platform_name=platform_name,
+                                        assignment_type=TrackAssignmentType.HISTORICAL,
+                                        track_number=track_number,
                                         scheduled_time=schedule_time,
                                         actual_time=schedule_time,  # For predictions, use scheduled time
                                         recorded_time=datetime.now(UTC),
@@ -499,8 +501,7 @@ class MBTAApi:
                                             route_id,
                                             trip_id,
                                             schedule_time,
-                                            platform_code,
-                                            platform_name,
+                                            track_number,
                                         )
 
                                 # TODO: narrow exceptions
@@ -510,9 +511,7 @@ class MBTAApi:
                                     )
 
                             # Generate prediction for future trips (only for commuter rail)
-                            elif route_id.startswith("CR") and not (
-                                platform_code or platform_name
-                            ):
+                            elif route_id.startswith("CR") and not track_number:
                                 try:
                                     if self.track_predictor:
                                         prediction = await self.track_predictor.predict_track(
@@ -526,13 +525,10 @@ class MBTAApi:
                                         )
 
                                     if prediction:
-                                        predicted_track = (
-                                            prediction.predicted_platform_code
-                                            or prediction.predicted_platform_name
-                                        )
+                                        track_number = prediction.predicted_track_number
                                         track_confidence = prediction.confidence_score
                                         logger.info(
-                                            f"Generated track prediction: {route_id} {headsign} -> {predicted_track} "
+                                            f"Generated track prediction: {route_id} {headsign} -> {track_number}"
                                             f"(confidence: {track_confidence:.2f})"
                                         )
 
@@ -557,9 +553,7 @@ class MBTAApi:
                             trip_id=trip_id,
                             alerting=alerting,
                             bikes_allowed=bikes_allowed,
-                            platform_code=platform_code,
-                            platform_name=platform_name,
-                            predicted_track=predicted_track,
+                            track_number=track_number,
                             track_confidence=track_confidence,
                             show_on_display=self.show_on_display,
                         )
@@ -858,6 +852,7 @@ async def watch_static_schedule(
             watcher_type=EventType.SCHEDULES,
             show_on_display=show_on_display,
         )
+        await watcher.perform_schema_versioning()
         async with aiohttp.ClientSession(MBTA_V3_ENDPOINT) as session:
             await watcher.save_own_stop(session)
             await watcher.save_schedule(transit_time_min, queue, session)
@@ -883,6 +878,7 @@ async def watch_vehicles(
         watcher_type=EventType.VEHICLES,
         expiration_time=expiration_time,
     )
+    await watcher.perform_schema_versioning()
     async with aiohttp.ClientSession(MBTA_V3_ENDPOINT) as session:
         tracker_executions.labels("vehicles").inc()
         await watch_server_side_events(
@@ -916,6 +912,7 @@ async def watch_station(
         watcher_type=EventType.PREDICTIONS,
         show_on_display=show_on_display,
     )
+    await watcher.perform_schema_versioning()
     async with aiohttp.ClientSession(MBTA_V3_ENDPOINT) as session:
         await watcher.save_own_stop(session)
         if watcher.stop:
