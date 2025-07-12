@@ -84,7 +84,7 @@ dependencies = [
 
 [project.scripts]
 inky-mbta-tracker = "main:run_main"
-prediction-api = "track_prediction_api:run_main"
+prediction-api = "track_predictor.track_prediction_api:run_main"
 
 [tool.ruff]
 # Exclude a variety of commonly ignored directories.

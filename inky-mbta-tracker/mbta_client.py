@@ -48,7 +48,7 @@ from tenacity import (
     retry_if_not_exception_type,
     wait_exponential_jitter,
 )
-from track_predictor import TrackPredictor
+from track_predictor.track_predictor import TrackPredictor
 
 MBTA_AUTH = os.environ.get("AUTH_TOKEN")
 logger = logging.getLogger(__name__)

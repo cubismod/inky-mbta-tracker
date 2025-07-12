@@ -34,7 +34,7 @@ from redis.asyncio import Redis
 from s3transfer import S3UploadFailedError
 from schedule_tracker import VehicleRedisSchema
 from tenacity import before_sleep_log, retry, wait_random_exponential
-from track_predictor import TrackPredictor
+from track_predictor.track_predictor import TrackPredictor
 from turfpy.measurement import bearing, distance
 
 logger = logging.getLogger("geojson")
