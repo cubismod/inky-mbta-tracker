@@ -18,7 +18,7 @@ origins = [
     "http://localhost:8080",
     "https://mbta.ryanwallace.cloud",
     "http://h.cubemoji.art:54478",
-    os.environ.get("IMT_TRACK_API_ORIGIN", ""),
+    os.environ.get("IMT_TRACK_API_ORIGIN", "http://localhost:1313"),
 ]
 
 logging.basicConfig(

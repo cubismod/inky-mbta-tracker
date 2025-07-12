@@ -144,7 +144,7 @@ async def light_get_stop(r_client: Redis, stop_id: str) -> Optional[LightStop]:
             logger.error("unable to validate json", exc_info=err)
     ls = None
     async with aiohttp.ClientSession(MBTA_V3_ENDPOINT) as session:
-        watcher = Watcher(stop_id=stop_id, watcher_type=EventType.OTHER)
+        watcher = MBTAApi(stop_id=stop_id, watcher_type=EventType.OTHER)
         # avoid rate-limiting by spacing out requests
         await sleep(1)
         stop = await watcher.get_stop(session, stop_id)
@@ -167,14 +167,14 @@ async def light_get_stop(r_client: Redis, stop_id: str) -> Optional[LightStop]:
 
 async def light_get_alerts(route_id: str) -> Optional[list[AlertResource]]:
     async with aiohttp.ClientSession(MBTA_V3_ENDPOINT) as session:
-        watcher = Watcher(route=route_id, watcher_type=EventType.VEHICLES)
+        watcher = MBTAApi(route=route_id, watcher_type=EventType.VEHICLES)
         alerts = await watcher.get_alerts(session, route_id=route_id)
         if alerts:
             return alerts
     return None
 
 
-class Watcher:
+class MBTAApi:
     # by default is predictions, can also be vehicles for a live
     # vehicle watcher
     watcher_type: EventType
@@ -183,12 +183,12 @@ class Watcher:
     direction_filter: Optional[int]
     routes: dict[str, RouteResource]
     stop: Optional[Stop]
-    schedule_only: bool
+    schedule_only: bool = False
     facilities: Optional[Facilities]
     expiration_time: Optional[datetime]
     r_client: Redis
-    track_predictor: TrackPredictor
-    show_on_display: bool
+    track_predictor: Optional[TrackPredictor]
+    show_on_display: bool = True
 
     def __init__(
         self,
@@ -216,7 +216,7 @@ class Watcher:
             port=int(os.environ.get("IMT_REDIS_PORT", "6379")),
             password=os.environ.get("IMT_REDIS_PASSWORD", ""),
         )
-        self.track_predictor = TrackPredictor()
+        self.track_predictor = None
         self.show_on_display = show_on_display
 
     @staticmethod
@@ -490,19 +490,20 @@ class Watcher:
                                         hour=schedule_time.hour,
                                         minute=schedule_time.minute,
                                     )
-                                    await self.track_predictor.store_historical_assignment(
-                                        assignment
-                                    )
+                                    if self.track_predictor:
+                                        await self.track_predictor.store_historical_assignment(
+                                            assignment
+                                        )
 
-                                    # Validate previous predictions
-                                    await self.track_predictor.validate_prediction(
-                                        assignment.station_id,
-                                        route_id,
-                                        trip_id,
-                                        schedule_time,
-                                        platform_code,
-                                        platform_name,
-                                    )
+                                        # Validate previous predictions
+                                        await self.track_predictor.validate_prediction(
+                                            assignment.station_id,
+                                            route_id,
+                                            trip_id,
+                                            schedule_time,
+                                            platform_code,
+                                            platform_name,
+                                        )
 
                                 # TODO: narrow exceptions
                                 except Exception as e:
@@ -515,8 +516,8 @@ class Watcher:
                                 platform_code or platform_name
                             ):
                                 try:
-                                    prediction = (
-                                        await self.track_predictor.predict_track(
+                                    if self.track_predictor:
+                                        prediction = await self.track_predictor.predict_track(
                                             station_id=self.stop_id
                                             or item.relationships.stop.data.id,
                                             route_id=route_id,
@@ -525,7 +526,6 @@ class Watcher:
                                             direction_id=item.attributes.direction_id,
                                             scheduled_time=schedule_time,
                                         )
-                                    )
 
                                     if prediction:
                                         predicted_track = (
@@ -808,7 +808,7 @@ class Watcher:
     retry=retry_if_not_exception_type(CancelledError),
 )
 async def watch_server_side_events(
-    watcher: Watcher,
+    watcher: MBTAApi,
     endpoint: str,
     headers: dict[str, str],
     queue: Queue[ScheduleEvent | VehicleRedisSchema],
@@ -849,7 +849,7 @@ async def watch_static_schedule(
     show_on_display: bool,
 ) -> None:
     while True:
-        watcher = Watcher(
+        watcher = MBTAApi(
             stop_id=stop_id,
             route=route,
             direction_filter=direction,
@@ -877,7 +877,7 @@ async def watch_vehicles(
     endpoint = f"{MBTA_V3_ENDPOINT}/vehicles?fields[vehicle]=direction_id,latitude,longitude,speed,current_status,occupancy_status,carriages&filter[route]={route_id}&api_key={MBTA_AUTH}"
     mbta_api_requests.labels("vehicles").inc()
     headers = {"accept": "text/event-stream"}
-    watcher = Watcher(
+    watcher = MBTAApi(
         route=route_id,
         watcher_type=EventType.VEHICLES,
         expiration_time=expiration_time,
@@ -907,7 +907,7 @@ async def watch_station(
     if direction_filter != "":
         endpoint += f"&filter[direction_id]={direction_filter}"
     headers = {"accept": "text/event-stream"}
-    watcher = Watcher(
+    watcher = MBTAApi(
         stop_id,
         route,
         direction_filter,

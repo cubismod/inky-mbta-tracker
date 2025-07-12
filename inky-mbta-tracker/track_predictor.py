@@ -5,7 +5,9 @@ from datetime import UTC, datetime, timedelta
 from typing import Dict, List, Optional
 
 import textdistance
+from aiohttp import ClientSession
 from async_lru import alru_cache
+from mbta_client import EventType, MBTAApi
 from pydantic import ValidationError
 from redis.asyncio.client import Redis
 from redis_cache import check_cache, write_cache
@@ -279,6 +281,13 @@ class TrackPredictor:
             if not route_id.startswith("CR"):
                 return None
 
+            # it makes more sense to get the headsign client-side using the exact trip_id due to API rate limits
+            api = MBTAApi(watcher_type=EventType.OTHER)()
+            with ClientSession() as session:
+                new_hs = await api.get_trip_headsign(trip_id, session)
+                if new_hs != "":
+                    headsign = new_hs
+
             # Analyze patterns
             patterns = await self.analyze_patterns(
                 station_id, route_id, headsign, direction_id, scheduled_time
@@ -321,6 +330,7 @@ class TrackPredictor:
                 )
             )
             logger.debug(f"Historical matches={historical_matches}")
+
             # Create prediction
             prediction = TrackPrediction(
                 station_id=station_id,
