@@ -146,7 +146,7 @@ async def light_get_stop(
     ls = None
     async with MBTAApi(stop_id=stop_id, watcher_type=EventType.OTHER) as watcher:
         # avoid rate-limiting by spacing out requests
-        await sleep(1)
+        await sleep(randint(1, 3))
         stop = await watcher.get_stop(session, stop_id)
         if stop and stop[0]:
             if stop[0].data.attributes.description:

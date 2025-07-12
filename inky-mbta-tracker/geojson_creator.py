@@ -2,6 +2,7 @@ import logging
 import os
 from asyncio import Runner, sleep
 from datetime import UTC, datetime, timedelta
+from random import randint
 from typing import Optional
 from zoneinfo import ZoneInfo
 
@@ -109,6 +110,7 @@ async def collect_alerts(config: Config, session: ClientSession) -> list[AlertRe
     alerts = dict[str, AlertResource]()
     if config.vehicles_by_route:
         for v in config.vehicles_by_route:
+            await sleep(randint(1, 3))
             al = await light_get_alerts(v, session)
             if al:
                 for a in al:
