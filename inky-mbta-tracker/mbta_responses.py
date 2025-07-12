@@ -335,7 +335,7 @@ class Vehicle(BaseModel):
     id: str
     links: Optional[dict] = None
     attributes: VehicleAttributes
-    relationships: VehicleRelationships
+    relationships: Optional[VehicleRelationships] = None
     type: str
 
 

@@ -591,9 +591,17 @@ class MBTAApi:
             route = ""
             trip_id = item.id
             trip_info = None
-            if item.relationships.route.data:
+            if (
+                item.relationships
+                and item.relationships.route
+                and item.relationships.route.data
+            ):
                 route = item.relationships.route.data.id
-            if item.relationships.trip and item.relationships.trip.data:
+            if (
+                item.relationships
+                and item.relationships.trip
+                and item.relationships.trip.data
+            ):
                 # save the trip name as this is what the T uses to refer to specific trains on commuter rail
                 trip_info = await self.get_trip(
                     item.relationships.trip.data.id, session
@@ -621,7 +629,11 @@ class MBTAApi:
                 occupancy_status=occupancy,
                 headsign=headsign,
             )
-            if item.relationships.stop and item.relationships.stop.data:
+            if (
+                item.relationships
+                and item.relationships.stop
+                and item.relationships.stop.data
+            ):
                 event.stop = item.relationships.stop.data.id
             if len(carriage_ids) > 0 and isinstance(event, VehicleRedisSchema):
                 event.carriages = carriage_ids

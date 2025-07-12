@@ -31,3 +31,6 @@ tasks:
     cmds:
       - uv run compute_class_hashes.py
       - uv run ruff format inky-mbta-tracker/shared_types/class_hashes.py
+  test:
+    cmds:
+      - uv run pytest
