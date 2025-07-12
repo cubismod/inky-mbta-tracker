@@ -9,7 +9,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from mbta_client import determine_station_id
 from pydantic import BaseModel
-from shared_types import TrackAssignment, TrackPrediction
+from shared_types.shared_types import TrackAssignment, TrackPrediction
 from track_predictor import TrackPredictionStats, TrackPredictor
 
 # This is intended as a separate entrypoint to be run as a separate container
@@ -169,6 +169,7 @@ async def get_historical_assignments(
 
 
 @click.command()
-def run_main() -> None:
+async def run_main() -> None:
     port = int(os.environ.get("IMT_TRACK_API_PORT", "8080"))
+    await track_predictor.perform_schema_versioning()
     uvicorn.run(app, host="0.0.0.0", port=port)

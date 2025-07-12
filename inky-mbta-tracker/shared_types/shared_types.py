@@ -1,4 +1,5 @@
 from datetime import datetime
+from enum import Enum
 from typing import Optional
 
 from pydantic import BaseModel
@@ -17,9 +18,7 @@ class ScheduleEvent(BaseModel):
     alerting: bool = False
     bikes_allowed: bool = False
     # Track prediction fields
-    platform_code: Optional[str] = None
-    platform_name: Optional[str] = None
-    predicted_track: Optional[str] = None
+    track_number: Optional[str] = None
     track_confidence: Optional[float] = None
     show_on_display: bool = True
 
@@ -41,6 +40,11 @@ class VehicleRedisSchema(BaseModel):
     headsign: Optional[str] = None
 
 
+class TrackAssignmentType(Enum):
+    HISTORICAL = "historical"
+    PREDICTED = "predicted"
+
+
 class TrackAssignment(BaseModel):
     """Historical track assignment data for analysis"""
 
@@ -49,8 +53,8 @@ class TrackAssignment(BaseModel):
     trip_id: str
     headsign: str
     direction_id: int
-    platform_code: Optional[str] = None
-    platform_name: Optional[str] = None
+    assignment_type: TrackAssignmentType
+    track_number: Optional[str] = None
     scheduled_time: datetime
     actual_time: Optional[datetime] = None
     recorded_time: datetime
@@ -68,8 +72,7 @@ class TrackPrediction(BaseModel):
     headsign: str
     direction_id: int
     scheduled_time: datetime
-    predicted_platform_code: Optional[str] = None
-    predicted_platform_name: Optional[str] = None
+    track_number: Optional[str] = None
     confidence_score: float  # 0.0 to 1.0
     prediction_method: str  # e.g., "historical_pattern", "time_based", "headsign_based"
     historical_matches: int  # Number of historical matches used for prediction
