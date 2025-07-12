@@ -175,8 +175,14 @@ async def light_get_alerts(route_id: str) -> Optional[list[AlertResource]]:
 
 
 class MBTAApi:
-    # by default is predictions, can also be vehicles for a live
-    # vehicle watcher
+    """
+    MBTA API client
+
+    Implements a limited set of functionality from the MBTA v3 API.
+    Focused primarily around real-time predictions of vehicles and schedules however this
+    can also be used as a general API client. Utilizes Redis for caching.
+    """
+
     watcher_type: EventType
     stop_id: Optional[str]
     route: Optional[str]
