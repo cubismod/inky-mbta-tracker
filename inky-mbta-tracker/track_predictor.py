@@ -7,12 +7,12 @@ from typing import Dict, List, Optional
 import aiohttp
 import textdistance
 from async_lru import alru_cache
-from mbta_client import MBTA_V3_ENDPOINT, EventType, MBTAApi
+from consts import DAY, MBTA_V3_ENDPOINT, MINUTE, WEEK
+from mbta_client import EventType, MBTAApi
 from pydantic import ValidationError
 from redis.asyncio.client import Redis
 from redis_cache import check_cache, write_cache
 from shared_types import TrackAssignment, TrackPrediction, TrackPredictionStats
-from times_in_seconds import DAY, MINUTE, WEEK
 
 logger = logging.getLogger(__name__)
 

@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo
 import aiohttp
 from aiohttp import ClientSession
 from aiosseclient import aiosseclient
+from consts import DAY, FOUR_WEEKS, MBTA_V3_ENDPOINT, TWO_MONTHS, YEAR
 from exceptions import RateLimitExceeded
 from mbta_responses import (
     AlertResource,
@@ -46,11 +47,9 @@ from tenacity import (
     retry_if_not_exception_type,
     wait_random_exponential,
 )
-from times_in_seconds import DAY, FOUR_WEEKS, TWO_MONTHS, YEAR
 from track_predictor import TrackPredictor
 
 MBTA_AUTH = os.environ.get("AUTH_TOKEN")
-MBTA_V3_ENDPOINT = "https://api-v3.mbta.com"
 logger = logging.getLogger(__name__)
 SHAPE_POLYLINES = set[str]()
 

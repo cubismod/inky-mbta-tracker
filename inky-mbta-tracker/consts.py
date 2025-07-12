@@ -1,3 +1,4 @@
+MBTA_V3_ENDPOINT = "https://api-v3.mbta.com"
 FOUR_WEEKS = 2419200
 TWO_MONTHS = 5256000
 DAY = 86400
