@@ -11,6 +11,7 @@ from random import getrandbits, randint
 from typing import Optional
 from zoneinfo import ZoneInfo
 
+import click
 import yappi
 from config import StopSetup, load_config
 from dotenv import load_dotenv
@@ -19,6 +20,7 @@ from mbta_client import EventType, thread_runner
 from prometheus import running_threads
 from prometheus_client import start_http_server
 from schedule_tracker import ScheduleEvent, VehicleRedisSchema, process_queue
+from shared_types.schema_versioner import schema_versioner
 
 load_dotenv()
 
@@ -87,6 +89,7 @@ def start_thread(  # type: ignore
                         "direction_filter": direction_filter,
                         "queue": queue,
                         "transit_time_min": stop.transit_time_min,
+                        "show_on_display": stop.show_on_display,
                     },
                     name=f"{stop.route_filter}_{stop.stop_id}_schedules",
                 )
@@ -141,6 +144,8 @@ async def __main__() -> None:
 
     queue = Queue[ScheduleEvent | VehicleRedisSchema]()
     tasks = list[TaskTracker]()
+
+    await schema_versioner()
 
     start_http_server(int(os.getenv("IMT_PROM_PORT", "8000")))
 
@@ -240,6 +245,7 @@ async def __main__() -> None:
             yappi.clear_stats()
 
 
-if __name__ == "__main__":
+@click.command()
+def run_main() -> None:
     with Runner() as runner:
         runner.run(__main__())

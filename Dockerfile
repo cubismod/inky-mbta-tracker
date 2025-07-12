@@ -2,13 +2,13 @@ FROM python:3.13@sha256:28f60ab75da2183870846130cead1f6af30162148d3238348f78f89c
 COPY --from=ghcr.io/astral-sh/uv:0.7.19@sha256:2dcbc74e60ed6d842122ed538f5267c80e7cde4ff1b6e66a199b89972496f033 /uv /uvx /bin/
 
 WORKDIR /app
-ADD pyproject.toml uv.lock ./
+ADD README.md pyproject.toml uv.lock ./
 
-RUN uv sync --frozen --no-cache
+RUN uv venv && uv sync --frozen --no-cache --no-install-project
 
 ADD . .
 
-RUN uv lock --check
-RUN uvx ruff check
+RUN uv sync && uv lock --check
+RUN uv run ruff check && uv run mypy
 
-CMD ["uv", "run", "inky-mbta-tracker/main.py"]
+CMD ["uv", "run", "inky-mbta-tracker"]

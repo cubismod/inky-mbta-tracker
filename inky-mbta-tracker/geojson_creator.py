@@ -15,7 +15,13 @@ from geojson import (
     Point,
     dumps,
 )
-from mbta_client import get_shapes, light_get_alerts, light_get_stop, silver_line_lookup
+from mbta_client import (
+    determine_station_id,
+    get_shapes,
+    light_get_alerts,
+    light_get_stop,
+    silver_line_lookup,
+)
 from mbta_responses import AlertResource, Alerts
 from prometheus import redis_commands
 from pydantic import ValidationError
@@ -24,6 +30,7 @@ from redis.asyncio import Redis
 from s3transfer import S3UploadFailedError
 from schedule_tracker import VehicleRedisSchema
 from tenacity import before_sleep_log, retry, wait_random_exponential
+from track_predictor import TrackPredictor
 from turfpy.measurement import bearing, distance
 
 logger = logging.getLogger("geojson")
@@ -188,6 +195,7 @@ async def create_json(config: Config) -> None:
 
                                 if not vehicle_info.route.startswith("Amtrak"):
                                     stop = await light_get_stop(r, vehicle_info.stop)
+                                    platform_prediction = None
                                     if stop:
                                         stop_id = stop.stop_id
                                         if stop.long and stop.lat:
@@ -206,6 +214,20 @@ async def create_json(config: Config) -> None:
                                                     Feature(geometry=point),
                                                     vehicle_info.speed,
                                                 )
+                                        if vehicle_info.route.startswith("CR"):
+                                            track_predictor = TrackPredictor()
+                                            prediction = await track_predictor.predict_track(
+                                                station_id=determine_station_id(
+                                                    stop_id
+                                                ),
+                                                route_id=vehicle_info.route,
+                                                trip_id=f"{vehicle_info.route}:{vehicle_info.id}",
+                                                headsign=vehicle_info.headsign,
+                                                direction_id=vehicle_info.direction_id,
+                                                scheduled_time=vehicle_info.update_time,
+                                            )
+                                            if prediction:
+                                                platform_prediction = f"{prediction.track_number} ({round(prediction.confidence_score * 100)}% confidence)"
                                 else:
                                     route_icon = "rail_amtrak"
                                     stop_id = vehicle_info.stop
@@ -246,6 +268,7 @@ async def create_json(config: Config) -> None:
                                         "update_time": vehicle_info.update_time.strftime(
                                             "%Y-%m-%dT%H:%M:%S.000Z"
                                         ),
+                                        "platform_prediction": platform_prediction,
                                     },
                                 )
                                 features[f"v-{vehicle_info.id}"] = feature
