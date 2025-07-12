@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 from datetime import datetime, timedelta
@@ -170,7 +171,8 @@ async def get_historical_assignments(
 
 
 @click.command()
-async def run_main() -> None:
+def run_main() -> None:
     port = int(os.environ.get("IMT_TRACK_API_PORT", "8080"))
-    await schema_versioner()
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    with asyncio.Runner() as runner:
+        runner.run(schema_versioner())
+        uvicorn.run(app, host="0.0.0.0", port=port)
