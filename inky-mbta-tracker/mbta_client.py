@@ -45,7 +45,7 @@ from tenacity import (
     before_sleep_log,
     retry,
     retry_if_not_exception_type,
-    wait_random_exponential,
+    wait_exponential_jitter,
 )
 from track_predictor import TrackPredictor
 
@@ -84,7 +84,7 @@ def parse_shape_data(shapes: Shapes) -> list[list[tuple]]:
 # gets line (orange, blue, red, green, etc) geometry using MBTA API
 # redis expires in 24 hours
 @retry(
-    wait=wait_random_exponential(multiplier=3, min=10),
+    wait=wait_exponential_jitter(initial=2, jitter=5),
     before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
 )
 async def get_shapes(
@@ -601,7 +601,7 @@ class MBTAApi:
             queue.put(event)
 
     @retry(
-        wait=wait_random_exponential(multiplier=3, min=1),
+        wait=wait_exponential_jitter(initial=2, jitter=5),
         before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
     )
     async def get_trip(self, trip_id: str, session: ClientSession) -> Optional[Trips]:
@@ -629,7 +629,7 @@ class MBTAApi:
 
     # saves a route to the dict of routes rather than redis
     @retry(
-        wait=wait_random_exponential(multiplier=3, min=1),
+        wait=wait_exponential_jitter(initial=2, jitter=5),
         before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
     )
     async def save_route(
@@ -654,7 +654,7 @@ class MBTAApi:
                         logger.error(f"Unable to parse route, {err}")
 
     @retry(
-        wait=wait_random_exponential(multiplier=3, min=1),
+        wait=wait_exponential_jitter(initial=2, jitter=5),
         before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
     )
     async def get_alerts(
@@ -687,7 +687,7 @@ class MBTAApi:
         return None
 
     @retry(
-        wait=wait_random_exponential(multiplier=3, min=1),
+        wait=wait_exponential_jitter(initial=2, jitter=5),
         before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
     )
     async def save_schedule(
@@ -739,7 +739,7 @@ class MBTAApi:
 
     # 3 weeks of caching in redis as maybe a stop will change? idk
     @retry(
-        wait=wait_random_exponential(multiplier=3, min=10),
+        wait=wait_exponential_jitter(initial=2, jitter=5),
         before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
     )
     async def get_stop(
@@ -793,7 +793,7 @@ class MBTAApi:
 
 
 @retry(
-    wait=wait_random_exponential(multiplier=3),
+    wait=wait_exponential_jitter(initial=2, jitter=5),
     before=before_log(logger, logging.INFO),
     before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
     retry=retry_if_not_exception_type(CancelledError),
@@ -826,7 +826,7 @@ async def watch_server_side_events(
 
 
 @retry(
-    wait=wait_random_exponential(multiplier=3),
+    wait=wait_exponential_jitter(initial=2, jitter=5),
     before=before_log(logger, logging.INFO),
     before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
     retry=retry_if_not_exception_type(CancelledError),
@@ -855,7 +855,7 @@ async def watch_static_schedule(
 
 
 @retry(
-    wait=wait_random_exponential(multiplier=3),
+    wait=wait_exponential_jitter(initial=2, jitter=5),
     before=before_log(logger, logging.INFO),
     before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
     retry=retry_if_not_exception_type(CancelledError),
