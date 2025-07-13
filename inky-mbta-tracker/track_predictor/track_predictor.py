@@ -318,6 +318,22 @@ class TrackPredictor:
                     new_hs = await api.get_headsign(trip_id, session)
                     if new_hs != "":
                         headsign = new_hs
+                    stop_data = await api.get_stop(session, station_id)
+                    if stop_data[0] and stop_data[0].data.attributes.platform_code:
+                        # confirmed from the MBTA that this is the platform code
+                        return TrackPrediction(
+                            station_id=station_id,
+                            route_id=route_id,
+                            trip_id=trip_id,
+                            headsign=headsign,
+                            direction_id=direction_id,
+                            scheduled_time=scheduled_time,
+                            track_number=stop_data[0].data.attributes.platform_code,
+                            confidence_score=1.0,
+                            prediction_method="platform_code",
+                            historical_matches=0,
+                            created_at=datetime.now(UTC),
+                        )
 
             # Analyze patterns
             patterns = await self.analyze_patterns(
