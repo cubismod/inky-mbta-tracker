@@ -2,16 +2,13 @@ import logging
 import os
 import threading
 import time
-import uuid
 from asyncio import Runner, sleep
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from queue import Queue
-from random import getrandbits, randint
+from random import randint
 from typing import Optional
-from zoneinfo import ZoneInfo
 
-import yappi
+import click
 from config import StopSetup, load_config
 from dotenv import load_dotenv
 from geojson_creator import run
@@ -19,6 +16,8 @@ from mbta_client import EventType, thread_runner
 from prometheus import running_threads
 from prometheus_client import start_http_server
 from schedule_tracker import ScheduleEvent, VehicleRedisSchema, process_queue
+from shared_types.schema_versioner import schema_versioner
+from track_predictor import track_prediction_api
 
 load_dotenv()
 
@@ -87,6 +86,7 @@ def start_thread(  # type: ignore
                         "direction_filter": direction_filter,
                         "queue": queue,
                         "transit_time_min": stop.transit_time_min,
+                        "show_on_display": stop.show_on_display,
                     },
                     name=f"{stop.route_filter}_{stop.stop_id}_schedules",
                 )
@@ -134,13 +134,10 @@ def start_thread(  # type: ignore
 async def __main__() -> None:
     config = load_config()
 
-    profile_dir = os.getenv("IMT_PROFILE_DIR")
-    start_time = datetime.now().astimezone(ZoneInfo("US/Eastern"))
-    if profile_dir:
-        yappi.start()
-
     queue = Queue[ScheduleEvent | VehicleRedisSchema]()
     tasks = list[TaskTracker]()
+
+    await schema_versioner()
 
     start_http_server(int(os.getenv("IMT_PROM_PORT", "8000")))
 
@@ -174,7 +171,6 @@ async def __main__() -> None:
         geojson_thr.start()
         tasks.append(TaskTracker(geojson_thr, stop=None, event_type=EventType.OTHER))
 
-    next_profile_time = datetime.now().astimezone(UTC) + timedelta(seconds=10)
     while True:
         running_threads.set(len(tasks))
         await sleep(30)
@@ -205,41 +201,13 @@ async def __main__() -> None:
                         )
                         if thr:
                             tasks.append(thr)
-        if profile_dir and datetime.now().astimezone(UTC) > next_profile_time:
-            if not yappi.is_running():
-                yappi.start()
-                start_time = datetime.now().astimezone(ZoneInfo("US/Eastern"))
-                logging.info("started profiling")
-            await sleep(300)
-            yappi.stop()
-            logging.info("stopped profiling")
-            end_time = datetime.now().astimezone(ZoneInfo("US/Eastern"))
-
-            file_uuid = uuid.UUID(int=getrandbits(128), version=4)
-
-            with open(Path(profile_dir) / f"{file_uuid}-profile.txt", "w") as f:
-                f.write(f"{start_time.strftime('%c')} to {end_time.strftime('%c')}")
-                threads = yappi.get_thread_stats()
-                threads.sort("ttot", "desc").print_all(out=f)
-
-                for thread in threads.sort("id", "asc"):
-                    stats = yappi.get_func_stats(
-                        ctx_id=thread.id,
-                        filter_callback=lambda x: "lib" not in x.module,
-                    )
-                    if len(stats) > 0:
-                        f.write(f"\nStats for Thread {thread.id} {thread.name}")
-                        stats.print_all(out=f)
-                next_profile_time = datetime.now().astimezone(UTC) + timedelta(
-                    minutes=randint(30, 60)
-                )
-
-            all_stats = yappi.get_func_stats()
-            all_stats.save(Path(profile_dir) / f"{file_uuid}.out", "callgrind")
-
-            yappi.clear_stats()
 
 
-if __name__ == "__main__":
-    with Runner() as runner:
-        runner.run(__main__())
+@click.command()
+@click.option("--prediction-api", is_flag=True, default=False)
+def run_main(prediction_api: bool) -> None:
+    if prediction_api:
+        track_prediction_api.run_main()
+    else:
+        with Runner() as runner:
+            runner.run(__main__())

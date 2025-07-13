@@ -1,0 +1,541 @@
+import logging
+import os
+from collections import defaultdict
+from datetime import UTC, datetime, timedelta
+from typing import Dict, List, Optional
+
+import aiohttp
+import mbta_client
+import textdistance
+from async_lru import alru_cache
+from consts import DAY, MBTA_V3_ENDPOINT, MINUTE, WEEK
+from prometheus import redis_commands
+from pydantic import ValidationError
+from redis.asyncio.client import Redis
+from redis_cache import check_cache, write_cache
+from shared_types.shared_types import (
+    TrackAssignment,
+    TrackPrediction,
+    TrackPredictionStats,
+)
+
+logger = logging.getLogger(__name__)
+
+
+class TrackPredictor:
+    """
+    Track prediction system for MBTA commuter rail trains.
+
+    This system analyzes historical track assignments to predict future track
+    assignments before they are officially announced by the MBTA.
+    """
+
+    def __init__(self) -> None:
+        self.redis = Redis(
+            host=os.environ.get("IMT_REDIS_ENDPOINT", ""),
+            port=int(os.environ.get("IMT_REDIS_PORT", "6379")),
+            password=os.environ.get("IMT_REDIS_PASSWORD", ""),
+        )
+
+    async def store_historical_assignment(self, assignment: TrackAssignment) -> None:
+        """
+        Store a historical track assignment for future analysis.
+
+        Args:
+            assignment: The track assignment data to store
+        """
+        try:
+            # Store in Redis with a key that includes station, route, and timestamp
+            key = f"track_history:{assignment.station_id}:{assignment.route_id}:{assignment.trip_id}:{assignment.scheduled_time.date()}"
+
+            # Store for 6 months for analysis
+            await write_cache(
+                self.redis,
+                key,
+                assignment.model_dump_json(),
+                6 * 30 * DAY,  # 6 months
+            )
+
+            # Also store in a time-series format for easier querying
+            time_series_key = (
+                f"track_timeseries:{assignment.station_id}:{assignment.route_id}"
+            )
+            await self.redis.zadd(
+                time_series_key, {key: assignment.scheduled_time.timestamp()}
+            )
+            redis_commands.labels("zadd").inc()
+
+            # Set expiration for time series (6 months)
+            await self.redis.expire(time_series_key, 6 * 30 * DAY)
+            redis_commands.labels("expire").inc()
+
+            logger.debug(
+                f"Stored track assignment: {assignment.station_id} {assignment.route_id} -> {assignment.track_number}"
+            )
+
+        except (ConnectionError, TimeoutError) as e:
+            logger.error(
+                f"Failed to store track assignment due to Redis connection issue: {e}",
+                exc_info=True,
+            )
+        except ValidationError as e:
+            logger.error(
+                f"Failed to store track assignment due to validation error: {e}",
+                exc_info=True,
+            )
+
+    async def get_historical_assignments(
+        self, station_id: str, route_id: str, start_date: datetime, end_date: datetime
+    ) -> List[TrackAssignment]:
+        """
+        Retrieve historical track assignments for a given station and route.
+
+        Args:
+            station_id: The station to query
+            route_id: The route to query
+            start_date: Start date for the query
+            end_date: End date for the query
+
+        Returns:
+            List of historical track assignments
+        """
+        try:
+            time_series_key = f"track_timeseries:{station_id}:{route_id}"
+
+            # Get assignments within the time range
+            assignments = await self.redis.zrangebyscore(
+                time_series_key, start_date.timestamp(), end_date.timestamp()
+            )
+            redis_commands.labels("zrangebyscore").inc()
+
+            results = []
+            for assignment_key in assignments:
+                assignment_data = await check_cache(self.redis, assignment_key.decode())
+                if assignment_data:
+                    try:
+                        assignment = TrackAssignment.model_validate_json(
+                            assignment_data
+                        )
+                        results.append(assignment)
+                    except ValidationError as e:
+                        logger.error(f"Failed to parse assignment data: {e}")
+
+            return results
+
+        except (ConnectionError, TimeoutError) as e:
+            logger.error(
+                f"Failed to retrieve historical assignments due to Redis connection issue: {e}",
+                exc_info=True,
+            )
+            return []
+        except ValidationError as e:
+            logger.error(
+                f"Failed to retrieve historical assignments due to validation error: {e}",
+                exc_info=True,
+            )
+            return []
+
+    async def analyze_patterns(
+        self,
+        station_id: str,
+        route_id: str,
+        trip_headsign: str,
+        direction_id: int,
+        scheduled_time: datetime,
+    ) -> Dict[str, float]:
+        """
+        Analyze historical patterns to determine track assignment probabilities.
+
+        Args:
+            station_id: The station ID
+            route_id: The route ID
+            trip_headsign: The trip headsign
+            direction_id: The direction ID
+            scheduled_time: The scheduled departure time
+
+        Returns:
+            Dictionary mapping track identifiers to probability scores
+        """
+        try:
+            # Look back 3 months for historical data
+            start_date = scheduled_time - timedelta(days=90)
+            end_date = scheduled_time
+
+            assignments = await self.get_historical_assignments(
+                station_id, route_id, start_date, end_date
+            )
+
+            if not assignments:
+                logger.debug(
+                    f"No historical assignments found for station_id={station_id}, route_id={route_id}, trip_id={trip_headsign}, direction_id={direction_id}, scheduled_time={scheduled_time}"
+                )
+                return {}
+
+            # Analyze patterns by different criteria
+            patterns: dict[str, dict[str, int]] = {
+                "exact_match": defaultdict(int),  # Same headsign, time, direction
+                "headsign_match": defaultdict(int),  # Same headsign, direction
+                "time_match": defaultdict(int),  # Same time window (±30 min)
+                "direction_match": defaultdict(int),  # Same direction
+                "day_of_week_match": defaultdict(int),  # Same day of week
+            }
+
+            target_dow = scheduled_time.weekday()
+            target_hour = scheduled_time.hour
+            target_minute = scheduled_time.minute
+
+            for assignment in assignments:
+                if not assignment.track_number:
+                    continue
+
+                if assignment.track_number:
+                    headsign_similarity = (
+                        textdistance.levenshtein.normalized_similarity(
+                            trip_headsign, assignment.headsign
+                        )
+                    )
+                    # Exact match (same headsign, time window, direction)
+                    # we append the commuter rail line to the headsign when processing
+                    # in mbta_client.py so we do a substring match here
+                    if (
+                        headsign_similarity > 0.7
+                        and assignment.direction_id == direction_id
+                        and abs(assignment.hour - target_hour) <= 1
+                    ):
+                        logger.debug(
+                            f"Exact match found for station_id={station_id}, route_id={route_id}, trip_id={trip_headsign}, direction_id={direction_id}, scheduled_time={scheduled_time}, track_id={assignment.track_number}"
+                        )
+                        patterns["exact_match"][assignment.track_number] += 10
+
+                    # Headsign match
+                    if (
+                        headsign_similarity > 0.7
+                        and assignment.direction_id == direction_id
+                    ):
+                        logger.debug(
+                            f"Headsign match found for station_id={station_id}, route_id={route_id}, trip_id={trip_headsign}, direction_id={direction_id}, scheduled_time={scheduled_time}, track_id={assignment.track_number}"
+                        )
+                        patterns["headsign_match"][assignment.track_number] += 5
+
+                    # Time match (±30 minutes)
+                    time_diff = abs(
+                        assignment.hour * 60
+                        + assignment.minute
+                        - target_hour * 60
+                        - target_minute
+                    )
+                    if time_diff <= 30:
+                        logger.debug(
+                            f"Time match found for station_id={station_id}, route_id={route_id}, trip_id={trip_headsign}, direction_id={direction_id}, scheduled_time={scheduled_time}, track_id={assignment.track_number}"
+                        )
+                        patterns["time_match"][assignment.track_number] += 3
+
+                    # Direction match
+                    if assignment.direction_id == direction_id:
+                        logger.debug(
+                            f"Direction match found for station_id={station_id}, route_id={route_id}, trip_id={trip_headsign}, direction_id={direction_id}, scheduled_time={scheduled_time}, track_id={assignment.track_number}"
+                        )
+                        patterns["direction_match"][assignment.track_number] += 2
+
+                    # Day of week match
+                    if assignment.day_of_week == target_dow:
+                        logger.debug(
+                            f"Day of week match found for station_id={station_id}, route_id={route_id}, trip_id={trip_headsign}, direction_id={direction_id}, scheduled_time={scheduled_time}, track_id={assignment.track_number}"
+                        )
+                        patterns["day_of_week_match"][assignment.track_number] += 1
+
+            # Combine all patterns with weights
+            combined_scores: dict[str, float] = defaultdict(float)
+            for _, tracks in patterns.items():
+                for track_id, score in tracks.items():
+                    combined_scores[track_id] += score
+
+            # Convert to probabilities
+            if combined_scores:
+                total_score = sum(combined_scores.values())
+                total = {
+                    track: score / total_score
+                    for track, score in combined_scores.items()
+                }
+                logger.debug(
+                    f"Calculated pattern for station_id={station_id}, route_id={route_id}, trip_id={trip_headsign}, direction_id={direction_id}"
+                )
+                logger.debug(f"Total score={total_score}, total={total}")
+                return total
+
+            logger.debug(
+                f"No patterns found for station_id={station_id}, route_id={route_id}, trip_id={trip_headsign}, direction_id={direction_id}, scheduled_time={scheduled_time}"
+            )
+            return {}
+
+        except (ConnectionError, TimeoutError) as e:
+            logger.error(
+                f"Failed to analyze patterns due to Redis connection issue: {e}",
+                exc_info=True,
+            )
+            return {}
+        except ValidationError as e:
+            logger.error(
+                f"Failed to analyze patterns due to validation error: {e}",
+                exc_info=True,
+            )
+            return {}
+
+    @alru_cache(ttl=30 * MINUTE)
+    async def predict_track(
+        self,
+        station_id: str,
+        route_id: str,
+        trip_id: str,
+        headsign: str,
+        direction_id: int,
+        scheduled_time: datetime,
+    ) -> Optional[TrackPrediction]:
+        """
+        Generate a track prediction for a given trip.
+
+        Args:
+            station_id: The station ID
+            route_id: The route ID
+            trip_id: The trip ID
+            headsign: The trip headsign
+            direction_id: The direction ID
+            scheduled_time: The scheduled departure time
+
+        Returns:
+            TrackPrediction object or None if no prediction can be made
+        """
+        try:
+            # Only predict for commuter rail
+            if not route_id.startswith("CR"):
+                return None
+
+            # it makes more sense to get the headsign client-side using the exact trip_id due to API rate limits
+            async with aiohttp.ClientSession(MBTA_V3_ENDPOINT) as session:
+                async with mbta_client.MBTAApi(
+                    watcher_type=mbta_client.EventType.OTHER
+                ) as api:
+                    new_hs = await api.get_headsign(trip_id, session)
+                    if new_hs != "":
+                        headsign = new_hs
+
+            # Analyze patterns
+            patterns = await self.analyze_patterns(
+                station_id, route_id, headsign, direction_id, scheduled_time
+            )
+
+            if not patterns:
+                return None
+
+            # Find the most likely track
+            best_track = max(patterns.keys(), key=lambda x: patterns[x])
+            confidence = patterns[best_track]
+
+            # Only make predictions if confidence is above threshold
+            if confidence < 0.3:  # 30% confidence threshold
+                logger.debug(
+                    f"No prediction made for station_id={station_id}, route_id={route_id}, trip_id={trip_id}, headsign={headsign}, direction_id={direction_id}, scheduled_time={scheduled_time}, confidence={confidence}"
+                )
+                return None
+
+            # Determine prediction method
+            method = "historical_pattern"
+            if confidence >= 0.8:
+                method = "high_confidence_pattern"
+            elif confidence >= 0.6:
+                method = "medium_confidence_pattern"
+            else:
+                method = "low_confidence_pattern"
+
+            logger.debug(
+                f"Predicting track for station_id={station_id}, route_id={route_id}, trip_id={trip_id}, headsign={headsign}, direction_id={direction_id}, scheduled_time={scheduled_time}, confidence={confidence}, method={method}"
+            )
+            # Count historical matches
+            historical_matches = sum(
+                1
+                for _ in await self.get_historical_assignments(
+                    station_id,
+                    route_id,
+                    scheduled_time - timedelta(days=30),
+                    scheduled_time,
+                )
+            )
+            logger.debug(f"Historical matches={historical_matches}")
+
+            # Create prediction
+            prediction = TrackPrediction(
+                station_id=station_id,
+                route_id=route_id,
+                trip_id=trip_id,
+                headsign=headsign,
+                direction_id=direction_id,
+                scheduled_time=scheduled_time,
+                track_number=best_track,
+                confidence_score=confidence,
+                prediction_method=method,
+                historical_matches=historical_matches,
+                created_at=datetime.now(UTC),
+            )
+            # Store prediction for later validation
+            await self._store_prediction(prediction)
+
+            logger.debug(
+                f"Predicted track={prediction.track_number}, station_id={station_id}, route_id={route_id}, trip_id={trip_id}, headsign={headsign}, direction_id={direction_id}, scheduled_time={scheduled_time}, confidence={confidence}, method={method}, historical_matches={historical_matches}"
+            )
+
+            return prediction
+
+        except ValidationError as e:
+            logger.error(f"Failed to predict track: {e}")
+            return None
+
+    async def _store_prediction(self, prediction: TrackPrediction) -> None:
+        """Store a prediction for later validation."""
+        try:
+            key = f"track_prediction:{prediction.station_id}:{prediction.route_id}:{prediction.trip_id}:{prediction.scheduled_time.date()}"
+            await write_cache(
+                self.redis,
+                key,
+                prediction.model_dump_json(),
+                WEEK,  # Store for 1 week
+            )
+        except (ConnectionError, TimeoutError) as e:
+            logger.error(
+                f"Failed to store prediction due to Redis connection issue: {e}",
+                exc_info=True,
+            )
+        except ValidationError as e:
+            logger.error(
+                f"Failed to store prediction due to validation error: {e}",
+                exc_info=True,
+            )
+
+    async def validate_prediction(
+        self,
+        station_id: str,
+        route_id: str,
+        trip_id: str,
+        scheduled_time: datetime,
+        actual_track_number: Optional[str],
+    ) -> None:
+        """
+        Validate a previous prediction against actual track assignment.
+
+        Args:
+            station_id: The station ID
+            route_id: The route ID
+            trip_id: The trip ID
+            scheduled_time: The scheduled departure time
+            actual_platform_code: The actual platform code assigned
+            actual_platform_name: The actual platform name assigned
+        """
+        try:
+            key = f"track_prediction:{station_id}:{route_id}:{trip_id}:{scheduled_time.date()}"
+            prediction_data = await check_cache(self.redis, key)
+
+            if not prediction_data:
+                return
+
+            prediction = TrackPrediction.model_validate_json(prediction_data)
+
+            # Check if prediction was correct
+            is_correct = prediction.track_number == actual_track_number
+
+            # Update statistics
+            await self._update_prediction_stats(
+                station_id, route_id, is_correct, prediction.confidence_score
+            )
+
+            logger.info(
+                f"Validated prediction for {station_id} {route_id}: {'CORRECT' if is_correct else 'INCORRECT'}"
+            )
+
+        except (ConnectionError, TimeoutError) as e:
+            logger.error(
+                f"Failed to validate prediction due to Redis connection issue: {e}",
+                exc_info=True,
+            )
+        except ValidationError as e:
+            logger.error(
+                f"Failed to validate prediction due to validation error: {e}",
+                exc_info=True,
+            )
+
+    async def _update_prediction_stats(
+        self, station_id: str, route_id: str, is_correct: bool, confidence: float
+    ) -> None:
+        """Update prediction statistics."""
+        try:
+            stats_key = f"track_stats:{station_id}:{route_id}"
+            stats_data = await check_cache(self.redis, stats_key)
+
+            if stats_data:
+                stats = TrackPredictionStats.model_validate_json(stats_data)
+            else:
+                stats = TrackPredictionStats(
+                    station_id=station_id,
+                    route_id=route_id,
+                    total_predictions=0,
+                    correct_predictions=0,
+                    accuracy_rate=0.0,
+                    last_updated=datetime.now(UTC),
+                    prediction_counts_by_track={},
+                    average_confidence=0.0,
+                )
+
+            # Update stats
+            stats.total_predictions += 1
+            if is_correct:
+                stats.correct_predictions += 1
+            stats.accuracy_rate = stats.correct_predictions / stats.total_predictions
+            stats.last_updated = datetime.now(UTC)
+
+            # Update average confidence
+            old_total = (stats.total_predictions - 1) * stats.average_confidence
+            stats.average_confidence = (
+                old_total + confidence
+            ) / stats.total_predictions
+
+            # Store updated stats
+            await write_cache(
+                self.redis,
+                stats_key,
+                stats.model_dump_json(),
+                30 * DAY,  # Store for 30 days
+            )
+
+        except (ConnectionError, TimeoutError) as e:
+            logger.error(
+                f"Failed to update prediction stats due to Redis connection issue: {e}",
+                exc_info=True,
+            )
+        except ValidationError as e:
+            logger.error(
+                f"Failed to update prediction stats due to validation error: {e}",
+                exc_info=True,
+            )
+
+    async def get_prediction_stats(
+        self, station_id: str, route_id: str
+    ) -> Optional[TrackPredictionStats]:
+        """Get prediction statistics for a station and route."""
+        try:
+            stats_key = f"track_stats:{station_id}:{route_id}"
+            stats_data = await check_cache(self.redis, stats_key)
+
+            if stats_data:
+                return TrackPredictionStats.model_validate_json(stats_data)
+            return None
+
+        except (ConnectionError, TimeoutError) as e:
+            logger.error(
+                f"Failed to get prediction stats due to Redis connection issue: {e}",
+                exc_info=True,
+            )
+            return None
+        except ValidationError as e:
+            logger.error(
+                f"Failed to get prediction stats due to validation error: {e}",
+                exc_info=True,
+            )
+            return None

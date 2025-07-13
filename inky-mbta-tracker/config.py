@@ -11,6 +11,7 @@ class StopSetup(BaseModel):
     direction_filter: int = Field(default=-1)
     transit_time_min: int
     schedule_only: bool = Field(default=False)
+    show_on_display: bool = Field(default=True)
 
 
 class Config(BaseModel):
