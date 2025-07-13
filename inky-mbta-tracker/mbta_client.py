@@ -810,6 +810,8 @@ class MBTAApi:
                 try:
                     if response.status == 429:
                         raise RateLimitExceeded()
+                    if response.status == 404:
+                        return None, None
                     body = await response.text()
                     mbta_api_requests.labels("stops").inc()
                     stop = Stop.model_validate_json(body, strict=False)
