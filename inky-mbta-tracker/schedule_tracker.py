@@ -14,7 +14,7 @@ from prometheus import redis_commands, schedule_events, vehicle_events, vehicle_
 from pydantic import ValidationError
 from redis import ResponseError
 from redis.asyncio.client import Pipeline, Redis
-from shared_types import ScheduleEvent, VehicleRedisSchema
+from shared_types.shared_types import ScheduleEvent, VehicleRedisSchema
 from tenacity import (
     before_sleep_log,
     retry,
@@ -65,7 +65,7 @@ class Tracker:
 
     @staticmethod
     def log_prediction(event: ScheduleEvent) -> None:
-        logger.info(
+        logger.debug(
             f"action={event.action} time={event.time.astimezone(ZoneInfo('US/Eastern')).strftime('%c')} route_id={event.route_id} route_type={event.route_type} headsign={event.headsign} stop={event.stop} id={event.id}, transit_time_min={event.transit_time_min}, alerting={event.alerting}, bikes_allowed={event.bikes_allowed}"
         )
 
@@ -165,7 +165,7 @@ class Tracker:
         if isinstance(event, ScheduleEvent):
             # only add events in the future
             if event.time > datetime.now().astimezone(UTC):
-                trip_redis_key = f"trip-{event.trip_id}-{event.stop.replace(' ', '_')}"
+                trip_redis_key = f"trip:{event.trip_id}:{event.stop.replace(' ', '_')}"
                 existing_event = await self.redis.get(trip_redis_key)
                 redis_commands.labels("get").inc()
                 if existing_event:
@@ -201,7 +201,7 @@ class Tracker:
                 schedule_events.labels(action, event.route_id, event.stop).inc()
                 self.log_prediction(event)
         if isinstance(event, VehicleRedisSchema):
-            redis_key = f"vehicle-{event.id}"
+            redis_key = f"vehicle:{event.id}"
             event.speed, approximate = await self.calculate_vehicle_speed(event)
             event.approximate_speed = approximate
 
@@ -323,6 +323,8 @@ class Tracker:
             msgs = list[tuple[str, str]]()
             events = await self.fetch_mqtt_events()
             for i, event in enumerate(events):
+                if not event.show_on_display:
+                    continue
                 topic = f"imt/departure_time{i}"
                 payload = self.prediction_display(event)
                 msgs.append((topic, payload))
@@ -335,7 +337,7 @@ class Tracker:
                     payload = f"⚠️{payload}"
                 if event.bikes_allowed:
                     payload = f"🚲{payload}"
-                msgs.append((topic, payload))
+
             if len(msgs) > 0:
                 try:
                     publish.multiple(
@@ -395,6 +397,7 @@ async def execute(
         await tracker.redis.zremrangebyscore(
             "time", "-inf", str(datetime.now().timestamp())
         )
+        redis_commands.labels("zremrangebyscore").inc()
     except ResponseError as err:
         logger.error("Unable to communicate with Redis", exc_info=err)
     await tracker.send_mqtt()
