@@ -96,7 +96,7 @@ class Tracker:
     ) -> tuple[Optional[float], bool]:
         try:
             if event.current_status != "STOPPED_AT" and not event.speed:
-                last_event = await self.redis.get(f"vehicle-{event.id}")
+                last_event = await self.redis.get(f"vehicle:{event.id}")
                 redis_commands.labels("get").inc()
 
                 if last_event:
