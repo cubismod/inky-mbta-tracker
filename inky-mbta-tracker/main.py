@@ -2,14 +2,11 @@ import logging
 import os
 import threading
 import time
-import uuid
 from asyncio import Runner, sleep
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from queue import Queue
-from random import getrandbits, randint
+from random import randint
 from typing import Optional
-from zoneinfo import ZoneInfo
 
 import click
 from config import StopSetup, load_config
@@ -136,7 +133,6 @@ def start_thread(  # type: ignore
 
 async def __main__() -> None:
     config = load_config()
-
 
     queue = Queue[ScheduleEvent | VehicleRedisSchema]()
     tasks = list[TaskTracker]()
