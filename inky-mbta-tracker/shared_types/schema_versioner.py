@@ -2,6 +2,7 @@ import logging
 import os
 from typing import Optional
 
+from prometheus import redis_commands
 from pydantic import BaseModel, ValidationError
 from redis import ResponseError
 from redis.asyncio.client import Redis
@@ -22,6 +23,7 @@ class RedisSchema(BaseModel):
 async def get_schema_version(redis: Redis, schema_key: str) -> Optional[RedisSchema]:
     try:
         schema_version = await redis.get(schema_key)
+        redis_commands.labels("get").inc()
         if schema_version is None:
             return None
         return RedisSchema.model_validate_json(schema_version)
@@ -45,12 +47,12 @@ async def schema_versioner() -> None:
     schemas = [
         RedisSchema(
             id="schedule_event",
-            key_prefixes=["schedule", "prediction"],
+            key_prefixes=["schedule", "prediction", "time"],
             hashes={class_hashes.SCHEDULEEVENT_HASH},
         ),
         RedisSchema(
             id="vehicle_redis_schema",
-            key_prefixes=["vehicle"],
+            key_prefixes=["vehicle", "pos-data"],
             hashes={class_hashes.VEHICLEREDISSCHEMA_HASH},
         ),
         RedisSchema(
@@ -127,6 +129,7 @@ async def schema_versioner() -> None:
                             pl.delete(key)
                         await pl.execute()
                     await redis.set(schema_key, schema.model_dump_json())
+                    redis_commands.labels("set").inc()
                     logger.info(f"{schema.id} set to {schema.model_dump_json()}")
             except ResponseError:
                 logger.error(

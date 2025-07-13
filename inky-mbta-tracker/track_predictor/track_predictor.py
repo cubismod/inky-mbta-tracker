@@ -9,6 +9,7 @@ import mbta_client
 import textdistance
 from async_lru import alru_cache
 from consts import DAY, MBTA_V3_ENDPOINT, MINUTE, WEEK
+from prometheus import redis_commands
 from pydantic import ValidationError
 from redis.asyncio.client import Redis
 from redis_cache import check_cache, write_cache
@@ -62,9 +63,11 @@ class TrackPredictor:
             await self.redis.zadd(
                 time_series_key, {key: assignment.scheduled_time.timestamp()}
             )
+            redis_commands.labels("zadd").inc()
 
             # Set expiration for time series (6 months)
             await self.redis.expire(time_series_key, 6 * 30 * DAY)
+            redis_commands.labels("expire").inc()
 
             logger.debug(
                 f"Stored track assignment: {assignment.station_id} {assignment.route_id} -> {assignment.track_number}"
@@ -103,6 +106,7 @@ class TrackPredictor:
             assignments = await self.redis.zrangebyscore(
                 time_series_key, start_date.timestamp(), end_date.timestamp()
             )
+            redis_commands.labels("zrangebyscore").inc()
 
             results = []
             for assignment_key in assignments:

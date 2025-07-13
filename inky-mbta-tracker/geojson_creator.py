@@ -169,11 +169,15 @@ async def create_json(config: Config) -> None:
                         delete_all_pos_data = False
                         now = datetime.now().astimezone(ZoneInfo("US/Eastern"))
                         if await r.scard("pos-data") > 500 and 4 > now.hour > 2:
+                            redis_commands.labels("scard").inc()
                             delete_all_pos_data = True
 
-                        for vehicle in await r.smembers("pos-data"):
+                        vehicles = await r.smembers("pos-data")
+                        redis_commands.labels("smembers").inc()
+                        for vehicle in vehicles:
                             if delete_all_pos_data:
                                 await r.srem("pos-data", vehicle)
+                                redis_commands.labels("srem").inc()
                             dec_v = vehicle.decode("utf-8")
                             if dec_v:
                                 await pl.get(vehicle)

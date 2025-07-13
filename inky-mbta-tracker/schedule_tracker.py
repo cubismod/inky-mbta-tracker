@@ -397,6 +397,7 @@ async def execute(
         await tracker.redis.zremrangebyscore(
             "time", "-inf", str(datetime.now().timestamp())
         )
+        redis_commands.labels("zremrangebyscore").inc()
     except ResponseError as err:
         logger.error("Unable to communicate with Redis", exc_info=err)
     await tracker.send_mqtt()
