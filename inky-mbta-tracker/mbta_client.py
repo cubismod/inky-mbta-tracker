@@ -503,19 +503,19 @@ class MBTAApi:
                                         hour=schedule_time.hour,
                                         minute=schedule_time.minute,
                                     )
-                                    if self.track_predictor:
-                                        await self.track_predictor.store_historical_assignment(
-                                            assignment
-                                        )
 
-                                        # Validate previous predictions
-                                        await self.track_predictor.validate_prediction(
-                                            assignment.station_id,
-                                            route_id,
-                                            trip_id,
-                                            schedule_time,
-                                            track_number,
-                                        )
+                                    await self.track_predictor.store_historical_assignment(
+                                        assignment
+                                    )
+
+                                    # Validate previous predictions
+                                    await self.track_predictor.validate_prediction(
+                                        assignment.station_id,
+                                        route_id,
+                                        trip_id,
+                                        schedule_time,
+                                        track_number,
+                                    )
 
                                 except (ConnectionError, TimeoutError) as e:
                                     logger.error(
