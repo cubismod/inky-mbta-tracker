@@ -891,7 +891,12 @@ async def watch_static_schedule(
     queue: Queue[ScheduleEvent | VehicleRedisSchema],
     transit_time_min: int,
     show_on_display: bool,
+    route_substring_filter: Optional[str] = None,
 ) -> None:
+    if route_substring_filter:
+        logger.info(
+            f"Watching station {stop_id} for route substring filter {route_substring_filter}"
+        )
     while True:
         async with aiohttp.ClientSession(MBTA_V3_ENDPOINT) as session:
             async with MBTAApi(
@@ -901,6 +906,7 @@ async def watch_static_schedule(
                 schedule_only=True,
                 watcher_type=EventType.SCHEDULES,
                 show_on_display=show_on_display,
+                route_substring_filter=route_substring_filter,
             ) as watcher:
                 await watcher.save_own_stop(session)
                 await watcher.save_schedule(transit_time_min, queue, session)
@@ -941,7 +947,12 @@ async def watch_station(
     transit_time_min: int,
     expiration_time: Optional[datetime],
     show_on_display: bool,
+    route_substring_filter: Optional[str] = None,
 ) -> None:
+    if route_substring_filter:
+        logger.info(
+            f"Watching station {stop_id} for route substring filter {route_substring_filter}"
+        )
     endpoint = (
         f"{MBTA_V3_ENDPOINT}/predictions?filter[stop]={stop_id}&api_key={MBTA_AUTH}"
     )
@@ -960,6 +971,7 @@ async def watch_station(
             expiration_time,
             watcher_type=EventType.PREDICTIONS,
             show_on_display=show_on_display,
+            route_substring_filter=route_substring_filter,
         ) as watcher:
             await watcher.save_own_stop(session)
             if watcher.stop:
@@ -983,6 +995,7 @@ def thread_runner(
     direction_filter: Optional[int] = None,
     expiration_time: Optional[datetime] = None,
     show_on_display: bool = True,
+    route_substring_filter: Optional[str] = None,
 ) -> None:
     with Runner() as runner:
         match target:
@@ -996,6 +1009,7 @@ def thread_runner(
                             queue,
                             transit_time_min,
                             show_on_display,
+                            route_substring_filter,
                         )
                     )
             case EventType.PREDICTIONS:
@@ -1008,6 +1022,7 @@ def thread_runner(
                         transit_time_min,
                         expiration_time,
                         show_on_display,
+                        route_substring_filter,
                     )
                 )
             case EventType.VEHICLES:
