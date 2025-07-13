@@ -283,6 +283,7 @@ async def create_json(config: Config) -> None:
                                                 "%Y-%m-%dT%H:%M:%S.000Z"
                                             ),
                                             "platform_prediction": platform_prediction,
+                                            "headsign": vehicle_info.headsign,
                                         },
                                     )
                                     features[f"v-{vehicle_info.id}"] = feature
