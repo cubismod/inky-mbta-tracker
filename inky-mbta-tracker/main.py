@@ -12,7 +12,6 @@ from typing import Optional
 from zoneinfo import ZoneInfo
 
 import click
-import yappi
 from config import StopSetup, load_config
 from dotenv import load_dotenv
 from geojson_creator import run
@@ -138,10 +137,6 @@ def start_thread(  # type: ignore
 async def __main__() -> None:
     config = load_config()
 
-    profile_dir = os.getenv("IMT_PROFILE_DIR")
-    start_time = datetime.now().astimezone(ZoneInfo("US/Eastern"))
-    if profile_dir:
-        yappi.start()
 
     queue = Queue[ScheduleEvent | VehicleRedisSchema]()
     tasks = list[TaskTracker]()
@@ -180,7 +175,6 @@ async def __main__() -> None:
         geojson_thr.start()
         tasks.append(TaskTracker(geojson_thr, stop=None, event_type=EventType.OTHER))
 
-    next_profile_time = datetime.now().astimezone(UTC) + timedelta(seconds=10)
     while True:
         running_threads.set(len(tasks))
         await sleep(30)
@@ -211,39 +205,6 @@ async def __main__() -> None:
                         )
                         if thr:
                             tasks.append(thr)
-        if profile_dir and datetime.now().astimezone(UTC) > next_profile_time:
-            if not yappi.is_running():
-                yappi.start()
-                start_time = datetime.now().astimezone(ZoneInfo("US/Eastern"))
-                logging.info("started profiling")
-            await sleep(300)
-            yappi.stop()
-            logging.info("stopped profiling")
-            end_time = datetime.now().astimezone(ZoneInfo("US/Eastern"))
-
-            file_uuid = uuid.UUID(int=getrandbits(128), version=4)
-
-            with open(Path(profile_dir) / f"{file_uuid}-profile.txt", "w") as f:
-                f.write(f"{start_time.strftime('%c')} to {end_time.strftime('%c')}")
-                threads = yappi.get_thread_stats()
-                threads.sort("ttot", "desc").print_all(out=f)
-
-                for thread in threads.sort("id", "asc"):
-                    stats = yappi.get_func_stats(
-                        ctx_id=thread.id,
-                        filter_callback=lambda x: "lib" not in x.module,
-                    )
-                    if len(stats) > 0:
-                        f.write(f"\nStats for Thread {thread.id} {thread.name}")
-                        stats.print_all(out=f)
-                next_profile_time = datetime.now().astimezone(UTC) + timedelta(
-                    minutes=randint(30, 60)
-                )
-
-            all_stats = yappi.get_func_stats()
-            all_stats.save(Path(profile_dir) / f"{file_uuid}.out", "callgrind")
-
-            yappi.clear_stats()
 
 
 @click.command()
