@@ -196,6 +196,7 @@ class MBTAApi:
     r_client: Redis
     track_predictor: TrackPredictor
     show_on_display: bool = True
+    route_substring_filter: Optional[str] = None
 
     def __init__(
         self,
@@ -207,6 +208,7 @@ class MBTAApi:
         schedule_only: bool = False,
         watcher_type: EventType = EventType.PREDICTIONS,
         show_on_display: bool = True,
+        route_substring_filter: Optional[str] = None,
     ):
         self.stop_id = stop_id
         self.route = route
@@ -225,6 +227,7 @@ class MBTAApi:
         )
         self.track_predictor = TrackPredictor()
         self.show_on_display = show_on_display
+        self.route_substring_filter = route_substring_filter
 
     async def __aenter__(self) -> "MBTAApi":
         return self
@@ -435,6 +438,14 @@ class MBTAApi:
     ) -> None:
         if isinstance(item, PredictionResource) or isinstance(item, ScheduleResource):
             schedule_time = self.determine_time(item.attributes)
+            if (
+                self.route_substring_filter
+                and self.route_substring_filter not in item.relationships.route.data.id
+            ):
+                logger.debug(
+                    f"Skipping event for route {item.relationships.route.data.id} because it doesn't match substring filter {self.route_substring_filter}"
+                )
+                return
             if schedule_time and schedule_time > datetime.now().astimezone(UTC):
                 await self.save_route(item, session)
                 if (

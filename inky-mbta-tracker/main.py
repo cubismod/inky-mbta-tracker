@@ -87,6 +87,7 @@ def start_thread(  # type: ignore
                         "queue": queue,
                         "transit_time_min": stop.transit_time_min,
                         "show_on_display": stop.show_on_display,
+                        "route_substring_filter": stop.route_substring_filter,
                     },
                     name=f"{stop.route_filter}_{stop.stop_id}_schedules",
                 )
@@ -104,6 +105,7 @@ def start_thread(  # type: ignore
                         "route": stop.route_filter,
                         "direction_filter": direction_filter,
                         "expiration_time": exp_time,
+                        "route_substring_filter": stop.route_substring_filter,
                     },
                     name=f"{stop.route_filter}_{stop.stop_id}_predictions",
                 )
