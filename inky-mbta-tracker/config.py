@@ -12,6 +12,7 @@ class StopSetup(BaseModel):
     transit_time_min: int
     schedule_only: bool = Field(default=False)
     show_on_display: bool = Field(default=True)
+    route_substring_filter: Optional[str] = None
 
 
 class Config(BaseModel):
