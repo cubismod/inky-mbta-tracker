@@ -492,10 +492,7 @@ class MBTAApi:
                         )
                         if stop_data[0]:  # stop_data is a tuple (Stop, Facilities)
                             stop_info = stop_data[0]
-                            track_number = (
-                                stop_info.data.attributes.platform_code
-                                or stop_info.data.attributes.platform_name
-                            )
+                            track_number = stop_info.data.attributes.platform_code
 
                             # For commuter rail, store historical assignment and generate prediction
                             if route_id.startswith("CR") and (track_number):
