@@ -94,13 +94,6 @@ The track prediction system analyzes historical track assignments to predict fut
 
 Track predictions are automatically integrated into the existing display system:
 
-- **MQTT Messages**: Track information is included in MQTT messages with indicators like:
-  - `🚂 Track 5` - Confirmed track assignment
-  - `🎯 Track 3?` - High confidence prediction (>80%)
-  - `📊 Track 7?` - Medium confidence prediction (60-80%)
-  - `🔮 Track 2?` - Low confidence prediction (30-60%)
-  - `🔍 Track TBD` - No prediction available yet
-
 - **API Access**: Use the track prediction API to get detailed information:
 
   ```bash
