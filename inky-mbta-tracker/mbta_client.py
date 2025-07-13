@@ -194,7 +194,7 @@ class MBTAApi:
     facilities: Optional[Facilities]
     expiration_time: Optional[datetime]
     r_client: Redis
-    track_predictor: Optional[TrackPredictor]
+    track_predictor: TrackPredictor
     show_on_display: bool = True
 
     def __init__(
@@ -223,7 +223,7 @@ class MBTAApi:
             port=int(os.environ.get("IMT_REDIS_PORT", "6379")),
             password=os.environ.get("IMT_REDIS_PASSWORD", ""),
         )
-        self.track_predictor = None
+        self.track_predictor = TrackPredictor()
         self.show_on_display = show_on_display
 
     async def __aenter__(self) -> "MBTAApi":
