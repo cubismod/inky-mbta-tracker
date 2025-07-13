@@ -440,6 +440,9 @@ class MBTAApi:
             schedule_time = self.determine_time(item.attributes)
             if (
                 self.route_substring_filter
+                and item.relationships
+                and item.relationships.route
+                and item.relationships.route.data
                 and self.route_substring_filter not in item.relationships.route.data.id
             ):
                 logger.debug(
