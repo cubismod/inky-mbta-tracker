@@ -11,7 +11,13 @@ from zoneinfo import ZoneInfo
 import humanize
 from geojson import Feature, Point
 from paho.mqtt import MQTTException, publish
-from prometheus import redis_commands, schedule_events, vehicle_events, vehicle_speeds
+from prometheus import (
+    queue_size,
+    redis_commands,
+    schedule_events,
+    vehicle_events,
+    vehicle_speeds,
+)
 from pydantic import ValidationError
 from redis import ResponseError
 from redis.asyncio.client import Pipeline, Redis
@@ -386,6 +392,7 @@ async def execute(
     tracker: Tracker, queue: Queue[ScheduleEvent] | Queue[VehicleRedisSchema]
 ) -> None:
     pipeline = tracker.redis.pipeline()
+    queue_size.set(queue.qsize())
     while queue.qsize() != 0:
         try:
             item = queue.get()
