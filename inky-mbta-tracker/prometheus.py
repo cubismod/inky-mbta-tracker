@@ -23,3 +23,7 @@ running_threads = Gauge("imt_active_threads", "Active Threads")
 redis_commands = Gauge("imt_redis_cmds", "Redis commands made", ["name"])
 
 queue_size = Gauge("imt_queue_size", "Schedule/vehicle queue size")
+
+queue_processed_item = Gauge(
+    "imt_queue_processed_item", "Queue processed item", ["item_type"]
+)
