@@ -143,12 +143,20 @@ async def __main__() -> None:
 
     start_http_server(int(os.getenv("IMT_PROM_PORT", "8000")))
 
-    process_thr = threading.Thread(
-        target=process_queue, daemon=True, args=[queue], name="event_processor"
-    )
-    process_thr.start()
+    process_threads: list[threading.Thread] = list()
+    for i in range(int(os.getenv("IMT_PROCESS_QUEUE_THREADS", "1"))):
+        process_threads.append(
+            threading.Thread(
+                target=process_queue,
+                daemon=True,
+                args=[queue],
+                name=f"event_processor_{i}",
+            )
+        )
+        process_threads[i].start()
 
-    tasks.append(TaskTracker(process_thr, stop=None, event_type=EventType.OTHER))
+    for process_thread in process_threads:
+        tasks.append(TaskTracker(process_thread, stop=None, event_type=EventType.OTHER))
     for stop in config.stops:
         if stop.schedule_only:
             thr = start_thread(EventType.SCHEDULES, stop=stop, queue=queue)

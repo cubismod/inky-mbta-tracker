@@ -1,5 +1,6 @@
 import logging
 import os
+import random
 import time
 from asyncio import QueueEmpty, Runner
 from datetime import UTC, datetime, timedelta
@@ -412,4 +413,4 @@ def process_queue(queue: Queue[ScheduleEvent]) -> None:
     with Runner() as runner:
         while True:
             runner.run(execute(tracker, queue))
-            time.sleep(10)
+            time.sleep(random.randint(10, 20))
