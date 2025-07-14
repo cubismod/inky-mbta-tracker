@@ -571,27 +571,28 @@ class MBTAApi:
                                         f"Failed to generate track prediction due to validation error: {e}",
                                         exc_info=True,
                                     )
-
-                    # drop events that have the same stop & headsign as that train cannot be
-                    # immediately boarded in most cases so there is no sense in showing it as a departure
                     if self.stop and headsign == self.stop.data.attributes.name:
-                        event = ScheduleEvent(
-                            action=event_type,
-                            time=schedule_time,
-                            route_id=route_id,
-                            route_type=route_type,
-                            headsign=self.abbreviate(headsign),
-                            id=item.id.replace("-", ":"),
-                            stop=self.abbreviate(stop_name),
-                            transit_time_min=transit_time_min,
-                            trip_id=trip_id,
-                            alerting=alerting,
-                            bikes_allowed=bikes_allowed,
-                            track_number=track_number,
-                            track_confidence=track_confidence,
-                            show_on_display=self.show_on_display,
+                        logger.debug(
+                            f"Skipping event for route {route_id} {headsign} because it has the same stop and headsign as the current stop"
                         )
-                        queue.put(event)
+                        return
+                    event = ScheduleEvent(
+                        action=event_type,
+                        time=schedule_time,
+                        route_id=route_id,
+                        route_type=route_type,
+                        headsign=self.abbreviate(headsign),
+                        id=item.id.replace("-", ":"),
+                        stop=self.abbreviate(stop_name),
+                        transit_time_min=transit_time_min,
+                        trip_id=trip_id,
+                        alerting=alerting,
+                        bikes_allowed=bikes_allowed,
+                        track_number=track_number,
+                        track_confidence=track_confidence,
+                        show_on_display=self.show_on_display,
+                    )
+                    queue.put(event)
         else:
             occupancy = item.attributes.occupancy_status
             carriage_ids = list[str]()
