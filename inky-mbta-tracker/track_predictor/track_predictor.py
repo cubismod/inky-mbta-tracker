@@ -378,6 +378,10 @@ class TrackPredictor:
             )
             logger.debug(f"Historical matches={historical_matches}")
 
+            if not best_track.isdigit():
+                logger.debug(f"Discarding non-digit track {best_track}")
+                return None
+
             # Create prediction
             prediction = TrackPrediction(
                 station_id=station_id,
