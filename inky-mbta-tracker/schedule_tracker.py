@@ -12,6 +12,7 @@ import humanize
 from geojson import Feature, Point
 from paho.mqtt import MQTTException, publish
 from prometheus import (
+    queue_processed_item,
     queue_size,
     redis_commands,
     schedule_events,
@@ -397,6 +398,10 @@ async def execute(
         try:
             item = queue.get()
             await tracker.process_queue_item(item, pipeline)
+            if isinstance(item, ScheduleEvent):
+                queue_processed_item.labels("schedule").inc()
+            if isinstance(item, VehicleRedisSchema):
+                queue_processed_item.labels("vehicle").inc()
         except QueueEmpty:
             break
     await tracker.cleanup(pipeline)
