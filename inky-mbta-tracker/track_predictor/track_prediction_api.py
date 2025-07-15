@@ -3,11 +3,11 @@ import os
 from datetime import datetime, timedelta
 from typing import List
 
-from prometheus_fastapi_instrumentator import Instrumentator
 import uvicorn
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from mbta_client import determine_station_id
+from prometheus_fastapi_instrumentator import Instrumentator
 from pydantic import BaseModel, ValidationError
 from shared_types.shared_types import TrackAssignment, TrackPrediction
 
@@ -43,7 +43,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-instrumenter = Instrumentator().instrument(app).expose(app) 
+instrumenter = Instrumentator().instrument(app).expose(app)
 
 
 # Initialize track predictor
