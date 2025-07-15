@@ -3,7 +3,6 @@ import os
 from asyncio import CancelledError, Runner, sleep
 from collections import Counter
 from datetime import UTC, datetime, timedelta
-from enum import Enum
 from queue import Queue
 from random import randint
 from types import TracebackType
@@ -15,6 +14,7 @@ from aiohttp import ClientSession
 from aiosseclient import aiosseclient
 from consts import DAY, FOUR_WEEKS, MBTA_V3_ENDPOINT, TWO_MONTHS, YEAR
 from exceptions import RateLimitExceeded
+from main import TrackerType
 from mbta_responses import (
     AlertResource,
     Alerts,
@@ -53,13 +53,6 @@ from track_predictor.track_predictor import TrackPredictor
 MBTA_AUTH = os.environ.get("AUTH_TOKEN")
 logger = logging.getLogger(__name__)
 SHAPE_POLYLINES = set[str]()
-
-
-class EventType(Enum):
-    OTHER = -1
-    PREDICTIONS = 0
-    SCHEDULES = 1
-    VEHICLES = 2
 
 
 class LightStop(BaseModel):
@@ -144,7 +137,7 @@ async def light_get_stop(
         except ValidationError as err:
             logger.error("unable to validate json", exc_info=err)
     ls = None
-    async with MBTAApi(stop_id=stop_id, watcher_type=EventType.OTHER) as watcher:
+    async with MBTAApi(stop_id=stop_id, watcher_type=TrackerType.LIGHT_STOP) as watcher:
         # avoid rate-limiting by spacing out requests
         await sleep(randint(1, 3))
         stop = await watcher.get_stop(session, stop_id)
@@ -168,7 +161,7 @@ async def light_get_stop(
 async def light_get_alerts(
     route_id: str, session: ClientSession
 ) -> Optional[list[AlertResource]]:
-    async with MBTAApi(route=route_id, watcher_type=EventType.VEHICLES) as watcher:
+    async with MBTAApi(route=route_id, watcher_type=TrackerType.VEHICLES) as watcher:
         alerts = await watcher.get_alerts(session, route_id=route_id)
         if alerts:
             return alerts
@@ -184,7 +177,7 @@ class MBTAApi:
     can also be used as a general API client. Utilizes Redis for caching.
     """
 
-    watcher_type: EventType
+    watcher_type: TrackerType
     stop_id: Optional[str]
     route: Optional[str]
     direction_filter: Optional[int]
@@ -206,7 +199,7 @@ class MBTAApi:
         expiration_time: Optional[datetime] = None,
         route_type: Optional[str] = None,
         schedule_only: bool = False,
-        watcher_type: EventType = EventType.PREDICTIONS,
+        watcher_type: TrackerType = TrackerType.SCHEDULE_PREDICTIONS,
         show_on_display: bool = True,
         route_substring_filter: Optional[str] = None,
     ):
@@ -277,8 +270,8 @@ class MBTAApi:
             match event_type:
                 case "reset":
                     if (
-                        self.watcher_type == EventType.PREDICTIONS
-                        or self.watcher_type == EventType.SCHEDULES
+                        self.watcher_type == TrackerType.SCHEDULE_PREDICTIONS
+                        or self.watcher_type == TrackerType.SCHEDULES
                     ):
                         ta = TypeAdapter(list[PredictionResource])
                         prediction_resource = ta.validate_json(data, strict=False)
@@ -304,8 +297,8 @@ class MBTAApi:
 
                 case "add":
                     if (
-                        self.watcher_type == EventType.PREDICTIONS
-                        or self.watcher_type == EventType.SCHEDULES
+                        self.watcher_type == TrackerType.SCHEDULE_PREDICTIONS
+                        or self.watcher_type == TrackerType.SCHEDULES
                     ):
                         await self.queue_event(
                             PredictionResource.model_validate_json(data, strict=False),
@@ -319,8 +312,8 @@ class MBTAApi:
                         await self.queue_event(vehicle, event_type, queue, session)
                 case "update":
                     if (
-                        self.watcher_type == EventType.PREDICTIONS
-                        or self.watcher_type == EventType.SCHEDULES
+                        self.watcher_type == TrackerType.SCHEDULE_PREDICTIONS
+                        or self.watcher_type == TrackerType.SCHEDULES
                     ):
                         await self.queue_event(
                             PredictionResource.model_validate_json(data, strict=False),
@@ -336,8 +329,8 @@ class MBTAApi:
                     type_and_id = TypeAndID.model_validate_json(data, strict=False)
                     # directly interact with the queue here to use a dummy object
                     if (
-                        self.watcher_type == EventType.PREDICTIONS
-                        or self.watcher_type == EventType.SCHEDULES
+                        self.watcher_type == TrackerType.SCHEDULE_PREDICTIONS
+                        or self.watcher_type == TrackerType.SCHEDULES
                     ):
                         queue.put(dummy_schedule_event(type_and_id.id))
                     else:
@@ -904,7 +897,7 @@ async def watch_static_schedule(
                 route=route,
                 direction_filter=direction,
                 schedule_only=True,
-                watcher_type=EventType.SCHEDULES,
+                watcher_type=TrackerType.SCHEDULES,
                 show_on_display=show_on_display,
                 route_substring_filter=route_substring_filter,
             ) as watcher:
@@ -929,7 +922,7 @@ async def watch_vehicles(
     headers = {"accept": "text/event-stream"}
     async with MBTAApi(
         route=route_id,
-        watcher_type=EventType.VEHICLES,
+        watcher_type=TrackerType.VEHICLES,
         expiration_time=expiration_time,
     ) as watcher:
         async with aiohttp.ClientSession(MBTA_V3_ENDPOINT) as session:
@@ -969,7 +962,7 @@ async def watch_station(
             route,
             direction_filter,
             expiration_time,
-            watcher_type=EventType.PREDICTIONS,
+            watcher_type=TrackerType.SCHEDULE_PREDICTIONS,
             show_on_display=show_on_display,
             route_substring_filter=route_substring_filter,
         ) as watcher:
@@ -987,7 +980,7 @@ async def watch_station(
 
 
 def thread_runner(
-    target: EventType,
+    target: TrackerType,
     queue: Queue[ScheduleEvent | VehicleRedisSchema],
     transit_time_min: int = 0,
     stop_id: Optional[str] = None,
@@ -999,7 +992,7 @@ def thread_runner(
 ) -> None:
     with Runner() as runner:
         match target:
-            case EventType.SCHEDULES:
+            case TrackerType.SCHEDULES:
                 if stop_id:
                     runner.run(
                         watch_static_schedule(
@@ -1012,7 +1005,7 @@ def thread_runner(
                             route_substring_filter,
                         )
                     )
-            case EventType.PREDICTIONS:
+            case TrackerType.SCHEDULE_PREDICTIONS:
                 runner.run(
                     watch_station(
                         stop_id or "place-sstat",
@@ -1025,7 +1018,7 @@ def thread_runner(
                         route_substring_filter,
                     )
                 )
-            case EventType.VEHICLES:
+            case TrackerType.VEHICLES:
                 runner.run(
                     watch_vehicles(
                         queue,
