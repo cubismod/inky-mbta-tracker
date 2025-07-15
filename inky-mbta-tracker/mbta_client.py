@@ -39,7 +39,7 @@ from pydantic import BaseModel, TypeAdapter, ValidationError
 from redis.asyncio.client import Redis
 from redis_cache import check_cache, write_cache
 from schedule_tracker import ScheduleEvent, VehicleRedisSchema, dummy_schedule_event
-from shared_types.shared_types import TrackAssignment, TrackAssignmentType, TrackerType
+from shared_types.shared_types import TaskType, TrackAssignment, TrackAssignmentType
 from tenacity import (
     before_log,
     before_sleep_log,
@@ -136,7 +136,7 @@ async def light_get_stop(
         except ValidationError as err:
             logger.error("unable to validate json", exc_info=err)
     ls = None
-    async with MBTAApi(stop_id=stop_id, watcher_type=TrackerType.LIGHT_STOP) as watcher:
+    async with MBTAApi(stop_id=stop_id, watcher_type=TaskType.LIGHT_STOP) as watcher:
         # avoid rate-limiting by spacing out requests
         await sleep(randint(1, 3))
         stop = await watcher.get_stop(session, stop_id)
@@ -160,7 +160,7 @@ async def light_get_stop(
 async def light_get_alerts(
     route_id: str, session: ClientSession
 ) -> Optional[list[AlertResource]]:
-    async with MBTAApi(route=route_id, watcher_type=TrackerType.VEHICLES) as watcher:
+    async with MBTAApi(route=route_id, watcher_type=TaskType.VEHICLES) as watcher:
         alerts = await watcher.get_alerts(session, route_id=route_id)
         if alerts:
             return alerts
@@ -176,7 +176,7 @@ class MBTAApi:
     can also be used as a general API client. Utilizes Redis for caching.
     """
 
-    watcher_type: TrackerType
+    watcher_type: TaskType
     stop_id: Optional[str]
     route: Optional[str]
     direction_filter: Optional[int]
@@ -197,7 +197,7 @@ class MBTAApi:
         direction_filter: Optional[int] = None,
         expiration_time: Optional[datetime] = None,
         schedule_only: bool = False,
-        watcher_type: TrackerType = TrackerType.SCHEDULE_PREDICTIONS,
+        watcher_type: TaskType = TaskType.SCHEDULE_PREDICTIONS,
         show_on_display: bool = True,
         route_substring_filter: Optional[str] = None,
     ):
@@ -281,8 +281,8 @@ class MBTAApi:
             match event_type:
                 case "reset":
                     if (
-                        self.watcher_type == TrackerType.SCHEDULE_PREDICTIONS
-                        or self.watcher_type == TrackerType.SCHEDULES
+                        self.watcher_type == TaskType.SCHEDULE_PREDICTIONS
+                        or self.watcher_type == TaskType.SCHEDULES
                     ):
                         ta = TypeAdapter(list[PredictionResource])
                         prediction_resource = ta.validate_json(data, strict=False)
@@ -308,8 +308,8 @@ class MBTAApi:
 
                 case "add":
                     if (
-                        self.watcher_type == TrackerType.SCHEDULE_PREDICTIONS
-                        or self.watcher_type == TrackerType.SCHEDULES
+                        self.watcher_type == TaskType.SCHEDULE_PREDICTIONS
+                        or self.watcher_type == TaskType.SCHEDULES
                     ):
                         await self.queue_event(
                             PredictionResource.model_validate_json(data, strict=False),
@@ -323,8 +323,8 @@ class MBTAApi:
                         await self.queue_event(vehicle, event_type, queue, session)
                 case "update":
                     if (
-                        self.watcher_type == TrackerType.SCHEDULE_PREDICTIONS
-                        or self.watcher_type == TrackerType.SCHEDULES
+                        self.watcher_type == TaskType.SCHEDULE_PREDICTIONS
+                        or self.watcher_type == TaskType.SCHEDULES
                     ):
                         await self.queue_event(
                             PredictionResource.model_validate_json(data, strict=False),
@@ -340,8 +340,8 @@ class MBTAApi:
                     type_and_id = TypeAndID.model_validate_json(data, strict=False)
                     # directly interact with the queue here to use a dummy object
                     if (
-                        self.watcher_type == TrackerType.SCHEDULE_PREDICTIONS
-                        or self.watcher_type == TrackerType.SCHEDULES
+                        self.watcher_type == TaskType.SCHEDULE_PREDICTIONS
+                        or self.watcher_type == TaskType.SCHEDULES
                     ):
                         queue.put(dummy_schedule_event(type_and_id.id))
                     else:
@@ -908,7 +908,7 @@ async def watch_static_schedule(
                 route=route,
                 direction_filter=direction,
                 schedule_only=True,
-                watcher_type=TrackerType.SCHEDULES,
+                watcher_type=TaskType.SCHEDULES,
                 show_on_display=show_on_display,
                 route_substring_filter=route_substring_filter,
             ) as watcher:
@@ -933,7 +933,7 @@ async def watch_vehicles(
     headers = {"accept": "text/event-stream"}
     async with MBTAApi(
         route=route_id,
-        watcher_type=TrackerType.VEHICLES,
+        watcher_type=TaskType.VEHICLES,
         expiration_time=expiration_time,
     ) as watcher:
         async with aiohttp.ClientSession(MBTA_V3_ENDPOINT) as session:
@@ -973,7 +973,7 @@ async def watch_station(
             route,
             direction_filter,
             expiration_time,
-            watcher_type=TrackerType.SCHEDULE_PREDICTIONS,
+            watcher_type=TaskType.SCHEDULE_PREDICTIONS,
             show_on_display=show_on_display,
             route_substring_filter=route_substring_filter,
         ) as watcher:
@@ -991,7 +991,7 @@ async def watch_station(
 
 
 def thread_runner(
-    target: TrackerType,
+    target: TaskType,
     queue: Queue[ScheduleEvent | VehicleRedisSchema],
     transit_time_min: int = 0,
     stop_id: Optional[str] = None,
@@ -1003,7 +1003,7 @@ def thread_runner(
 ) -> None:
     with Runner() as runner:
         match target:
-            case TrackerType.SCHEDULES:
+            case TaskType.SCHEDULES:
                 if stop_id:
                     runner.run(
                         watch_static_schedule(
@@ -1016,7 +1016,7 @@ def thread_runner(
                             route_substring_filter,
                         )
                     )
-            case TrackerType.SCHEDULE_PREDICTIONS:
+            case TaskType.SCHEDULE_PREDICTIONS:
                 runner.run(
                     watch_station(
                         stop_id or "place-sstat",
@@ -1029,7 +1029,7 @@ def thread_runner(
                         route_substring_filter,
                     )
                 )
-            case TrackerType.VEHICLES:
+            case TaskType.VEHICLES:
                 runner.run(
                     watch_vehicles(
                         queue,
