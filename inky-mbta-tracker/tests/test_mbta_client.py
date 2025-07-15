@@ -41,26 +41,26 @@ class TestSilverLineLookup:
 
 class TestDetermineStationId:
     def test_north_station_variants(self) -> None:
-        assert determine_station_id("North Station") == "place-north"
-        assert determine_station_id("BNT") == "place-north"
+        assert determine_station_id("North Station") == ("place-north", True)
+        assert determine_station_id("BNT") == ("place-north", True)
 
     def test_south_station_variants(self) -> None:
-        assert determine_station_id("South Station") == "place-sstat"
-        assert determine_station_id("NEC-2287") == "place-sstat"
+        assert determine_station_id("South Station") == ("place-sstat", True)
+        assert determine_station_id("NEC-2287") == ("place-sstat", True)
 
     def test_back_bay_variants(self) -> None:
-        assert determine_station_id("Back Bay") == "place-bbsta"
-        assert determine_station_id("NEC-1851") == "place-bbsta"
+        assert determine_station_id("Back Bay") == ("place-bbsta", True)
+        assert determine_station_id("NEC-1851") == ("place-bbsta", True)
 
     def test_ruggles_variants(self) -> None:
-        assert determine_station_id("Ruggles") == "place-rugg"
-        assert determine_station_id("NEC-2265") == "place-rugg"
+        assert determine_station_id("Ruggles") == ("place-rugg", True)
+        assert determine_station_id("NEC-2265") == ("place-rugg", True)
 
     def test_providence_variants(self) -> None:
-        assert determine_station_id("Providence") == "place-NEC-1851"
+        assert determine_station_id("Providence") == ("place-NEC-1851", True)
 
     def test_unknown_station(self) -> None:
-        assert determine_station_id("place-davis") == "place-davis"
+        assert determine_station_id("place-davis") == ("place-davis", False)
 
 
 class TestParseShapeData:
