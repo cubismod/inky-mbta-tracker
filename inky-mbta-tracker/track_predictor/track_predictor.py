@@ -1,5 +1,6 @@
 import logging
 import os
+import time
 from collections import defaultdict
 from datetime import UTC, datetime, timedelta
 from typing import Dict, List, Optional
@@ -10,7 +11,15 @@ import shared_types.shared_types
 import textdistance
 from async_lru import alru_cache
 from consts import DAY, MBTA_V3_ENDPOINT, MINUTE, WEEK
-from prometheus import redis_commands
+from prometheus import (
+    redis_commands,
+    track_historical_assignments_stored,
+    track_pattern_analysis_duration,
+    track_prediction_confidence,
+    track_predictions_cached,
+    track_predictions_generated,
+    track_predictions_validated,
+)
 from pydantic import ValidationError
 from redis.asyncio.client import Redis
 from redis_cache import check_cache, write_cache
@@ -69,6 +78,10 @@ class TrackPredictor:
             # Set expiration for time series (6 months)
             await self.redis.expire(time_series_key, 6 * 30 * DAY)
             redis_commands.labels("expire").inc()
+
+            track_historical_assignments_stored.labels(
+                station_id=assignment.station_id, route_id=assignment.route_id
+            ).inc()
 
             logger.debug(
                 f"Stored track assignment: {assignment.station_id} {assignment.route_id} -> {assignment.track_number}"
@@ -158,6 +171,8 @@ class TrackPredictor:
             Dictionary mapping track identifiers to probability scores
         """
         try:
+            start_time = time.time()
+
             # Look back 3 months for historical data
             start_date = scheduled_time - timedelta(days=90)
             end_date = scheduled_time
@@ -262,11 +277,25 @@ class TrackPredictor:
                     f"Calculated pattern for station_id={station_id}, route_id={route_id}, trip_id={trip_headsign}, direction_id={direction_id}"
                 )
                 logger.debug(f"Total score={total_score}, total={total}")
+
+                # Record analysis duration
+                duration = time.time() - start_time
+                track_pattern_analysis_duration.labels(
+                    station_id=station_id, route_id=route_id
+                ).set(duration)
+
                 return total
 
             logger.debug(
                 f"No patterns found for station_id={station_id}, route_id={route_id}, trip_id={trip_headsign}, direction_id={direction_id}, scheduled_time={scheduled_time}"
             )
+
+            # Record analysis duration even for no patterns
+            duration = time.time() - start_time
+            track_pattern_analysis_duration.labels(
+                station_id=station_id, route_id=route_id
+            ).set(duration)
+
             return {}
 
         except (ConnectionError, TimeoutError) as e:
@@ -311,6 +340,15 @@ class TrackPredictor:
             if not route_id.startswith("CR"):
                 return None
 
+            # Check if this is a cache hit
+            cache_key = f"track_prediction_cache:{station_id}:{route_id}:{trip_id}:{scheduled_time.date()}"
+            cached_prediction = await check_cache(self.redis, cache_key)
+            if cached_prediction:
+                track_predictions_cached.labels(
+                    station_id=station_id, route_id=route_id
+                ).inc()
+                return TrackPrediction.model_validate_json(cached_prediction)
+
             # it makes more sense to get the headsign client-side using the exact trip_id due to API rate limits
             async with aiohttp.ClientSession(MBTA_V3_ENDPOINT) as session:
                 async with mbta_client.MBTAApi(
@@ -322,7 +360,7 @@ class TrackPredictor:
                     stop_data = await api.get_stop(session, station_id)
                     if stop_data[0] and stop_data[0].data.attributes.platform_code:
                         # confirmed from the MBTA that this is the platform code
-                        return TrackPrediction(
+                        prediction = TrackPrediction(
                             station_id=station_id,
                             route_id=route_id,
                             trip_id=trip_id,
@@ -335,6 +373,20 @@ class TrackPredictor:
                             historical_matches=0,
                             created_at=datetime.now(UTC),
                         )
+
+                        track_predictions_generated.labels(
+                            station_id=station_id,
+                            route_id=route_id,
+                            prediction_method="platform_code",
+                        ).inc()
+
+                        track_prediction_confidence.labels(
+                            station_id=station_id,
+                            route_id=route_id,
+                            track_number=prediction.track_number,
+                        ).set(1.0)
+
+                        return prediction
 
             # Analyze patterns
             patterns = await self.analyze_patterns(
@@ -397,6 +449,16 @@ class TrackPredictor:
                 historical_matches=historical_matches,
                 created_at=datetime.now(UTC),
             )
+
+            # Record metrics
+            track_predictions_generated.labels(
+                station_id=station_id, route_id=route_id, prediction_method=method
+            ).inc()
+
+            track_prediction_confidence.labels(
+                station_id=station_id, route_id=route_id, track_number=best_track
+            ).set(confidence)
+
             # Store prediction for later validation
             await self._store_prediction(prediction)
 
@@ -466,6 +528,12 @@ class TrackPredictor:
             await self._update_prediction_stats(
                 station_id, route_id, is_correct, prediction.confidence_score
             )
+
+            # Record validation metric
+            result = "correct" if is_correct else "incorrect"
+            track_predictions_validated.labels(
+                station_id=station_id, route_id=route_id, result=result
+            ).inc()
 
             logger.info(
                 f"Validated prediction for {station_id} {route_id}: {'CORRECT' if is_correct else 'INCORRECT'}"
