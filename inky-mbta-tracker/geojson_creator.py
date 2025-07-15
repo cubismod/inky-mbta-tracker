@@ -228,12 +228,16 @@ async def create_json(config: Config) -> None:
                                                         Feature(geometry=point),
                                                         vehicle_info.speed,
                                                     )
-                                            if vehicle_info.route.startswith("CR"):
+                                            station_id, has_track_predictions = (
+                                                determine_station_id(stop_id)
+                                            )
+                                            if (
+                                                vehicle_info.route.startswith("CR")
+                                                and has_track_predictions
+                                            ):
                                                 track_predictor = TrackPredictor()
                                                 prediction = await track_predictor.predict_track(
-                                                    station_id=determine_station_id(
-                                                        stop_id
-                                                    ),
+                                                    station_id=station_id,
                                                     route_id=vehicle_info.route,
                                                     trip_id=f"{vehicle_info.route}:{vehicle_info.id}",
                                                     headsign=vehicle_info.headsign,

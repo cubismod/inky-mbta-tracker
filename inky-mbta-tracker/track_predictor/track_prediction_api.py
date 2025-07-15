@@ -3,6 +3,7 @@ import os
 from datetime import datetime, timedelta
 from typing import List
 
+from prometheus_fastapi_instrumentator import Instrumentator
 import uvicorn
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -25,6 +26,8 @@ logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO"),
     format="%(levelname)-8s %(message)s",
 )
+
+
 app = FastAPI(
     title="MBTA Track Prediction API",
     description="API for predicting commuter rail track assignments",
@@ -39,6 +42,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+instrumenter = Instrumentator().instrument(app).expose(app) 
+
 
 # Initialize track predictor
 track_predictor = TrackPredictor()
@@ -73,8 +79,14 @@ async def generate_track_prediction(
     Generate a track prediction based on historical data.
     """
     try:
+        station_id, has_track_predictions = determine_station_id(station_id)
+        if not has_track_predictions:
+            return TrackPredictionResponse(
+                success=False,
+                prediction="Predictions are not available for this station",
+            )
         prediction = await track_predictor.predict_track(
-            station_id=determine_station_id(station_id),
+            station_id=station_id,
             route_id=route_id,
             trip_id=trip_id,
             headsign=headsign,
@@ -114,9 +126,13 @@ async def get_prediction_stats(
     Get prediction statistics for a station and route.
     """
     try:
-        stats = await track_predictor.get_prediction_stats(
-            determine_station_id(station_id), route_id
-        )
+        station_id, has_track_predictions = determine_station_id(station_id)
+        if not has_track_predictions:
+            return TrackPredictionStatsResponse(
+                success=False,
+                stats="Prediction stats are not available for this station",
+            )
+        stats = await track_predictor.get_prediction_stats(station_id, route_id)
 
         if stats:
             return TrackPredictionStatsResponse(
@@ -155,9 +171,11 @@ async def get_historical_assignments(
     try:
         end_date = datetime.now()
         start_date = end_date - timedelta(days=days)
-
+        station_id, has_track_predictions = determine_station_id(station_id)
+        if not has_track_predictions:
+            return []
         assignments = await track_predictor.get_historical_assignments(
-            determine_station_id(station_id), route_id, start_date, end_date
+            station_id, route_id, start_date, end_date
         )
 
         return [assignment for assignment in assignments]
