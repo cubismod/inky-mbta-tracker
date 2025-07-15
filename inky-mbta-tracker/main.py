@@ -4,7 +4,6 @@ import threading
 import time
 from asyncio import Runner, sleep
 from datetime import UTC, datetime, timedelta
-from enum import Enum
 from queue import Queue
 from random import randint
 from typing import Optional
@@ -18,6 +17,7 @@ from prometheus import running_threads
 from prometheus_client import start_http_server
 from schedule_tracker import ScheduleEvent, VehicleRedisSchema, process_queue
 from shared_types.schema_versioner import schema_versioner
+from shared_types.shared_types import TrackerType
 from track_predictor import track_prediction_api
 
 load_dotenv()
@@ -30,17 +30,6 @@ logger = logging.getLogger(__name__)
 
 MIN_TASK_RESTART_MINS = 45
 MAX_TASK_RESTART_MINS = 120
-
-
-class TrackerType(Enum):
-    OTHER = -1
-    SCHEDULE_PREDICTIONS = 0
-    SCHEDULES = 1
-    VEHICLES = 2
-    PROCESSOR = 3
-    LIGHT_STOP = 4
-    GEOJSON = 5
-    TRACK_PREDICTIONS = 6
 
 
 class TaskTracker:

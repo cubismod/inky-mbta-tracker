@@ -3,7 +3,6 @@ from queue import Queue
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from main import TrackerType
 from mbta_client import (
     LightStop,
     MBTAApi,
@@ -23,7 +22,7 @@ from mbta_responses import (
     Vehicle,
     VehicleAttributes,
 )
-from shared_types.shared_types import ScheduleEvent, VehicleRedisSchema
+from shared_types.shared_types import ScheduleEvent, TrackerType, VehicleRedisSchema
 
 
 class TestSilverLineLookup:
