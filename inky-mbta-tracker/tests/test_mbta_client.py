@@ -3,8 +3,8 @@ from queue import Queue
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from main import TrackerType
 from mbta_client import (
-    EventType,
     LightStop,
     MBTAApi,
     determine_station_id,
@@ -150,7 +150,7 @@ class TestMBTAApi:
         assert api.stop_id is None
         assert api.route is None
         assert api.direction_filter is None
-        assert api.watcher_type == EventType.PREDICTIONS
+        assert api.watcher_type == TrackerType.SCHEDULE_PREDICTIONS
         assert api.schedule_only is False
         assert api.show_on_display is True
         assert isinstance(api.routes, dict)
@@ -161,13 +161,13 @@ class TestMBTAApi:
             route="Red",
             direction_filter=1,
             schedule_only=True,
-            watcher_type=EventType.VEHICLES,
+            watcher_type=TrackerType.VEHICLES,
             show_on_display=False,
         )
         assert api.stop_id == "place-davis"
         assert api.route == "Red"
         assert api.direction_filter == 1
-        assert api.watcher_type == EventType.VEHICLES
+        assert api.watcher_type == TrackerType.VEHICLES
         assert api.schedule_only is True
         assert api.show_on_display is False
 
@@ -273,7 +273,7 @@ class TestThreadRunner:
 
         queue = Queue[ScheduleEvent | VehicleRedisSchema]()
         thread_runner(
-            target=EventType.SCHEDULES,
+            target=TrackerType.SCHEDULES,
             queue=queue,
             stop_id="place-davis",
             route="Red",
@@ -290,7 +290,7 @@ class TestThreadRunner:
 
         queue = Queue[ScheduleEvent | VehicleRedisSchema]()
         thread_runner(
-            target=EventType.PREDICTIONS,
+            target=TrackerType.SCHEDULE_PREDICTIONS,
             queue=queue,
             stop_id="place-davis",
             route="Red",
@@ -306,7 +306,7 @@ class TestThreadRunner:
         mock_runner.return_value.__enter__.return_value = mock_instance
 
         queue = Queue[ScheduleEvent | VehicleRedisSchema]()
-        thread_runner(target=EventType.VEHICLES, queue=queue, route="Red")
+        thread_runner(target=TrackerType.VEHICLES, queue=queue, route="Red")
 
         mock_instance.run.assert_called_once()
 

@@ -4,6 +4,7 @@ import threading
 import time
 from asyncio import Runner, sleep
 from datetime import UTC, datetime, timedelta
+from enum import Enum
 from queue import Queue
 from random import randint
 from typing import Optional
@@ -12,7 +13,7 @@ import click
 from config import StopSetup, load_config
 from dotenv import load_dotenv
 from geojson_creator import run
-from mbta_client import EventType, thread_runner
+from mbta_client import thread_runner
 from prometheus import running_threads
 from prometheus_client import start_http_server
 from schedule_tracker import ScheduleEvent, VehicleRedisSchema, process_queue
@@ -31,17 +32,32 @@ MIN_TASK_RESTART_MINS = 45
 MAX_TASK_RESTART_MINS = 120
 
 
+class TrackerType(Enum):
+    OTHER = -1
+    SCHEDULE_PREDICTIONS = 0
+    SCHEDULES = 1
+    VEHICLES = 2
+    PROCESSOR = 3
+    LIGHT_STOP = 4
+    GEOJSON = 5
+    TRACK_PREDICTIONS = 6
+
+
 class TaskTracker:
-    event_type: EventType
+    event_type: TrackerType
     task: threading.Thread
     expiration_time: Optional[datetime]
     stop: Optional[StopSetup]
     route_id: Optional[str]
 
+    """
+    Wrapper around a common task that is (usually) run in a thread.
+    """
+
     def __init__(
         self,
         task: threading.Thread,
-        event_type: EventType,
+        event_type: TrackerType,
         expiration_time: Optional[datetime] = None,
         stop: Optional[StopSetup] = None,
         route_id: Optional[str] = None,
@@ -63,7 +79,7 @@ def queue_watcher(queue: Queue[ScheduleEvent]) -> None:
 # launches a departures tracking thread, target should either be "schedule" or "predictions"
 # returns a TaskTracker
 def start_thread(  # type: ignore
-    target: EventType,
+    target: TrackerType,
     queue: Queue[ScheduleEvent | VehicleRedisSchema],
     stop: Optional[StopSetup] = None,
     route_id: Optional[str] = None,
@@ -75,7 +91,7 @@ def start_thread(  # type: ignore
     if stop and stop.direction_filter != -1:
         direction_filter = stop.direction_filter
     match target:
-        case EventType.SCHEDULES:
+        case TrackerType.SCHEDULES:
             if stop:
                 thr = threading.Thread(
                     target=thread_runner,
@@ -93,7 +109,7 @@ def start_thread(  # type: ignore
                 )
                 thr.start()
                 return TaskTracker(task=thr, stop=stop, event_type=target)
-        case EventType.PREDICTIONS:
+        case TrackerType.SCHEDULE_PREDICTIONS:
             if stop:
                 thr = threading.Thread(
                     target=thread_runner,
@@ -114,7 +130,7 @@ def start_thread(  # type: ignore
                 return TaskTracker(
                     task=thr, expiration_time=exp_time, stop=stop, event_type=target
                 )
-        case EventType.VEHICLES:
+        case TrackerType.VEHICLES:
             thr = threading.Thread(
                 target=thread_runner,
                 kwargs={
@@ -157,20 +173,22 @@ async def __main__() -> None:
         process_threads[i].start()
 
     for process_thread in process_threads:
-        tasks.append(TaskTracker(process_thread, stop=None, event_type=EventType.OTHER))
+        tasks.append(
+            TaskTracker(process_thread, stop=None, event_type=TrackerType.PROCESSOR)
+        )
     for stop in config.stops:
         if stop.schedule_only:
-            thr = start_thread(EventType.SCHEDULES, stop=stop, queue=queue)
+            thr = start_thread(TrackerType.SCHEDULES, stop=stop, queue=queue)
             if thr:
                 tasks.append(thr)
         else:
-            thr = start_thread(EventType.PREDICTIONS, stop=stop, queue=queue)
+            thr = start_thread(TrackerType.SCHEDULE_PREDICTIONS, stop=stop, queue=queue)
             if thr:
                 tasks.append(thr)
     if config.vehicles_by_route:
         for route_id in config.vehicles_by_route:
             thr = start_thread(
-                EventType.VEHICLES,
+                TrackerType.VEHICLES,
                 route_id=route_id,
                 queue=queue,
             )
@@ -180,7 +198,9 @@ async def __main__() -> None:
             target=run, daemon=True, args=[config], name="geojson"
         )
         geojson_thr.start()
-        tasks.append(TaskTracker(geojson_thr, stop=None, event_type=EventType.OTHER))
+        tasks.append(
+            TaskTracker(geojson_thr, stop=None, event_type=TrackerType.GEOJSON)
+        )
 
     while True:
         running_threads.set(len(tasks))
@@ -192,23 +212,25 @@ async def __main__() -> None:
             ) or not task.task.is_alive():
                 tasks.remove(task)
                 match task.event_type:
-                    case EventType.VEHICLES:
+                    case TrackerType.VEHICLES:
                         thr = start_thread(
-                            EventType.VEHICLES,
+                            TrackerType.VEHICLES,
                             route_id=task.route_id,
                             queue=queue,
                         )
                         if thr:
                             tasks.append(thr)
-                    case EventType.SCHEDULES:
+                    case TrackerType.SCHEDULES:
                         thr = start_thread(
-                            EventType.SCHEDULES, stop=task.stop, queue=queue
+                            TrackerType.SCHEDULES, stop=task.stop, queue=queue
                         )
                         if thr:
                             tasks.append(thr)
-                    case EventType.PREDICTIONS:
+                    case TrackerType.SCHEDULE_PREDICTIONS:
                         thr = start_thread(
-                            EventType.PREDICTIONS, stop=task.stop, queue=queue
+                            TrackerType.SCHEDULE_PREDICTIONS,
+                            stop=task.stop,
+                            queue=queue,
                         )
                         if thr:
                             tasks.append(thr)
