@@ -14,7 +14,6 @@ from aiohttp import ClientSession
 from aiosseclient import aiosseclient
 from consts import DAY, FOUR_WEEKS, MBTA_V3_ENDPOINT, TWO_MONTHS, YEAR
 from exceptions import RateLimitExceeded
-from main import TrackerType
 from mbta_responses import (
     AlertResource,
     Alerts,
@@ -40,7 +39,7 @@ from pydantic import BaseModel, TypeAdapter, ValidationError
 from redis.asyncio.client import Redis
 from redis_cache import check_cache, write_cache
 from schedule_tracker import ScheduleEvent, VehicleRedisSchema, dummy_schedule_event
-from shared_types.shared_types import TrackAssignment, TrackAssignmentType
+from shared_types.shared_types import TrackAssignment, TrackAssignmentType, TrackerType
 from tenacity import (
     before_log,
     before_sleep_log,
@@ -197,7 +196,6 @@ class MBTAApi:
         route: Optional[str] = None,
         direction_filter: Optional[int] = None,
         expiration_time: Optional[datetime] = None,
-        route_type: Optional[str] = None,
         schedule_only: bool = False,
         watcher_type: TrackerType = TrackerType.SCHEDULE_PREDICTIONS,
         show_on_display: bool = True,
@@ -209,10 +207,7 @@ class MBTAApi:
         self.routes = dict()
         self.expiration_time = expiration_time
         self.watcher_type = watcher_type
-        logger.info(
-            f"Init mbta_client for type={watcher_type} stop={stop_id}, route={route}, direction={direction_filter}, route_type={route_type}"
-        )
-        self.schedule_only = schedule_only
+
         self.r_client = Redis(
             host=os.environ.get("IMT_REDIS_ENDPOINT", ""),
             port=int(os.environ.get("IMT_REDIS_PORT", "6379")),
@@ -221,6 +216,22 @@ class MBTAApi:
         self.track_predictor = TrackPredictor()
         self.show_on_display = show_on_display
         self.route_substring_filter = route_substring_filter
+
+        if (
+            stop_id
+            or route
+            or direction_filter
+            or expiration_time
+            or schedule_only
+            or route_substring_filter
+        ):
+            logger.info(
+                f"init MBTAApi {self.watcher_type} with {stop_id=} {route=} {direction_filter=} {expiration_time=} {schedule_only=} {route_substring_filter=}"
+            )
+        else:
+            logger.info(f"init MBTAApi {self.watcher_type}")
+
+        self.schedule_only = schedule_only
 
     async def __aenter__(self) -> "MBTAApi":
         return self

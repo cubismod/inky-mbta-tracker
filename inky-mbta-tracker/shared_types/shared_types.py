@@ -90,3 +90,14 @@ class TrackPredictionStats(BaseModel):
     last_updated: datetime
     prediction_counts_by_track: dict[str, int]  # track -> count
     average_confidence: float
+
+
+class TrackerType(Enum):
+    OTHER = -1
+    SCHEDULE_PREDICTIONS = 0
+    SCHEDULES = 1
+    VEHICLES = 2
+    PROCESSOR = 3
+    LIGHT_STOP = 4
+    GEOJSON = 5
+    TRACK_PREDICTIONS = 6
