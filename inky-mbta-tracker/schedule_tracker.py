@@ -22,6 +22,7 @@ from prometheus import (
 from pydantic import ValidationError
 from redis import ResponseError
 from redis.asyncio.client import Pipeline, Redis
+from redis_lock.asyncio import RedisLock
 from shared_types.shared_types import ScheduleEvent, VehicleRedisSchema
 from tenacity import (
     before_sleep_log,
@@ -413,7 +414,10 @@ async def execute(
         redis_commands.labels("zremrangebyscore").inc()
     except ResponseError as err:
         logger.error("Unable to communicate with Redis", exc_info=err)
-    await tracker.send_mqtt()
+    async with RedisLock(
+        tracker.redis, "send_mqtt", blocking_timeout=15, expire_timeout=20
+    ):
+        await tracker.send_mqtt()
 
 
 @retry(
@@ -425,4 +429,4 @@ def process_queue(queue: Queue[ScheduleEvent]) -> None:
     with Runner() as runner:
         while True:
             runner.run(execute(tracker, queue))
-            time.sleep(random.randint(10, 20))
+            time.sleep(random.randint(5, 30))
