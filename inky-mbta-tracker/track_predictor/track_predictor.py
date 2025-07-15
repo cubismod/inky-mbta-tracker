@@ -314,7 +314,7 @@ class TrackPredictor:
             # it makes more sense to get the headsign client-side using the exact trip_id due to API rate limits
             async with aiohttp.ClientSession(MBTA_V3_ENDPOINT) as session:
                 async with mbta_client.MBTAApi(
-                    watcher_type=shared_types.shared_types.TrackerType.TRACK_PREDICTIONS
+                    watcher_type=shared_types.shared_types.TaskType.TRACK_PREDICTIONS
                 ) as api:
                     new_hs = await api.get_headsign(trip_id, session)
                     if new_hs != "":

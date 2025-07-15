@@ -22,7 +22,7 @@ from mbta_responses import (
     Vehicle,
     VehicleAttributes,
 )
-from shared_types.shared_types import ScheduleEvent, TrackerType, VehicleRedisSchema
+from shared_types.shared_types import ScheduleEvent, TaskType, VehicleRedisSchema
 
 
 class TestSilverLineLookup:
@@ -149,7 +149,7 @@ class TestMBTAApi:
         assert api.stop_id is None
         assert api.route is None
         assert api.direction_filter is None
-        assert api.watcher_type == TrackerType.SCHEDULE_PREDICTIONS
+        assert api.watcher_type == TaskType.SCHEDULE_PREDICTIONS
         assert api.schedule_only is False
         assert api.show_on_display is True
         assert isinstance(api.routes, dict)
@@ -160,13 +160,13 @@ class TestMBTAApi:
             route="Red",
             direction_filter=1,
             schedule_only=True,
-            watcher_type=TrackerType.VEHICLES,
+            watcher_type=TaskType.VEHICLES,
             show_on_display=False,
         )
         assert api.stop_id == "place-davis"
         assert api.route == "Red"
         assert api.direction_filter == 1
-        assert api.watcher_type == TrackerType.VEHICLES
+        assert api.watcher_type == TaskType.VEHICLES
         assert api.schedule_only is True
         assert api.show_on_display is False
 
@@ -272,7 +272,7 @@ class TestThreadRunner:
 
         queue = Queue[ScheduleEvent | VehicleRedisSchema]()
         thread_runner(
-            target=TrackerType.SCHEDULES,
+            target=TaskType.SCHEDULES,
             queue=queue,
             stop_id="place-davis",
             route="Red",
@@ -289,7 +289,7 @@ class TestThreadRunner:
 
         queue = Queue[ScheduleEvent | VehicleRedisSchema]()
         thread_runner(
-            target=TrackerType.SCHEDULE_PREDICTIONS,
+            target=TaskType.SCHEDULE_PREDICTIONS,
             queue=queue,
             stop_id="place-davis",
             route="Red",
@@ -305,7 +305,7 @@ class TestThreadRunner:
         mock_runner.return_value.__enter__.return_value = mock_instance
 
         queue = Queue[ScheduleEvent | VehicleRedisSchema]()
-        thread_runner(target=TrackerType.VEHICLES, queue=queue, route="Red")
+        thread_runner(target=TaskType.VEHICLES, queue=queue, route="Red")
 
         mock_instance.run.assert_called_once()
 

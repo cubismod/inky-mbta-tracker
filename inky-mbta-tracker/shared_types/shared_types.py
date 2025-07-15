@@ -92,7 +92,7 @@ class TrackPredictionStats(BaseModel):
     average_confidence: float
 
 
-class TrackerType(Enum):
+class TaskType(Enum):
     OTHER = -1
     SCHEDULE_PREDICTIONS = 0
     SCHEDULES = 1
