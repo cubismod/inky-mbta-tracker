@@ -45,6 +45,7 @@ dependencies = [
     "polyline==2.0.2",
     "prettytable==3.16.0",
     "prometheus-client==0.22.1",
+    "prometheus-fastapi-instrumentator>=7.1.0",
     "propcache==0.3.2",
     "psutil==7.0.0",
     "pycares==4.9.0",

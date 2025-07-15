@@ -498,13 +498,20 @@ class MBTAApi:
                             stop_info = stop_data[0]
                             track_number = stop_info.data.attributes.platform_code
 
+                            station_id, has_track_predictions = determine_station_id(
+                                self.stop_id or item.relationships.stop.data.id
+                            )
+
                             # For commuter rail, store historical assignment and generate prediction
-                            if route_id.startswith("CR") and (track_number):
+                            if (
+                                route_id.startswith("CR")
+                                and track_number
+                                and has_track_predictions
+                            ):
                                 # Store historical track assignment
                                 try:
                                     assignment = TrackAssignment(
-                                        station_id=self.stop_id
-                                        or item.relationships.stop.data.id,
+                                        station_id=station_id,
                                         route_id=route_id,
                                         trip_id=trip_id,
                                         headsign=headsign,
@@ -544,12 +551,15 @@ class MBTAApi:
                                     )
 
                             # Generate prediction for future trips (only for commuter rail)
-                            elif route_id.startswith("CR") and not track_number:
+                            elif (
+                                route_id.startswith("CR")
+                                and not track_number
+                                and has_track_predictions
+                            ):
                                 try:
                                     if self.track_predictor:
                                         prediction = await self.track_predictor.predict_track(
-                                            station_id=self.stop_id
-                                            or item.relationships.stop.data.id,
+                                            station_id=station_id,
                                             route_id=route_id,
                                             trip_id=trip_id,
                                             headsign=headsign,
@@ -1039,15 +1049,16 @@ def thread_runner(
                 )
 
 
-def determine_station_id(stop_id: str) -> str:
+# takes a stop_id from the vehicle API and returns the station_id and if it is one of the stations that has track predictions
+def determine_station_id(stop_id: str) -> tuple[str, bool]:
     if "North Station" in stop_id or "BNT" in stop_id:
-        return "place-north"
+        return "place-north", True
     if "South Station" in stop_id or "NEC-2287" in stop_id:
-        return "place-sstat"
+        return "place-sstat", True
     if "Back Bay" in stop_id or "NEC-1851" in stop_id:
-        return "place-bbsta"
+        return "place-bbsta", True
     if "Ruggles" in stop_id or "NEC-2265" in stop_id:
-        return "place-rugg"
+        return "place-rugg", True
     if "Providence" in stop_id or "NEC-1851" in stop_id:
-        return "place-NEC-1851"
-    return stop_id
+        return "place-NEC-1851", True
+    return stop_id, False
