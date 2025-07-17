@@ -428,7 +428,6 @@ async def execute(
                 queue_processed_item.labels("vehicle").inc()
         except QueueEmpty:
             break
-    await tracker.cleanup(pipeline)
     try:
         await pipeline.execute()
         await tracker.redis.zremrangebyscore(
@@ -437,10 +436,12 @@ async def execute(
         redis_commands.labels("zremrangebyscore").inc()
     except ResponseError as err:
         logger.error("Unable to communicate with Redis", exc_info=err)
-    async with RedisLock(
-        tracker.redis, "send_mqtt", blocking_timeout=15, expire_timeout=20
-    ):
-        await tracker.send_mqtt()
+    if random.randint(0, 10) < 5:
+        async with RedisLock(
+            tracker.redis, "send_mqtt", blocking_timeout=15, expire_timeout=20
+        ):
+            await tracker.cleanup(pipeline)
+            await tracker.send_mqtt()
 
 
 @retry(
