@@ -125,16 +125,39 @@ class Tracker:
 
                     distance = measurement.distance(start, end, "m")
                     duration = event.update_time - last_event_validated.update_time
-                    if distance > 0 and duration.seconds > 0:
+                    # Minimum thresholds: 10m distance, 5s time to filter GPS noise and rapid updates
+                    if distance > 10 and duration.seconds >= 5:
                         meters_per_second = distance / duration.seconds
                         speed = meters_per_second * 2.2369362921
 
+                        # Outlier detection: check for unreasonable acceleration (> 10 mph/s)
+                        if (
+                            last_event_validated.speed
+                            and not last_event_validated.approximate_speed
+                        ):
+                            speed_diff = abs(speed - last_event_validated.speed)
+                            max_accel_change = (
+                                10 * duration.seconds
+                            )  # 10 mph per second max
+                            if speed_diff > max_accel_change:
+                                logger.debug(
+                                    f"Rejecting speed calculation for {event.route} vehicle {event.id}: "
+                                    f"acceleration too high ({speed_diff:.1f} mph change in {duration.seconds}s)"
+                                )
+                                return (
+                                    last_event_validated.speed,
+                                    last_event_validated.approximate_speed,
+                                )
+
                         if not self.is_speed_reasonable(speed, event.route):
-                            logger.info(
-                                f"lol lmao imagine a {event.route} train/bus going {speed} mph"
+                            logger.debug(
+                                f"Rejecting speed calculation for {event.route} vehicle {event.id}: speed {speed} mph is unreasonable"
                             )
                             # throw out insane predictions
-                            return None, False
+                            return (
+                                last_event_validated.speed,
+                                last_event_validated.approximate_speed,
+                            )
                         else:
                             return round(speed, 2), True
 
