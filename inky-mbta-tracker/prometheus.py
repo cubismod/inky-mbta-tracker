@@ -49,7 +49,7 @@ track_prediction_confidence = Gauge(
 track_historical_assignments_stored = Counter(
     "imt_track_historical_assignments_stored",
     "Historical track assignments stored",
-    ["station_id", "route_id"],
+    ["station_id", "route_id", "track_number"],
 )
 
 track_pattern_analysis_duration = Gauge(

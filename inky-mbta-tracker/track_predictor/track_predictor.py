@@ -80,7 +80,9 @@ class TrackPredictor:
             redis_commands.labels("expire").inc()
 
             track_historical_assignments_stored.labels(
-                station_id=assignment.station_id, route_id=assignment.route_id
+                station_id=assignment.station_id,
+                route_id=assignment.route_id,
+                track_number=assignment.track_number or "unknown",
             ).inc()
 
             logger.debug(
