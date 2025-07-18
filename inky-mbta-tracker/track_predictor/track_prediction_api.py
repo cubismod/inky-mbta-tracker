@@ -16,10 +16,10 @@ from track_predictor.track_predictor import TrackPredictionStats, TrackPredictor
 # This is intended as a separate entrypoint to be run as a separate container
 
 origins = [
-    "http://localhost:8080",
-    "https://mbta.ryanwallace.cloud",
-    "http://h.cubemoji.art:54478",
-    os.environ.get("IMT_TRACK_API_ORIGIN", "http://localhost:1313"),
+    origin.strip()
+    for origin in os.environ.get(
+        "IMT_TRACK_API_ORIGIN", "http://localhost:1313,http://localhost:8080"
+    ).split(",")
 ]
 
 logging.basicConfig(
