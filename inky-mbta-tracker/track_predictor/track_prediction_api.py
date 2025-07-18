@@ -16,13 +16,6 @@ from track_predictor.track_predictor import TrackPredictionStats, TrackPredictor
 
 # This is intended as a separate entrypoint to be run as a separate container
 
-origins = [
-    origin.strip()
-    for origin in os.environ.get(
-        "IMT_TRACK_API_ORIGIN", "http://localhost:1313,http://localhost:8080"
-    ).split(",")
-]
-
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO"),
     format="%(levelname)-8s %(message)s",
@@ -46,6 +39,11 @@ class HeaderLoggingMiddleware(BaseHTTPMiddleware):
             else None,  # Mask sensitive data
             "content-type": request.headers.get("content-type"),
             "accept": request.headers.get("accept"),
+            "cf-connecting-ip": request.headers.get("cf-connecting-ip"),
+            "cf-ipcountry": request.headers.get("cf-ipcountry"),
+            "cf-ray": request.headers.get("cf-ray"),
+            "cf-request-id": request.headers.get("cf-request-id"),
+            "cf-request-priority": request.headers.get("cf-request-priority"),
         }
 
         # Filter out None values
@@ -75,7 +73,9 @@ app.add_middleware(HeaderLoggingMiddleware)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origin_regex=os.environ.get(
+        "IMT_TRACK_API_ORIGIN_REGEX", "http://localhost:1313"
+    ),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
