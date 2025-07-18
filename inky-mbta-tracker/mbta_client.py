@@ -1051,14 +1051,14 @@ def thread_runner(
 
 # takes a stop_id from the vehicle API and returns the station_id and if it is one of the stations that has track predictions
 def determine_station_id(stop_id: str) -> tuple[str, bool]:
-    if "North Station" in stop_id or "BNT" in stop_id:
+    if "North Station" in stop_id or "BNT" or "place-north" in stop_id:
         return "place-north", True
-    if "South Station" in stop_id or "NEC-2287" in stop_id:
+    if "South Station" in stop_id or "NEC-2287" or "place-sstat" in stop_id:
         return "place-sstat", True
-    if "Back Bay" in stop_id or "NEC-1851" in stop_id:
+    if "Back Bay" in stop_id or "NEC-1851" or "place-bbsta" in stop_id:
         return "place-bbsta", True
-    if "Ruggles" in stop_id or "NEC-2265" in stop_id:
+    if "Ruggles" in stop_id or "NEC-2265" or "place-rugg" in stop_id:
         return "place-rugg", True
-    if "Providence" in stop_id or "NEC-1851" in stop_id:
+    if "Providence" in stop_id or "NEC-1851" or "place-NEC-1851" in stop_id:
         return "place-NEC-1851", True
     return stop_id, False
