@@ -34,6 +34,7 @@ class HeaderLoggingMiddleware(BaseHTTPMiddleware):
             "user-agent": request.headers.get("user-agent"),
             "x-forwarded-for": request.headers.get("x-forwarded-for"),
             "x-real-ip": request.headers.get("x-real-ip"),
+            "origin": request.headers.get("origin"),
             "authorization": "***"
             if request.headers.get("authorization")
             else None,  # Mask sensitive data
@@ -71,11 +72,16 @@ app = FastAPI(
 # Add header logging middleware
 app.add_middleware(HeaderLoggingMiddleware)
 
+origins = [
+    origin.strip()
+    for origin in os.environ.get(
+        "IMT_TRACK_API_ORIGIN", "http://localhost:1313,http://localhost:8080"
+    ).split(",")
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origin_regex=os.environ.get(
-        "IMT_TRACK_API_ORIGIN_REGEX", "http://localhost:1313"
-    ),
+    allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
