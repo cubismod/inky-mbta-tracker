@@ -347,7 +347,7 @@ class TrackPredictor:
                 return None
 
             # Check if this is a cache hit
-            cache_key = f"track_prediction_cache:{station_id}:{route_id}:{trip_id}:{scheduled_time.date()}"
+            cache_key = f"track_prediction:{station_id}:{route_id}:{trip_id}:{scheduled_time.date()}"
             cached_prediction = await check_cache(self.redis, cache_key)
             if cached_prediction:
                 track_predictions_cached.labels(
