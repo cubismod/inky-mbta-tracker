@@ -1,15 +1,16 @@
 import logging
 import os
 from datetime import datetime, timedelta
-from typing import List
+from typing import Awaitable, Callable, List
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from mbta_client import determine_station_id
 from prometheus_fastapi_instrumentator import Instrumentator
 from pydantic import BaseModel, ValidationError
 from shared_types.shared_types import TrackAssignment, TrackPrediction
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from track_predictor.track_predictor import TrackPredictionStats, TrackPredictor
 
@@ -27,6 +28,40 @@ logging.basicConfig(
     format="%(levelname)-8s %(message)s",
 )
 
+logger = logging.getLogger(__name__)
+
+
+class HeaderLoggingMiddleware(BaseHTTPMiddleware):
+    """Middleware to log request headers for debugging and monitoring"""
+
+    async def dispatch(
+        self, request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
+        headers_to_log = {
+            "user-agent": request.headers.get("user-agent"),
+            "x-forwarded-for": request.headers.get("x-forwarded-for"),
+            "x-real-ip": request.headers.get("x-real-ip"),
+            "authorization": "***"
+            if request.headers.get("authorization")
+            else None,  # Mask sensitive data
+            "content-type": request.headers.get("content-type"),
+            "accept": request.headers.get("accept"),
+        }
+
+        # Filter out None values
+        headers_to_log = {k: v for k, v in headers_to_log.items() if v is not None}
+
+        logger.debug(
+            f"{request.method} {request.url.path} from {request.client.host if request.client else 'unknown'} "
+            f"- Headers: {headers_to_log}"
+        )
+
+        response = await call_next(request)
+
+        logger.debug(f"Response status: {response.status_code}")
+
+        return response
+
 
 app = FastAPI(
     title="MBTA Track Prediction API",
@@ -34,6 +69,9 @@ app = FastAPI(
     version="1.0.0",
     docs_url="/",
 )
+
+# Add header logging middleware
+app.add_middleware(HeaderLoggingMiddleware)
 
 app.add_middleware(
     CORSMiddleware,
