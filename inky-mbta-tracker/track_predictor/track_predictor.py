@@ -58,6 +58,10 @@ class TrackPredictor:
             # Store in Redis with a key that includes station, route, and timestamp
             key = f"track_history:{assignment.station_id}:{assignment.route_id}:{assignment.trip_id}:{assignment.scheduled_time.date()}"
 
+            # check if the key already exists
+            if await check_cache(self.redis, key):
+                return
+
             # Store for 6 months for analysis
             await write_cache(
                 self.redis,
