@@ -10,7 +10,7 @@ import mbta_client
 import shared_types.shared_types
 import textdistance
 from async_lru import alru_cache
-from consts import DAY, MBTA_V3_ENDPOINT, MINUTE, WEEK
+from consts import DAY, INSTANCE_ID, MBTA_V3_ENDPOINT, MINUTE, WEEK
 from prometheus import (
     redis_commands,
     track_historical_assignments_stored,
@@ -87,6 +87,7 @@ class TrackPredictor:
                 station_id=assignment.station_id,
                 route_id=assignment.route_id,
                 track_number=assignment.track_number or "unknown",
+                instance=INSTANCE_ID,
             ).inc()
 
             logger.debug(
@@ -287,7 +288,7 @@ class TrackPredictor:
                 # Record analysis duration
                 duration = time.time() - start_time
                 track_pattern_analysis_duration.labels(
-                    station_id=station_id, route_id=route_id
+                    station_id=station_id, route_id=route_id, instance=INSTANCE_ID
                 ).set(duration)
 
                 return total
@@ -299,7 +300,7 @@ class TrackPredictor:
             # Record analysis duration even for no patterns
             duration = time.time() - start_time
             track_pattern_analysis_duration.labels(
-                station_id=station_id, route_id=route_id
+                station_id=station_id, route_id=route_id, instance=INSTANCE_ID
             ).set(duration)
 
             return {}
@@ -375,12 +376,14 @@ class TrackPredictor:
                             station_id=station_id,
                             route_id=route_id,
                             prediction_method="platform_code",
+                            instance=INSTANCE_ID,
                         ).inc()
 
                         track_prediction_confidence.labels(
                             station_id=station_id,
                             route_id=route_id,
                             track_number=prediction.track_number,
+                            instance=INSTANCE_ID,
                         ).set(1.0)
 
                         return prediction
@@ -390,7 +393,7 @@ class TrackPredictor:
             cached_prediction = await check_cache(self.redis, cache_key)
             if cached_prediction:
                 track_predictions_cached.labels(
-                    station_id=station_id, route_id=route_id
+                    station_id=station_id, route_id=route_id, instance=INSTANCE_ID
                 ).inc()
                 return TrackPrediction.model_validate_json(cached_prediction)
 
@@ -458,11 +461,17 @@ class TrackPredictor:
 
             # Record metrics
             track_predictions_generated.labels(
-                station_id=station_id, route_id=route_id, prediction_method=method
+                station_id=station_id,
+                route_id=route_id,
+                prediction_method=method,
+                instance=INSTANCE_ID,
             ).inc()
 
             track_prediction_confidence.labels(
-                station_id=station_id, route_id=route_id, track_number=best_track
+                station_id=station_id,
+                route_id=route_id,
+                track_number=best_track,
+                instance=INSTANCE_ID,
             ).set(confidence)
 
             # Store prediction for later validation
@@ -538,7 +547,10 @@ class TrackPredictor:
             # Record validation metric
             result = "correct" if is_correct else "incorrect"
             track_predictions_validated.labels(
-                station_id=station_id, route_id=route_id, result=result
+                station_id=station_id,
+                route_id=route_id,
+                result=result,
+                instance=INSTANCE_ID,
             ).inc()
 
             logger.info(
