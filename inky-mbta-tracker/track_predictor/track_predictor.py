@@ -346,15 +346,6 @@ class TrackPredictor:
             if not route_id.startswith("CR"):
                 return None
 
-            # Check if this is a cache hit
-            cache_key = f"track_prediction:{station_id}:{route_id}:{trip_id}:{scheduled_time.date()}"
-            cached_prediction = await check_cache(self.redis, cache_key)
-            if cached_prediction:
-                track_predictions_cached.labels(
-                    station_id=station_id, route_id=route_id
-                ).inc()
-                return TrackPrediction.model_validate_json(cached_prediction)
-
             # it makes more sense to get the headsign client-side using the exact trip_id due to API rate limits
             async with aiohttp.ClientSession(MBTA_V3_ENDPOINT) as session:
                 async with mbta_client.MBTAApi(
@@ -393,6 +384,15 @@ class TrackPredictor:
                         ).set(1.0)
 
                         return prediction
+
+            # Check if this is a cache hit
+            cache_key = f"track_prediction:{station_id}:{route_id}:{trip_id}:{scheduled_time.date()}"
+            cached_prediction = await check_cache(self.redis, cache_key)
+            if cached_prediction:
+                track_predictions_cached.labels(
+                    station_id=station_id, route_id=route_id
+                ).inc()
+                return TrackPrediction.model_validate_json(cached_prediction)
 
             # Analyze patterns
             patterns = await self.analyze_patterns(
