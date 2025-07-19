@@ -118,7 +118,6 @@ class ChainedPredictionsRequest(BaseModel):
 
 
 class ChainedPredictionsResponse(BaseModel):
-    success: bool
     results: List[TrackPredictionResponse]
 
 
@@ -260,7 +259,6 @@ async def generate_chained_track_predictions(
             )
 
     return ChainedPredictionsResponse(
-        success=True,
         results=results,
     )
 
