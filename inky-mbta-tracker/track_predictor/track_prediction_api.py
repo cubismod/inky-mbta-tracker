@@ -104,6 +104,24 @@ class TrackPredictionStatsResponse(BaseModel):
     stats: TrackPredictionStats | str
 
 
+class PredictionRequest(BaseModel):
+    station_id: str
+    route_id: str
+    trip_id: str
+    headsign: str
+    direction_id: int
+    scheduled_time: datetime
+
+
+class ChainedPredictionsRequest(BaseModel):
+    predictions: List[PredictionRequest]
+
+
+class ChainedPredictionsResponse(BaseModel):
+    success: bool
+    results: List[TrackPredictionResponse]
+
+
 @app.get("/health")
 async def health_check() -> dict:
     """Health check endpoint"""
@@ -159,6 +177,92 @@ async def generate_track_prediction(
             f"Error generating prediction due to validation error: {e}", exc_info=True
         )
         raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.post("/chained-predictions")
+async def generate_chained_track_predictions(
+    request: ChainedPredictionsRequest,
+) -> ChainedPredictionsResponse:
+    """
+    Generate multiple track predictions in a single request.
+    """
+    results = []
+
+    for pred_request in request.predictions:
+        try:
+            station_id, has_track_predictions = determine_station_id(
+                pred_request.station_id
+            )
+            if not has_track_predictions:
+                results.append(
+                    TrackPredictionResponse(
+                        success=False,
+                        prediction="Predictions are not available for this station",
+                    )
+                )
+                continue
+
+            prediction = await track_predictor.predict_track(
+                station_id=station_id,
+                route_id=pred_request.route_id,
+                trip_id=pred_request.trip_id,
+                headsign=pred_request.headsign,
+                direction_id=pred_request.direction_id,
+                scheduled_time=pred_request.scheduled_time,
+            )
+
+            if prediction:
+                results.append(
+                    TrackPredictionResponse(
+                        success=True,
+                        prediction=prediction,
+                    )
+                )
+            else:
+                results.append(
+                    TrackPredictionResponse(
+                        success=False,
+                        prediction="No prediction could be generated",
+                    )
+                )
+
+        except (ConnectionError, TimeoutError) as e:
+            logging.error(
+                f"Error generating chained prediction due to connection issue: {e}",
+                exc_info=True,
+            )
+            results.append(
+                TrackPredictionResponse(
+                    success=False,
+                    prediction="Connection error occurred",
+                )
+            )
+        except ValidationError as e:
+            logging.error(
+                f"Error generating chained prediction due to validation error: {e}",
+                exc_info=True,
+            )
+            results.append(
+                TrackPredictionResponse(
+                    success=False,
+                    prediction="Validation error occurred",
+                )
+            )
+        except Exception as e:
+            logging.error(
+                f"Unexpected error generating chained prediction: {e}", exc_info=True
+            )
+            results.append(
+                TrackPredictionResponse(
+                    success=False,
+                    prediction="Unexpected error occurred",
+                )
+            )
+
+    return ChainedPredictionsResponse(
+        success=True,
+        results=results,
+    )
 
 
 @app.get("/stats/{station_id}/{route_id}")
