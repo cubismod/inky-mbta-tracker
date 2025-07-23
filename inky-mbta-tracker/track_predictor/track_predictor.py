@@ -10,7 +10,7 @@ import mbta_client
 import shared_types.shared_types
 import textdistance
 from async_lru import alru_cache
-from consts import DAY, INSTANCE_ID, MBTA_V3_ENDPOINT, MINUTE, WEEK
+from consts import DAY, INSTANCE_ID, MBTA_V3_ENDPOINT, MINUTE, WEEK, YEAR
 from prometheus import (
     redis_commands,
     track_historical_assignments_stored,
@@ -67,7 +67,7 @@ class TrackPredictor:
                 self.redis,
                 key,
                 assignment.model_dump_json(),
-                6 * 30 * DAY,  # 6 months
+                1 * YEAR,  # 1 year
             )
 
             # Also store in a time-series format for easier querying
@@ -79,8 +79,8 @@ class TrackPredictor:
             )
             redis_commands.labels("zadd").inc()
 
-            # Set expiration for time series (6 months)
-            await self.redis.expire(time_series_key, 6 * 30 * DAY)
+            # Set expiration for time series (1 year)
+            await self.redis.expire(time_series_key, 1 * YEAR)
             redis_commands.labels("expire").inc()
 
             track_historical_assignments_stored.labels(
