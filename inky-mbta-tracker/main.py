@@ -9,6 +9,7 @@ from random import randint
 from typing import Optional
 
 import click
+from backup_scheduler import run_backup_scheduler
 from config import StopSetup, load_config
 from dotenv import load_dotenv
 from geojson_creator import run
@@ -188,6 +189,12 @@ async def __main__() -> None:
         )
         geojson_thr.start()
         tasks.append(TaskTracker(geojson_thr, stop=None, event_type=TaskType.GEOJSON))
+
+    backup_thr = threading.Thread(
+        target=run_backup_scheduler, daemon=True, name="redis_backup_scheduler"
+    )
+    backup_thr.start()
+    tasks.append(TaskTracker(backup_thr, stop=None, event_type=TaskType.REDIS_BACKUP))
 
     while True:
         running_threads.set(len(tasks))
