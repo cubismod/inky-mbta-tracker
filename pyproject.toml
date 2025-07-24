@@ -38,7 +38,7 @@ dependencies = [
     "mdurl==0.1.2",
     "multidict==6.6.3",
     "mypy>=1.15.0",
-    "numpy==1.26.4",
+    "numpy==2.3.2",
     "packaging==25.0",
     "paho-mqtt==2.1.0",
     "pandas==2.3.1",
