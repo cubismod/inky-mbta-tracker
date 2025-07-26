@@ -63,3 +63,9 @@ track_predictions_validated = Counter(
     "Track predictions validated against actual assignments",
     ["station_id", "route_id", "result", "instance"],
 )
+
+schema_key_counts = Gauge(
+    "imt_schema_key_counts",
+    "Number of keys in each Redis schema namespace",
+    ["schema_id"],
+)

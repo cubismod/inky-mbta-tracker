@@ -2,7 +2,7 @@ import logging
 import os
 from typing import Optional
 
-from prometheus import redis_commands
+from prometheus import redis_commands, schema_key_counts
 from pydantic import BaseModel, ValidationError
 from redis import ResponseError
 from redis.asyncio.client import Redis
@@ -18,6 +18,71 @@ class RedisSchema(BaseModel):
     id: str
     key_prefixes: list[str]
     hashes: set[str]
+
+
+SCHEMAS = [
+    RedisSchema(
+        id="schedule_event",
+        key_prefixes=["schedule", "prediction", "time"],
+        hashes={class_hashes.SCHEDULEEVENT_HASH},
+    ),
+    RedisSchema(
+        id="vehicle_redis_schema",
+        key_prefixes=["vehicle", "pos-data"],
+        hashes={class_hashes.VEHICLEREDISSCHEMA_HASH},
+    ),
+    RedisSchema(
+        id="track_assignment",
+        key_prefixes=["track_history", "track_timeseries"],
+        hashes={class_hashes.TRACKASSIGNMENT_HASH},
+    ),
+    RedisSchema(
+        id="track_prediction",
+        key_prefixes=["track_prediction"],
+        hashes={class_hashes.TRACKPREDICTION_HASH},
+    ),
+    RedisSchema(
+        id="track_prediction_stats",
+        key_prefixes=["track_prediction_stats"],
+        hashes={class_hashes.TRACKPREDICTIONSTATS_HASH},
+    ),
+    RedisSchema(
+        id="stop",
+        key_prefixes=["stop"],
+        hashes={
+            class_hashes.STOPRELATIONSHIP_HASH,
+            class_hashes.STOPATTRIBUTES_HASH,
+            class_hashes.STOPRESOURCE_HASH,
+            class_hashes.STOP_HASH,
+            class_hashes.STOPANDFACILITIES_HASH,
+            class_hashes.FACILITYRELATIONSHIPS_HASH,
+            class_hashes.FACILITYPROPERTY_HASH,
+            class_hashes.FACILITYATTRIBUTES_HASH,
+            class_hashes.FACILITYRESOURCE_HASH,
+            class_hashes.FACILITY_HASH,
+            class_hashes.FACILITIES_HASH,
+        },
+    ),
+    RedisSchema(
+        id="shape",
+        key_prefixes=["shape"],
+        hashes={
+            class_hashes.SHAPES_HASH,
+            class_hashes.SHAPERESOURCE_HASH,
+            class_hashes.SHAPEATTRIBUTES_HASH,
+        },
+    ),
+    RedisSchema(
+        id="trip",
+        key_prefixes=["trip"],
+        hashes={
+            class_hashes.TRIPS_HASH,
+            class_hashes.TRIPRESOURCE_HASH,
+            class_hashes.TRIPATTRIBUTES_HASH,
+            class_hashes.TRIPGENERIC_HASH,
+        },
+    ),
+]
 
 
 async def get_schema_version(redis: Redis, schema_key: str) -> Optional[RedisSchema]:
@@ -44,71 +109,7 @@ async def schema_versioner() -> None:
         port=int(os.environ.get("IMT_REDIS_PORT", "6379")),
         password=os.environ.get("IMT_REDIS_PASSWORD", ""),
     )
-    schemas = [
-        RedisSchema(
-            id="schedule_event",
-            key_prefixes=["schedule", "prediction", "time"],
-            hashes={class_hashes.SCHEDULEEVENT_HASH},
-        ),
-        RedisSchema(
-            id="vehicle_redis_schema",
-            key_prefixes=["vehicle", "pos-data"],
-            hashes={class_hashes.VEHICLEREDISSCHEMA_HASH},
-        ),
-        RedisSchema(
-            id="track_assignment",
-            key_prefixes=["track_history", "track_timeseries"],
-            hashes={class_hashes.TRACKASSIGNMENT_HASH},
-        ),
-        RedisSchema(
-            id="track_prediction",
-            key_prefixes=["track_prediction"],
-            hashes={class_hashes.TRACKPREDICTION_HASH},
-        ),
-        RedisSchema(
-            id="track_prediction_stats",
-            key_prefixes=["track_prediction_stats"],
-            hashes={class_hashes.TRACKPREDICTIONSTATS_HASH},
-        ),
-        RedisSchema(
-            id="stop",
-            key_prefixes=["stop"],
-            hashes={
-                class_hashes.STOPRELATIONSHIP_HASH,
-                class_hashes.STOPATTRIBUTES_HASH,
-                class_hashes.STOPRESOURCE_HASH,
-                class_hashes.STOP_HASH,
-                class_hashes.STOPANDFACILITIES_HASH,
-                class_hashes.FACILITYRELATIONSHIPS_HASH,
-                class_hashes.FACILITYPROPERTY_HASH,
-                class_hashes.FACILITYATTRIBUTES_HASH,
-                class_hashes.FACILITYRESOURCE_HASH,
-                class_hashes.FACILITY_HASH,
-                class_hashes.FACILITIES_HASH,
-            },
-        ),
-        RedisSchema(
-            id="shape",
-            key_prefixes=["shape"],
-            hashes={
-                class_hashes.SHAPES_HASH,
-                class_hashes.SHAPERESOURCE_HASH,
-                class_hashes.SHAPEATTRIBUTES_HASH,
-            },
-        ),
-        RedisSchema(
-            id="trip",
-            key_prefixes=["trip"],
-            hashes={
-                class_hashes.TRIPS_HASH,
-                class_hashes.TRIPRESOURCE_HASH,
-                class_hashes.TRIPATTRIBUTES_HASH,
-                class_hashes.TRIPGENERIC_HASH,
-            },
-        ),
-    ]
-
-    for schema in schemas:
+    for schema in SCHEMAS:
         schema_key = f"schema:{schema.id}"
         schema_version = await get_schema_version(redis, schema_key)
         if schema_version is None or schema_version.hashes != schema.hashes:
@@ -137,3 +138,28 @@ async def schema_versioner() -> None:
                     exc_info=True,
                 )
                 logger.fatal("Exiting due to schema versioning failure")
+
+
+async def export_schema_key_counts(redis: Redis) -> dict[str, int]:
+    """Export the number of keys in each defined schema namespace."""
+
+    key_counts = {}
+
+    try:
+        for schema in SCHEMAS:
+            total_keys = 0
+            for key_prefix in schema.key_prefixes:
+                keys = await redis.keys(f"{key_prefix}*")
+                total_keys += len(keys)
+                redis_commands.labels("keys").inc()
+
+            key_counts[schema.id] = total_keys
+            schema_key_counts.labels(schema_id=schema.id).set(total_keys)
+            logger.debug(f"Schema {schema.id}: {total_keys} keys")
+
+    except ResponseError as e:
+        logger.error(f"Error counting keys: {e}")
+    finally:
+        await redis.aclose()
+
+    return key_counts

@@ -23,6 +23,7 @@ from pydantic import ValidationError
 from redis import ResponseError
 from redis.asyncio.client import Pipeline, Redis
 from redis_lock.asyncio import RedisLock
+from shared_types.schema_versioner import export_schema_key_counts
 from shared_types.shared_types import ScheduleEvent, VehicleRedisSchema
 from tenacity import (
     before_sleep_log,
@@ -442,6 +443,11 @@ async def execute(
         ):
             await tracker.cleanup(pipeline)
             await tracker.send_mqtt()
+            try:
+                key_counts = await export_schema_key_counts(tracker.redis)
+                logger.debug(f"Schema key counts: {key_counts}")
+            except ResponseError as e:
+                logger.error(f"Failed to export schema key counts: {e}")
 
 
 @retry(
