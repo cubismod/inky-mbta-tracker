@@ -267,19 +267,87 @@ class TrackPredictor:
                         )
                         patterns["day_of_week_match"][assignment.track_number] += 1
 
-            # Combine all patterns with weights
+            # Combine all patterns with weights and time decay
             combined_scores: dict[str, float] = defaultdict(float)
-            for _, tracks in patterns.items():
-                for track_id, score in tracks.items():
-                    combined_scores[track_id] += score
+            sample_counts: dict[str, int] = defaultdict(int)
 
-            # Convert to probabilities
+            # Apply time-based weighting to historical data
+            for assignment in assignments:
+                if not assignment.track_number:
+                    continue
+
+                # Time decay factor (recent data weighted more heavily)
+                days_old = (scheduled_time - assignment.scheduled_time).days
+                time_decay = max(0.1, 1.0 - (days_old / 90.0))  # 90-day decay
+
+                # Calculate pattern matches with existing logic
+                headsign_similarity = textdistance.levenshtein.normalized_similarity(
+                    trip_headsign, assignment.headsign
+                )
+
+                base_score = 0
+                if (
+                    headsign_similarity > 0.7
+                    and assignment.direction_id == direction_id
+                    and abs(assignment.hour - target_hour) <= 1
+                ):
+                    base_score = 10
+                elif (
+                    headsign_similarity > 0.7
+                    and assignment.direction_id == direction_id
+                ):
+                    base_score = 5
+                elif (
+                    abs(
+                        assignment.hour * 60
+                        + assignment.minute
+                        - target_hour * 60
+                        - target_minute
+                    )
+                    <= 30
+                ):
+                    base_score = 3
+                elif assignment.direction_id == direction_id:
+                    base_score = 2
+                elif assignment.day_of_week == target_dow:
+                    # Enhanced day-type pattern matching
+                    is_weekend = target_dow in [5, 6]  # Saturday, Sunday
+                    is_assignment_weekend = assignment.day_of_week in [5, 6]
+
+                    if is_weekend == is_assignment_weekend:
+                        base_score = 2  # Weekend/weekday pattern match
+                    else:
+                        base_score = 1  # Basic day match
+
+                if base_score > 0:
+                    combined_scores[assignment.track_number] += base_score * time_decay
+                    sample_counts[assignment.track_number] += 1
+
+            # Convert to probabilities with confidence adjustments
             if combined_scores:
                 total_score = sum(combined_scores.values())
-                total = {
-                    track: score / total_score
-                    for track, score in combined_scores.items()
-                }
+                total = {}
+                for track, score in combined_scores.items():
+                    base_prob = score / total_score
+                    sample_size = sample_counts[track]
+
+                    # Sample size confidence (more samples = higher confidence)
+                    sample_confidence = min(1.0, sample_size / 10.0)
+
+                    # Historical accuracy factor
+                    accuracy = await self._get_prediction_accuracy(
+                        station_id, route_id, track
+                    )
+
+                    # Combined confidence adjustment
+                    confidence_factor = 0.3 + 0.4 * sample_confidence + 0.3 * accuracy
+                    adjusted_prob = base_prob * confidence_factor
+                    total[track] = adjusted_prob
+
+                # Renormalize after confidence adjustments
+                adj_total = sum(total.values())
+                if adj_total > 0:
+                    total = {track: prob / adj_total for track, prob in total.items()}
                 logger.debug(
                     f"Calculated pattern for station_id={station_id}, route_id={route_id}, trip_id={trip_headsign}, direction_id={direction_id}"
                 )
@@ -507,6 +575,31 @@ class TrackPredictor:
                 f"Failed to store prediction due to validation error: {e}",
                 exc_info=True,
             )
+
+    async def _get_prediction_accuracy(
+        self, station_id: str, route_id: str, track_number: str
+    ) -> float:
+        """Get historical prediction accuracy for a specific track."""
+        try:
+            # Get recent prediction validation results
+            accuracy_key = f"track_accuracy:{station_id}:{route_id}:{track_number}"
+            accuracy_data = await self.redis.get(accuracy_key)
+
+            if accuracy_data:
+                # Parse stored accuracy data (format: "correct:total")
+                parts = accuracy_data.decode().split(":")
+                if len(parts) == 2:
+                    correct = int(parts[0])
+                    total = int(parts[1])
+                    if total > 0:
+                        return correct / total
+
+            # Default accuracy for new tracks (slightly conservative)
+            return 0.7
+
+        except (ConnectionError, TimeoutError, ValueError) as e:
+            logger.error(f"Failed to get prediction accuracy: {e}")
+            return 0.7  # Default accuracy
 
     async def validate_prediction(
         self,
