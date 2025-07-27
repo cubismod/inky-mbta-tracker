@@ -42,8 +42,8 @@ SCHEMAS = [
         hashes={class_hashes.TRACKPREDICTION_HASH},
     ),
     RedisSchema(
-        id="track_prediction_stats",
-        key_prefixes=["track_prediction_stats"],
+        id="track_stats",
+        key_prefixes=["track_stats"],
         hashes={class_hashes.TRACKPREDICTIONSTATS_HASH},
     ),
     RedisSchema(
