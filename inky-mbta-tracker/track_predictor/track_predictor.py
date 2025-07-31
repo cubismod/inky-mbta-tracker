@@ -239,7 +239,7 @@ class TrackPredictor:
                 phonetic_match = 0.8
             elif metaphone1[1] and metaphone2[1] and metaphone1[1] == metaphone2[1]:
                 phonetic_match = 0.6
-        except Exception:
+        except (AttributeError, TypeError, ValueError):
             phonetic_match = 0.0
 
         # Token-based similarity for destination matching
@@ -1086,16 +1086,26 @@ class TrackPredictor:
                                             f"Precached prediction: {station_id} {route_id} {trip_id} -> Track {prediction.track_number}"
                                         )
 
-                                except Exception as e:
+                                except (
+                                    ConnectionError,
+                                    TimeoutError,
+                                    ValidationError,
+                                    RateLimitExceeded,
+                                ) as e:
                                     logger.error(
                                         f"Error precaching prediction for {station_id} {route_id} {trip_id}: {e}"
                                     )
 
-                    except Exception as e:
+                    except (
+                        ConnectionError,
+                        TimeoutError,
+                        ValidationError,
+                        RateLimitExceeded,
+                    ) as e:
                         logger.error(f"Error processing route {route_id}: {e}")
                         continue
 
-        except Exception as e:
+        except (ConnectionError, TimeoutError, aiohttp.ClientError) as e:
             logger.error(f"Error in precache_track_predictions: {e}")
 
         logger.info(f"Precached {predictions_cached} track predictions")
