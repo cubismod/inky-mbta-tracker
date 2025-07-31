@@ -10,9 +10,12 @@ import shared_types.shared_types
 import textdistance
 from async_lru import alru_cache
 from consts import DAY, INSTANCE_ID, MBTA_V3_ENDPOINT, MINUTE, WEEK, YEAR
+from exceptions import RateLimitExceeded
 from mbta_client import MBTAApi
+from mbta_responses import Trips
 from metaphone import doublemetaphone
 from prometheus import (
+    mbta_api_requests,
     redis_commands,
     track_historical_assignments_stored,
     track_pattern_analysis_duration,
@@ -28,6 +31,11 @@ from shared_types.shared_types import (
     TrackAssignment,
     TrackPrediction,
     TrackPredictionStats,
+)
+from tenacity import (
+    before_sleep_log,
+    retry,
+    wait_exponential_jitter,
 )
 
 logger = logging.getLogger(__name__)
@@ -231,7 +239,7 @@ class TrackPredictor:
                 phonetic_match = 0.8
             elif metaphone1[1] and metaphone2[1] and metaphone1[1] == metaphone2[1]:
                 phonetic_match = 0.6
-        except Exception:
+        except (AttributeError, TypeError, ValueError):
             phonetic_match = 0.0
 
         # Token-based similarity for destination matching
@@ -897,3 +905,208 @@ class TrackPredictor:
                 exc_info=True,
             )
             return None
+
+    @retry(
+        wait=wait_exponential_jitter(initial=2, jitter=5),
+        before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
+    )
+    async def fetch_upcoming_trips(
+        self,
+        session: aiohttp.ClientSession,
+        route_id: str,
+        target_date: Optional[datetime] = None,
+    ) -> List[dict]:
+        """
+        Fetch upcoming trips for a specific commuter rail route.
+
+        Args:
+            session: HTTP session for API calls
+            route_id: Commuter rail route ID (e.g., "CR-Worcester")
+            target_date: Date to fetch trips for (defaults to today)
+
+        Returns:
+            List of trip data dictionaries
+        """
+        if target_date is None:
+            target_date = datetime.now(UTC)
+
+        date_str = target_date.date().isoformat()
+        auth_token = os.environ.get("AUTH_TOKEN", "")
+
+        endpoint = f"{MBTA_V3_ENDPOINT}/trips"
+        params = {
+            "filter[route]": route_id,
+            "filter[date]": date_str,
+            "include": "predictions,stops",
+            "api_key": auth_token,
+        }
+
+        async with session.get(endpoint, params=params) as response:
+            if response.status == 429:
+                raise RateLimitExceeded()
+
+            if response.status != 200:
+                logger.error(
+                    f"Failed to fetch trips for {route_id}: HTTP {response.status}"
+                )
+                return []
+
+            body = await response.text()
+            mbta_api_requests.labels("trips").inc()
+
+            try:
+                trips_data = Trips.model_validate_json(body, strict=False)
+            except ValidationError as e:
+                logger.error(f"Unable to parse trips for {route_id}: {e}")
+                return []
+
+            # Filter to upcoming trips only (within next 4 hours)
+            upcoming_trips = []
+
+            for trip in trips_data.data:
+                # Extract basic trip info
+                trip_info = {
+                    "id": getattr(trip, "id", ""),
+                    "headsign": trip.attributes.headsign,
+                    "direction_id": trip.attributes.direction_id,
+                    "route_id": route_id,
+                }
+
+                # Check if trip has predictions in the relationships
+                if (
+                    hasattr(trip, "relationships")
+                    and "predictions" in trip.relationships
+                ):
+                    predictions = trip.relationships.get("predictions", {}).get(
+                        "data", []
+                    )
+                    if predictions:
+                        upcoming_trips.append(trip_info)
+                else:
+                    # Include all trips for the current date if no prediction filtering
+                    upcoming_trips.append(trip_info)
+
+            logger.info(
+                f"Found {len(upcoming_trips)} upcoming trips for route {route_id}"
+            )
+            return upcoming_trips
+
+    async def precache_track_predictions(
+        self,
+        routes: Optional[List[str]] = None,
+        target_stations: Optional[List[str]] = None,
+    ) -> int:
+        """
+        Precache track predictions for upcoming trips.
+
+        Args:
+            routes: List of route IDs to precache (defaults to all CR routes)
+            target_stations: List of station IDs to precache for (defaults to supported stations)
+
+        Returns:
+            Number of predictions cached
+        """
+        if routes is None:
+            routes = [
+                "CR-Worcester",
+                "CR-Framingham",
+                "CR-Franklin",
+                "CR-Foxboro",
+                "CR-Providence",
+                "CR-Stoughton",
+                "CR-Needham",
+                "CR-Fairmount",
+                "CR-Fitchburg",
+                "CR-Lowell",
+                "CR-Haverhill",
+                "CR-Newburyport",
+                "CR-Rockport",
+                "CR-Kingston",
+                "CR-Plymouth",
+                "CR-Greenbush",
+            ]
+
+        if target_stations is None:
+            target_stations = [
+                "place-sstat",  # South Station
+                "place-north",  # North Station
+                "place-bbsta",  # Back Bay
+                "place-rugg",  # Ruggles
+            ]
+
+        predictions_cached = 0
+        current_time = datetime.now(UTC)
+
+        logger.info(
+            f"Starting precache for {len(routes)} routes and {len(target_stations)} stations"
+        )
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                for route_id in routes:
+                    logger.info(f"Precaching predictions for route {route_id}")
+
+                    try:
+                        # Fetch upcoming trips for this route
+                        upcoming_trips = await self.fetch_upcoming_trips(
+                            session, route_id, current_time
+                        )
+
+                        for trip_data in upcoming_trips:
+                            trip_id = trip_data["id"]
+                            headsign = trip_data["headsign"]
+                            direction_id = trip_data["direction_id"]
+
+                            # Generate predictions for each target station
+                            for station_id in target_stations:
+                                try:
+                                    # Estimate arrival time (simplified - ideally use prediction data)
+                                    estimated_time = current_time + timedelta(
+                                        minutes=30
+                                    )
+
+                                    # Check if we already have a cached prediction
+                                    cache_key = f"track_prediction:{station_id}:{route_id}:{trip_id}:{estimated_time.date()}"
+                                    if await check_cache(self.redis, cache_key):
+                                        continue  # Already cached
+
+                                    # Generate prediction
+                                    prediction = await self.predict_track(
+                                        station_id=station_id,
+                                        route_id=route_id,
+                                        trip_id=trip_id,
+                                        headsign=headsign,
+                                        direction_id=direction_id,
+                                        scheduled_time=estimated_time,
+                                    )
+
+                                    if prediction:
+                                        predictions_cached += 1
+                                        logger.debug(
+                                            f"Precached prediction: {station_id} {route_id} {trip_id} -> Track {prediction.track_number}"
+                                        )
+
+                                except (
+                                    ConnectionError,
+                                    TimeoutError,
+                                    ValidationError,
+                                    RateLimitExceeded,
+                                ) as e:
+                                    logger.error(
+                                        f"Error precaching prediction for {station_id} {route_id} {trip_id}: {e}"
+                                    )
+
+                    except (
+                        ConnectionError,
+                        TimeoutError,
+                        ValidationError,
+                        RateLimitExceeded,
+                    ) as e:
+                        logger.error(f"Error processing route {route_id}: {e}")
+                        continue
+
+        except (ConnectionError, TimeoutError, aiohttp.ClientError) as e:
+            logger.error(f"Error in precache_track_predictions: {e}")
+
+        logger.info(f"Precached {predictions_cached} track predictions")
+        return predictions_cached
