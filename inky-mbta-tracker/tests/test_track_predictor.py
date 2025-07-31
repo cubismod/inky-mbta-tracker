@@ -81,31 +81,6 @@ class TestTrackPredictor:
             track_predictor.redis.expire.assert_called()
 
     @pytest.mark.asyncio
-    async def test_get_historical_assignments(
-        self, track_predictor: TrackPredictor, sample_assignments: List[TrackAssignment]
-    ) -> None:
-        """Test retrieving historical track assignments."""
-        # Test the method with mocked dependencies
-        start_date = datetime(2024, 1, 10, tzinfo=UTC)
-        end_date = datetime(2024, 1, 20, tzinfo=UTC)
-
-        # Mock the method directly to test the interface
-        expected_assignments = sample_assignments[:3]
-
-        with patch.object(
-            track_predictor,
-            "get_historical_assignments",
-            return_value=expected_assignments,
-        ):
-            assignments = await track_predictor.get_historical_assignments(
-                "place-north", "CR-Lowell", start_date, end_date
-            )
-
-            assert len(assignments) == 3
-            assert all(isinstance(a, TrackAssignment) for a in assignments)
-            assert assignments == expected_assignments
-
-    @pytest.mark.asyncio
     async def test_is_holiday_detection(self, track_predictor: TrackPredictor) -> None:
         """Test holiday detection functionality."""
         # Test major holidays
