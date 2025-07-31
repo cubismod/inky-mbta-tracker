@@ -1,5 +1,4 @@
 import logging
-import math
 import os
 import time
 from collections import defaultdict
@@ -7,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Dict, List, Optional
 
 import aiohttp
+import mbta_client
 import shared_types.shared_types
 import textdistance
 from async_lru import alru_cache
@@ -180,8 +180,8 @@ class TrackPredictor:
         try:
             start_time = time.time()
 
-            # Look back 6 months for better historical data coverage
-            start_date = scheduled_time - timedelta(days=180)
+            # Look back 3 months for historical data
+            start_date = scheduled_time - timedelta(days=90)
             end_date = scheduled_time
 
             assignments = await self.get_historical_assignments(
@@ -194,168 +194,164 @@ class TrackPredictor:
                 )
                 return {}
 
+            # Analyze patterns by different criteria
+            patterns: dict[str, dict[str, int]] = {
+                "exact_match": defaultdict(int),  # Same headsign, time, direction
+                "headsign_match": defaultdict(int),  # Same headsign, direction
+                "time_match": defaultdict(int),  # Same time window (±30 min)
+                "direction_match": defaultdict(int),  # Same direction
+                "day_of_week_match": defaultdict(int),  # Same day of week
+            }
+
             target_dow = scheduled_time.weekday()
             target_hour = scheduled_time.hour
             target_minute = scheduled_time.minute
-            target_is_weekend = target_dow in [5, 6]
-            target_is_holiday = await self._is_holiday(scheduled_time)
-
-            # Enhanced pattern analysis with adaptive scoring
-            pattern_scores: dict[str, float] = defaultdict(float)
-            pattern_counts: dict[str, int] = defaultdict(int)
 
             for assignment in assignments:
                 if not assignment.track_number:
                     continue
 
-                # Calculate various similarity metrics
+                if assignment.track_number:
+                    headsign_similarity = (
+                        textdistance.levenshtein.normalized_similarity(
+                            trip_headsign, assignment.headsign
+                        )
+                    )
+                    # Exact match (same headsign, time window, direction)
+                    # we append the commuter rail line to the headsign when processing
+                    # in mbta_client.py so we do a substring match here
+                    if (
+                        headsign_similarity > 0.7
+                        and assignment.direction_id == direction_id
+                        and abs(assignment.hour - target_hour) <= 1
+                    ):
+                        logger.debug(
+                            f"Exact match found for station_id={station_id}, route_id={route_id}, trip_id={trip_headsign}, direction_id={direction_id}, scheduled_time={scheduled_time}, track_id={assignment.track_number}"
+                        )
+                        patterns["exact_match"][assignment.track_number] += 10
+
+                    # Headsign match
+                    if (
+                        headsign_similarity > 0.7
+                        and assignment.direction_id == direction_id
+                    ):
+                        logger.debug(
+                            f"Headsign match found for station_id={station_id}, route_id={route_id}, trip_id={trip_headsign}, direction_id={direction_id}, scheduled_time={scheduled_time}, track_id={assignment.track_number}"
+                        )
+                        patterns["headsign_match"][assignment.track_number] += 5
+
+                    # Time match (±30 minutes)
+                    time_diff = abs(
+                        assignment.hour * 60
+                        + assignment.minute
+                        - target_hour * 60
+                        - target_minute
+                    )
+                    if time_diff <= 30:
+                        logger.debug(
+                            f"Time match found for station_id={station_id}, route_id={route_id}, trip_id={trip_headsign}, direction_id={direction_id}, scheduled_time={scheduled_time}, track_id={assignment.track_number}"
+                        )
+                        patterns["time_match"][assignment.track_number] += 3
+
+                    # Direction match
+                    if assignment.direction_id == direction_id:
+                        logger.debug(
+                            f"Direction match found for station_id={station_id}, route_id={route_id}, trip_id={trip_headsign}, direction_id={direction_id}, scheduled_time={scheduled_time}, track_id={assignment.track_number}"
+                        )
+                        patterns["direction_match"][assignment.track_number] += 2
+
+                    # Day of week match
+                    if assignment.day_of_week == target_dow:
+                        logger.debug(
+                            f"Day of week match found for station_id={station_id}, route_id={route_id}, trip_id={trip_headsign}, direction_id={direction_id}, scheduled_time={scheduled_time}, track_id={assignment.track_number}"
+                        )
+                        patterns["day_of_week_match"][assignment.track_number] += 1
+
+            # Combine all patterns with weights and time decay
+            combined_scores: dict[str, float] = defaultdict(float)
+            sample_counts: dict[str, int] = defaultdict(int)
+
+            # Apply time-based weighting to historical data
+            for assignment in assignments:
+                if not assignment.track_number:
+                    continue
+
+                # Time decay factor (recent data weighted more heavily)
+                days_old = (scheduled_time - assignment.scheduled_time).days
+                time_decay = max(0.1, 1.0 - (days_old / 90.0))  # 90-day decay
+
+                # Calculate pattern matches with existing logic
                 headsign_similarity = textdistance.levenshtein.normalized_similarity(
                     trip_headsign, assignment.headsign
                 )
 
-                # Improved time matching with tighter windows
-                time_diff_minutes = abs(
-                    assignment.hour * 60
-                    + assignment.minute
-                    - target_hour * 60
-                    - target_minute
-                )
-
-                # Service pattern similarity
-                assignment_is_weekend = assignment.day_of_week in [5, 6]
-                assignment_is_holiday = await self._is_holiday(
-                    assignment.scheduled_time
-                )
-
-                # Calculate base score with weighted criteria
-                base_score = 0.0
-
-                # Exact match: headsign + time + direction + service pattern
+                base_score = 0
                 if (
-                    headsign_similarity > 0.8
+                    headsign_similarity > 0.7
                     and assignment.direction_id == direction_id
-                    and time_diff_minutes <= 15
-                    and target_is_weekend == assignment_is_weekend
+                    and abs(assignment.hour - target_hour) <= 1
                 ):
-                    base_score = 15.0
-                    logger.debug(f"Exact match found: {assignment.track_number}")
-
-                # Strong headsign + direction + service pattern match
+                    base_score = 10
                 elif (
                     headsign_similarity > 0.7
                     and assignment.direction_id == direction_id
-                    and target_is_weekend == assignment_is_weekend
                 ):
-                    base_score = 10.0 * headsign_similarity
-                    logger.debug(f"Strong headsign match: {assignment.track_number}")
-
-                # Time-based patterns with tighter windows
+                    base_score = 5
                 elif (
-                    assignment.direction_id == direction_id
-                    and time_diff_minutes <= 10
-                    and target_is_weekend == assignment_is_weekend
-                ):
-                    base_score = 8.0
-                    logger.debug(f"Precise time match: {assignment.track_number}")
-
-                elif (
-                    assignment.direction_id == direction_id and time_diff_minutes <= 20
-                ):
-                    base_score = 5.0
-                    logger.debug(f"Time window match: {assignment.track_number}")
-
-                # Direction + service pattern match
-                elif (
-                    assignment.direction_id == direction_id
-                    and target_is_weekend == assignment_is_weekend
-                ):
-                    base_score = 4.0
-                    logger.debug(
-                        f"Direction + service pattern match: {assignment.track_number}"
+                    abs(
+                        assignment.hour * 60
+                        + assignment.minute
+                        - target_hour * 60
+                        - target_minute
                     )
-
-                # Holiday pattern matching
-                elif (
-                    target_is_holiday
-                    and assignment_is_holiday
-                    and assignment.direction_id == direction_id
+                    <= 30
                 ):
-                    base_score = 6.0
-                    logger.debug(f"Holiday pattern match: {assignment.track_number}")
-
-                # Day of week pattern (weekday vs weekend distinction)
+                    base_score = 3
+                elif assignment.direction_id == direction_id:
+                    base_score = 2
                 elif assignment.day_of_week == target_dow:
-                    base_score = 2.0
-                    logger.debug(f"Day of week match: {assignment.track_number}")
+                    # Enhanced day-type pattern matching
+                    is_weekend = target_dow in [5, 6]  # Saturday, Sunday
+                    is_assignment_weekend = assignment.day_of_week in [5, 6]
 
-                # Apply time decay with exponential weighting
+                    if is_weekend == is_assignment_weekend:
+                        base_score = 2  # Weekend/weekday pattern match
+                    else:
+                        base_score = 1  # Basic day match
+
                 if base_score > 0:
-                    days_old = (scheduled_time - assignment.scheduled_time).days
-                    time_decay = max(0.1, 0.95 ** (days_old / 7.0))  # Weekly decay
+                    combined_scores[assignment.track_number] += base_score * time_decay
+                    sample_counts[assignment.track_number] += 1
 
-                    # Data quality adjustment
-                    quality_factor = self._calculate_data_quality(
-                        assignment, scheduled_time
-                    )
+            # Convert to probabilities with confidence adjustments
+            if combined_scores:
+                total_score = sum(combined_scores.values())
+                total = {}
+                for track, score in combined_scores.items():
+                    base_prob = score / total_score
+                    sample_size = sample_counts[track]
 
-                    adjusted_score = base_score * time_decay * quality_factor
-                    pattern_scores[assignment.track_number] += adjusted_score
-                    pattern_counts[assignment.track_number] += 1
+                    # Sample size confidence (more samples = higher confidence)
+                    sample_confidence = min(1.0, sample_size / 10.0)
 
-            # Enhanced confidence calculation with multi-factor scoring
-            if pattern_scores:
-                # Calculate enhanced confidence scores
-                confidence_scores = {}
-                total_raw_score = sum(pattern_scores.values())
-
-                for track, raw_score in pattern_scores.items():
-                    sample_count = pattern_counts[track]
-                    base_confidence = raw_score / total_raw_score
-
-                    # Sample size confidence (logarithmic scaling for diminishing returns)
-                    sample_confidence = min(
-                        1.0, math.log(sample_count + 1) / math.log(20)
-                    )
-
-                    # Historical accuracy for this specific track/route combination
-                    track_accuracy = await self._get_prediction_accuracy(
+                    # Historical accuracy factor
+                    accuracy = await self._get_prediction_accuracy(
                         station_id, route_id, track
                     )
 
-                    # Recency factor - prefer recent successful predictions
-                    recency_factor = await self._get_recent_success_rate(
-                        station_id, route_id, track, scheduled_time
-                    )
+                    # Combined confidence adjustment
+                    confidence_factor = 0.3 + 0.4 * sample_confidence + 0.3 * accuracy
+                    adjusted_prob = base_prob * confidence_factor
+                    total[track] = adjusted_prob
 
-                    # Consistency factor - prefer tracks with consistent historical usage
-                    consistency_factor = await self._calculate_track_consistency(
-                        station_id, route_id, track, assignments
-                    )
-
-                    # Combined confidence with weighted factors
-                    enhanced_confidence = (
-                        0.35 * base_confidence
-                        + 0.25 * sample_confidence
-                        + 0.20 * track_accuracy
-                        + 0.10 * recency_factor
-                        + 0.10 * consistency_factor
-                    )
-
-                    confidence_scores[track] = enhanced_confidence
-
-                # Normalize confidence scores
-                total_confidence = sum(confidence_scores.values())
-                if total_confidence > 0:
-                    confidence_scores = {
-                        track: conf / total_confidence
-                        for track, conf in confidence_scores.items()
-                    }
-
+                # Renormalize after confidence adjustments
+                adj_total = sum(total.values())
+                if adj_total > 0:
+                    total = {track: prob / adj_total for track, prob in total.items()}
                 logger.debug(
-                    f"Enhanced pattern analysis for station_id={station_id}, route_id={route_id}, "
-                    f"trip_id={trip_headsign}, direction_id={direction_id}"
+                    f"Calculated pattern for station_id={station_id}, route_id={route_id}, trip_id={trip_headsign}, direction_id={direction_id}"
                 )
-                logger.debug(f"Confidence scores: {confidence_scores}")
+                logger.debug(f"Total score={total_score}, total={total}")
 
                 # Record analysis duration
                 duration = time.time() - start_time
@@ -363,7 +359,7 @@ class TrackPredictor:
                     station_id=station_id, route_id=route_id, instance=INSTANCE_ID
                 ).set(duration)
 
-                return confidence_scores
+                return total
 
             logger.debug(
                 f"No patterns found for station_id={station_id}, route_id={route_id}, trip_id={trip_headsign}, direction_id={direction_id}, scheduled_time={scheduled_time}"
@@ -420,9 +416,6 @@ class TrackPredictor:
                 return None
 
             # it makes more sense to get the headsign client-side using the exact trip_id due to API rate limits
-            # Lazy import to avoid circular dependency
-            import mbta_client
-
             async with aiohttp.ClientSession(MBTA_V3_ENDPOINT) as session:
                 async with mbta_client.MBTAApi(
                     watcher_type=shared_types.shared_types.TaskType.TRACK_PREDICTIONS
@@ -484,15 +477,10 @@ class TrackPredictor:
             best_track = max(patterns.keys(), key=lambda x: patterns[x])
             confidence = patterns[best_track]
 
-            # Dynamic confidence threshold based on historical accuracy
-            overall_accuracy = await self._get_overall_accuracy(station_id, route_id)
-            dynamic_threshold = max(0.25, min(0.5, overall_accuracy * 0.6))
-
-            if confidence < dynamic_threshold:
+            # Only make predictions if confidence is above threshold
+            if confidence < 0.3:  # 30% confidence threshold
                 logger.debug(
-                    f"No prediction made for station_id={station_id}, route_id={route_id}, trip_id={trip_id}, "
-                    f"headsign={headsign}, direction_id={direction_id}, scheduled_time={scheduled_time}, "
-                    f"confidence={confidence:.3f} < threshold={dynamic_threshold:.3f}"
+                    f"No prediction made for station_id={station_id}, route_id={route_id}, trip_id={trip_id}, headsign={headsign}, direction_id={direction_id}, scheduled_time={scheduled_time}, confidence={confidence}"
                 )
                 return None
 
@@ -567,141 +555,6 @@ class TrackPredictor:
             logger.error(f"Failed to predict track: {e}")
             return None
 
-    async def _is_holiday(self, date: datetime) -> bool:
-        """Check if a date is a holiday (simplified implementation)."""
-        try:
-            # Strip time components for comparison
-            date_only = date.replace(hour=0, minute=0, second=0, microsecond=0)
-
-            # Common US holidays that affect transit schedules
-            holidays = [
-                # New Year's Day
-                datetime(date.year, 1, 1, tzinfo=date.tzinfo),
-                # Independence Day
-                datetime(date.year, 7, 4, tzinfo=date.tzinfo),
-                # Christmas Day
-                datetime(date.year, 12, 25, tzinfo=date.tzinfo),
-            ]
-
-            # Check if the date matches any holiday
-            for holiday in holidays:
-                if date_only.date() == holiday.date():
-                    return True
-
-            # Check for Thanksgiving (4th Thursday in November)
-            if date.month == 11:
-                # Find first Thursday in November
-                first_day = datetime(date.year, 11, 1, tzinfo=date.tzinfo)
-                days_until_thursday = (3 - first_day.weekday()) % 7
-                first_thursday = first_day + timedelta(days=days_until_thursday)
-                # Fourth Thursday is 3 weeks later
-                thanksgiving = first_thursday + timedelta(weeks=3)
-                if date_only.date() == thanksgiving.date():
-                    return True
-
-            return False
-        except (ValueError, AttributeError):
-            return False
-
-    def _calculate_data_quality(
-        self, assignment: TrackAssignment, target_time: datetime
-    ) -> float:
-        """Calculate data quality factor for an assignment."""
-        quality = 1.0
-
-        # Penalize missing or incomplete data
-        if not assignment.track_number or not assignment.track_number.isdigit():
-            quality *= 0.5
-
-        # Prefer assignments with actual times over scheduled only
-        if assignment.actual_time:
-            time_diff = abs(
-                (assignment.actual_time - assignment.scheduled_time).total_seconds()
-            )
-            if time_diff > 1800:  # 30 minutes delay
-                quality *= 0.8
-        else:
-            quality *= 0.9  # Slight penalty for no actual time data
-
-        # Boost quality for very recent data
-        days_old = (target_time - assignment.scheduled_time).days
-        if days_old <= 7:
-            quality *= 1.2
-        elif days_old <= 30:
-            quality *= 1.1
-
-        return min(quality, 1.5)  # Cap the boost
-
-    async def _get_recent_success_rate(
-        self, station_id: str, route_id: str, track: str, target_time: datetime
-    ) -> float:
-        """Get recent prediction success rate for this track."""
-        try:
-            # Look at predictions from the last 30 days
-            recent_key = f"track_recent_success:{station_id}:{route_id}:{track}"
-            recent_data = await self.redis.get(recent_key)
-
-            if recent_data:
-                parts = recent_data.decode().split(":")
-                if len(parts) == 2:
-                    correct = int(parts[0])
-                    total = int(parts[1])
-                    if total > 0:
-                        return correct / total
-
-            # Default to moderate success rate for unknown tracks
-            return 0.75
-        except (ConnectionError, TimeoutError, ValueError):
-            return 0.75
-
-    async def _calculate_track_consistency(
-        self,
-        station_id: str,
-        route_id: str,
-        track: str,
-        assignments: List[TrackAssignment],
-    ) -> float:
-        """Calculate how consistently this track is used."""
-        try:
-            # Count assignments for this track vs. total assignments
-            track_assignments = [a for a in assignments if a.track_number == track]
-            if not track_assignments:
-                return 0.0
-
-            # Calculate consistency over different time periods
-            time_buckets: dict[int, int] = defaultdict(int)
-            total_buckets: dict[int, int] = defaultdict(int)
-
-            for assignment in assignments:
-                if not assignment.track_number:
-                    continue
-
-                # Create time bucket (hour of day)
-                bucket = assignment.hour
-                total_buckets[bucket] += 1
-                if assignment.track_number == track:
-                    time_buckets[bucket] += 1
-
-            # Calculate average consistency across time buckets
-            if not total_buckets:
-                return 0.0
-
-            consistency_scores = []
-            for bucket, total in total_buckets.items():
-                if total > 0:
-                    consistency = time_buckets[bucket] / total
-                    consistency_scores.append(consistency)
-
-            return (
-                sum(consistency_scores) / len(consistency_scores)
-                if consistency_scores
-                else 0.0
-            )
-
-        except Exception as e:
-            logger.error(f"Error calculating track consistency: {e}")
-            return 0.5
-
     async def _store_prediction(self, prediction: TrackPrediction) -> None:
         """Store a prediction for later validation."""
         try:
@@ -757,14 +610,15 @@ class TrackPredictor:
         actual_track_number: Optional[str],
     ) -> None:
         """
-        Enhanced validation of predictions with detailed accuracy tracking.
+        Validate a previous prediction against actual track assignment.
 
         Args:
             station_id: The station ID
             route_id: The route ID
             trip_id: The trip ID
             scheduled_time: The scheduled departure time
-            actual_track_number: The actual track number assigned
+            actual_platform_code: The actual platform code assigned
+            actual_platform_name: The actual platform name assigned
         """
         try:
             key = f"track_prediction:{station_id}:{route_id}:{trip_id}:{scheduled_time.date()}"
@@ -778,28 +632,12 @@ class TrackPredictor:
             # Check if prediction was correct
             is_correct = prediction.track_number == actual_track_number
 
-            # Enhanced statistics update
+            # Update statistics
             await self._update_prediction_stats(
-                station_id,
-                route_id,
-                is_correct,
-                prediction.confidence_score,
-                prediction.track_number,
-                prediction.prediction_method,
+                station_id, route_id, is_correct, prediction.confidence_score
             )
 
-            # Update recent success rate tracking
-            if prediction.track_number:
-                await self._update_recent_success_rate(
-                    station_id, route_id, prediction.track_number, is_correct
-                )
-
-            # Update per-method accuracy tracking
-            await self._update_method_accuracy(
-                station_id, route_id, prediction.prediction_method, is_correct
-            )
-
-            # Record validation metric with additional labels
+            # Record validation metric
             result = "correct" if is_correct else "incorrect"
             track_predictions_validated.labels(
                 station_id=station_id,
@@ -808,18 +646,8 @@ class TrackPredictor:
                 instance=INSTANCE_ID,
             ).inc()
 
-            confidence_level = (
-                "high"
-                if prediction.confidence_score >= 0.8
-                else "medium"
-                if prediction.confidence_score >= 0.5
-                else "low"
-            )
             logger.info(
-                f"Validated prediction for {station_id} {route_id}: {'CORRECT' if is_correct else 'INCORRECT'} "
-                f"(predicted: {prediction.track_number}, actual: {actual_track_number}, "
-                f"confidence: {prediction.confidence_score:.2f} ({confidence_level}), "
-                f"method: {prediction.prediction_method})"
+                f"Validated prediction for {station_id} {route_id}: {'CORRECT' if is_correct else 'INCORRECT'}"
             )
 
         except (ConnectionError, TimeoutError) as e:
@@ -834,15 +662,9 @@ class TrackPredictor:
             )
 
     async def _update_prediction_stats(
-        self,
-        station_id: str,
-        route_id: str,
-        is_correct: bool,
-        confidence: float,
-        predicted_track: Optional[str] = None,
-        method: Optional[str] = None,
+        self, station_id: str, route_id: str, is_correct: bool, confidence: float
     ) -> None:
-        """Enhanced prediction statistics update."""
+        """Update prediction statistics."""
         try:
             stats_key = f"track_stats:{station_id}:{route_id}"
             stats_data = await check_cache(self.redis, stats_key)
@@ -861,34 +683,25 @@ class TrackPredictor:
                     average_confidence=0.0,
                 )
 
-            # Update overall stats
+            # Update stats
             stats.total_predictions += 1
             if is_correct:
                 stats.correct_predictions += 1
             stats.accuracy_rate = stats.correct_predictions / stats.total_predictions
             stats.last_updated = datetime.now(UTC)
 
-            # Update per-track predictions count
-            if predicted_track:
-                if predicted_track not in stats.prediction_counts_by_track:
-                    stats.prediction_counts_by_track[predicted_track] = 0
-                stats.prediction_counts_by_track[predicted_track] += 1
-
-            # Update average confidence with exponential moving average
-            alpha = 0.1  # Learning rate for confidence updates
-            if stats.total_predictions == 1:
-                stats.average_confidence = confidence
-            else:
-                stats.average_confidence = (
-                    alpha * confidence + (1 - alpha) * stats.average_confidence
-                )
+            # Update average confidence
+            old_total = (stats.total_predictions - 1) * stats.average_confidence
+            stats.average_confidence = (
+                old_total + confidence
+            ) / stats.total_predictions
 
             # Store updated stats
             await write_cache(
                 self.redis,
                 stats_key,
                 stats.model_dump_json(),
-                30 * DAY,
+                30 * DAY,  # Store for 30 days
             )
 
         except (ConnectionError, TimeoutError) as e:
@@ -901,80 +714,6 @@ class TrackPredictor:
                 f"Failed to update prediction stats due to validation error: {e}",
                 exc_info=True,
             )
-
-    async def _update_recent_success_rate(
-        self, station_id: str, route_id: str, track: str, is_correct: bool
-    ) -> None:
-        """Update recent success rate for track-specific accuracy."""
-        try:
-            recent_key = f"track_recent_success:{station_id}:{route_id}:{track}"
-            recent_data = await self.redis.get(recent_key)
-
-            correct_count = 0
-            total_count = 0
-
-            if recent_data:
-                parts = recent_data.decode().split(":")
-                if len(parts) == 2:
-                    correct_count = int(parts[0])
-                    total_count = int(parts[1])
-
-            # Update counts
-            total_count += 1
-            if is_correct:
-                correct_count += 1
-
-            # Store with 30-day expiration
-            await self.redis.setex(
-                recent_key, 30 * DAY, f"{correct_count}:{total_count}"
-            )
-            redis_commands.labels("setex").inc()
-
-        except (ConnectionError, TimeoutError) as e:
-            logger.error(f"Failed to update recent success rate: {e}")
-
-    async def _update_method_accuracy(
-        self, station_id: str, route_id: str, method: str, is_correct: bool
-    ) -> None:
-        """Track accuracy by prediction method."""
-        try:
-            method_key = f"track_method_accuracy:{station_id}:{route_id}:{method}"
-            method_data = await self.redis.get(method_key)
-
-            correct_count = 0
-            total_count = 0
-
-            if method_data:
-                parts = method_data.decode().split(":")
-                if len(parts) == 2:
-                    correct_count = int(parts[0])
-                    total_count = int(parts[1])
-
-            total_count += 1
-            if is_correct:
-                correct_count += 1
-
-            # Store with 90-day expiration
-            await self.redis.setex(
-                method_key, 90 * DAY, f"{correct_count}:{total_count}"
-            )
-            redis_commands.labels("setex").inc()
-
-        except (ConnectionError, TimeoutError) as e:
-            logger.error(f"Failed to update method accuracy: {e}")
-
-    async def _get_overall_accuracy(self, station_id: str, route_id: str) -> float:
-        """Get overall prediction accuracy for dynamic threshold calculation."""
-        try:
-            stats = await self.get_prediction_stats(station_id, route_id)
-            if stats and stats.total_predictions > 5:
-                return stats.accuracy_rate
-            else:
-                # Default to moderate accuracy for stations with limited data
-                return 0.6
-        except Exception as e:
-            logger.error(f"Failed to get overall accuracy: {e}")
-            return 0.6
 
     async def get_prediction_stats(
         self, station_id: str, route_id: str

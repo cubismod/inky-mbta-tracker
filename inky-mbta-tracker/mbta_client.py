@@ -186,7 +186,7 @@ class MBTAApi:
     facilities: Optional[Facilities]
     expiration_time: Optional[datetime]
     r_client: Redis
-    track_predictor: Optional["TrackPredictor"] = None
+    track_predictor: TrackPredictor
     show_on_display: bool = True
     route_substring_filter: Optional[str] = None
 
@@ -213,9 +213,6 @@ class MBTAApi:
             port=int(os.environ.get("IMT_REDIS_PORT", "6379")),
             password=os.environ.get("IMT_REDIS_PASSWORD", ""),
         )
-        # Lazy import to avoid circular dependency
-        from track_predictor.track_predictor import TrackPredictor
-
         self.track_predictor = TrackPredictor()
         self.show_on_display = show_on_display
         self.route_substring_filter = route_substring_filter
@@ -529,19 +526,18 @@ class MBTAApi:
                                         minute=schedule_time.minute,
                                     )
 
-                                    if self.track_predictor:
-                                        await self.track_predictor.store_historical_assignment(
-                                            assignment
-                                        )
+                                    await self.track_predictor.store_historical_assignment(
+                                        assignment
+                                    )
 
-                                        # Validate previous predictions
-                                        await self.track_predictor.validate_prediction(
-                                            assignment.station_id,
-                                            route_id,
-                                            trip_id,
-                                            schedule_time,
-                                            track_number,
-                                        )
+                                    # Validate previous predictions
+                                    await self.track_predictor.validate_prediction(
+                                        assignment.station_id,
+                                        route_id,
+                                        trip_id,
+                                        schedule_time,
+                                        track_number,
+                                    )
 
                                 except (ConnectionError, TimeoutError) as e:
                                     logger.error(
