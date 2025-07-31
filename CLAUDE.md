@@ -86,3 +86,5 @@ Tests are located in `inky-mbta-tracker/tests/` and focus on:
 - MyPy for type checking with strict settings
 - Python 3.13+ required
 - Black-compatible formatting style
+
+MBTA API available at <https://api-v3.mbta.com/docs/swagger/swagger.json>

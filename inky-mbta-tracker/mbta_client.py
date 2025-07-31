@@ -862,6 +862,62 @@ class MBTAApi:
                     logger.error("Unable to parse stop and facilities", exc_info=err)
         return stop, facilities
 
+    async def precache_track_predictions(
+        self,
+        routes: Optional[list[str]] = None,
+        target_stations: Optional[list[str]] = None,
+    ) -> int:
+        """
+        Precache track predictions for upcoming trips using the track predictor.
+
+        Args:
+            routes: List of route IDs to precache (defaults to all CR routes)
+            target_stations: List of station IDs to precache for (defaults to supported stations)
+
+        Returns:
+            Number of predictions cached
+        """
+        if self.track_predictor:
+            return await self.track_predictor.precache_track_predictions(
+                routes=routes, target_stations=target_stations
+            )
+        else:
+            logger.warning("Track predictor not available for precaching")
+            return 0
+
+
+async def precache_track_predictions_runner(
+    routes: Optional[list[str]] = None,
+    target_stations: Optional[list[str]] = None,
+    interval_hours: int = 2,
+) -> None:
+    """
+    Run track prediction precaching at regular intervals.
+
+    Args:
+        routes: List of route IDs to precache (defaults to all CR routes)
+        target_stations: List of station IDs to precache for (defaults to supported stations)
+        interval_hours: Hours between precaching runs (default: 2)
+    """
+    logger.info(
+        f"Starting track prediction precaching runner (interval: {interval_hours}h)"
+    )
+
+    while True:
+        try:
+            async with MBTAApi(watcher_type=TaskType.TRACK_PREDICTIONS) as api:
+                predictions_count = await api.precache_track_predictions(
+                    routes=routes,
+                    target_stations=target_stations,
+                )
+                logger.info(f"Precached {predictions_count} track predictions")
+
+        except Exception as e:
+            logger.error(f"Error in track prediction precaching runner: {e}")
+
+        # Wait for the specified interval
+        await sleep(interval_hours * 3600)
+
 
 @retry(
     wait=wait_exponential_jitter(initial=2, jitter=5),
@@ -1014,6 +1070,9 @@ def thread_runner(
     expiration_time: Optional[datetime] = None,
     show_on_display: bool = True,
     route_substring_filter: Optional[str] = None,
+    precache_routes: Optional[list[str]] = None,
+    precache_stations: Optional[list[str]] = None,
+    precache_interval_hours: int = 2,
 ) -> None:
     with Runner() as runner:
         match target:
@@ -1049,6 +1108,14 @@ def thread_runner(
                         queue,
                         expiration_time,
                         route or "Red",
+                    )
+                )
+            case TaskType.TRACK_PREDICTIONS:
+                runner.run(
+                    precache_track_predictions_runner(
+                        routes=precache_routes,
+                        target_stations=precache_stations,
+                        interval_hours=precache_interval_hours,
                     )
                 )
 
