@@ -6,11 +6,12 @@ from datetime import UTC, datetime, timedelta
 from typing import Dict, List, Optional
 
 import aiohttp
-import mbta_client
 import shared_types.shared_types
 import textdistance
 from async_lru import alru_cache
 from consts import DAY, INSTANCE_ID, MBTA_V3_ENDPOINT, MINUTE, WEEK, YEAR
+from mbta_client import MBTAApi
+from metaphone import doublemetaphone
 from prometheus import (
     redis_commands,
     track_historical_assignments_stored,
@@ -30,6 +31,38 @@ from shared_types.shared_types import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Route family mappings for cross-route pattern learning
+ROUTE_FAMILIES = {
+    "CR-Worcester": ["CR-Framingham"],
+    "CR-Framingham": ["CR-Worcester"],
+    "CR-Franklin": ["CR-Foxboro", "CR-Franklin"],
+    "CR-Foxboro": ["CR-Franklin", "CR-Foxboro"],
+    "CR-Providence": ["CR-Providence", "CR-Stoughton"],
+    "CR-Stoughton": ["CR-Providence", "CR-Stoughton"],
+    "CR-Needham": ["CR-Needham"],
+    "CR-Fairmount": ["CR-Fairmount"],
+    "CR-Fitchburg": ["CR-Fitchburg"],
+    "CR-Lowell": ["CR-Lowell"],
+    "CR-Haverhill": ["CR-Haverhill"],
+    "CR-Newburyport": ["CR-Newburyport"],
+    "CR-Rockport": ["CR-Rockport"],
+    "CR-Kingston": ["CR-Kingston", "CR-Plymouth", "CR-Greenbush"],
+    "CR-Plymouth": ["CR-Kingston", "CR-Plymouth", "CR-Greenbush"],
+    "CR-Greenbush": ["CR-Kingston", "CR-Plymouth", "CR-Greenbush"],
+}
+
+# Service type patterns
+EXPRESS_KEYWORDS = ["express", "limited", "direct"]
+LOCAL_KEYWORDS = ["local", "all stops", "stopping"]
+
+# Station-specific confidence thresholds
+STATION_CONFIDENCE_THRESHOLDS = {
+    "place-sstat": 0.25,  # South Station - high volume, lower threshold
+    "place-north": 0.25,  # North Station - high volume, lower threshold
+    "place-bbsta": 0.30,  # Back Bay - medium volume
+    "default": 0.35,  # Smaller stations need higher confidence
+}
 
 
 class TrackPredictor:
@@ -106,7 +139,12 @@ class TrackPredictor:
             )
 
     async def get_historical_assignments(
-        self, station_id: str, route_id: str, start_date: datetime, end_date: datetime
+        self,
+        station_id: str,
+        route_id: str,
+        start_date: datetime,
+        end_date: datetime,
+        include_related_routes: bool = False,
     ) -> List[TrackAssignment]:
         """
         Retrieve historical track assignments for a given station and route.
@@ -116,30 +154,38 @@ class TrackPredictor:
             route_id: The route to query
             start_date: Start date for the query
             end_date: End date for the query
+            include_related_routes: Whether to include assignments from related routes
 
         Returns:
             List of historical track assignments
         """
         try:
-            time_series_key = f"track_timeseries:{station_id}:{route_id}"
-
-            # Get assignments within the time range
-            assignments = await self.redis.zrangebyscore(
-                time_series_key, start_date.timestamp(), end_date.timestamp()
-            )
-            redis_commands.labels("zrangebyscore").inc()
+            routes_to_check = [route_id]
+            if include_related_routes and route_id in ROUTE_FAMILIES:
+                routes_to_check.extend(ROUTE_FAMILIES[route_id])
 
             results = []
-            for assignment_key in assignments:
-                assignment_data = await check_cache(self.redis, assignment_key.decode())
-                if assignment_data:
-                    try:
-                        assignment = TrackAssignment.model_validate_json(
-                            assignment_data
-                        )
-                        results.append(assignment)
-                    except ValidationError as e:
-                        logger.error(f"Failed to parse assignment data: {e}")
+            for current_route in routes_to_check:
+                time_series_key = f"track_timeseries:{station_id}:{current_route}"
+
+                # Get assignments within the time range
+                assignments = await self.redis.zrangebyscore(
+                    time_series_key, start_date.timestamp(), end_date.timestamp()
+                )
+                redis_commands.labels("zrangebyscore").inc()
+
+                for assignment_key in assignments:
+                    assignment_data = await check_cache(
+                        self.redis, assignment_key.decode()
+                    )
+                    if assignment_data:
+                        try:
+                            assignment = TrackAssignment.model_validate_json(
+                                assignment_data
+                            )
+                            results.append(assignment)
+                        except ValidationError as e:
+                            logger.error(f"Failed to parse assignment data: {e}")
 
             return results
 
@@ -155,6 +201,87 @@ class TrackPredictor:
                 exc_info=True,
             )
             return []
+
+    def _enhanced_headsign_similarity(self, headsign1: str, headsign2: str) -> float:
+        """
+        Enhanced headsign similarity using multiple matching algorithms.
+
+        Returns a score between 0.0 and 1.0.
+        """
+        if not headsign1 or not headsign2:
+            return 0.0
+
+        # Normalize strings
+        h1 = headsign1.lower().strip()
+        h2 = headsign2.lower().strip()
+
+        if h1 == h2:
+            return 1.0
+
+        # Multiple similarity measures with weights
+        levenshtein_sim = textdistance.levenshtein.normalized_similarity(h1, h2)
+        jaccard_sim = textdistance.jaccard.normalized_similarity(h1.split(), h2.split())
+
+        # Phonetic similarity using metaphone
+        try:
+            metaphone1 = doublemetaphone(h1)
+            metaphone2 = doublemetaphone(h2)
+            phonetic_match = 0.0
+            if metaphone1[0] and metaphone2[0] and metaphone1[0] == metaphone2[0]:
+                phonetic_match = 0.8
+            elif metaphone1[1] and metaphone2[1] and metaphone1[1] == metaphone2[1]:
+                phonetic_match = 0.6
+        except Exception:
+            phonetic_match = 0.0
+
+        # Token-based similarity for destination matching
+        token_sim = 0.0
+        tokens1 = set(h1.split())
+        tokens2 = set(h2.split())
+        if tokens1 and tokens2:
+            intersection = len(tokens1.intersection(tokens2))
+            union = len(tokens1.union(tokens2))
+            token_sim = intersection / union if union > 0 else 0.0
+
+        # Weighted combination
+        combined_score = (
+            0.4 * levenshtein_sim
+            + 0.25 * jaccard_sim
+            + 0.2 * phonetic_match
+            + 0.15 * token_sim
+        )
+
+        return min(1.0, combined_score)
+
+    def _detect_service_type(self, headsign: str) -> str:
+        """
+        Detect service type from headsign (express, local, etc.).
+        """
+        headsign_lower = headsign.lower()
+
+        for keyword in EXPRESS_KEYWORDS:
+            if keyword in headsign_lower:
+                return "express"
+
+        for keyword in LOCAL_KEYWORDS:
+            if keyword in headsign_lower:
+                return "local"
+
+        return "regular"
+
+    def _is_weekend_service(self, day_of_week: int) -> bool:
+        """
+        Check if the day represents weekend service.
+        """
+        return day_of_week in [5, 6]  # Saturday, Sunday
+
+    def _get_station_confidence_threshold(self, station_id: str) -> float:
+        """
+        Get station-specific confidence threshold.
+        """
+        return STATION_CONFIDENCE_THRESHOLDS.get(
+            station_id, STATION_CONFIDENCE_THRESHOLDS["default"]
+        )
 
     async def analyze_patterns(
         self,
@@ -184,8 +311,9 @@ class TrackPredictor:
             start_date = scheduled_time - timedelta(days=90)
             end_date = scheduled_time
 
+            # Get assignments from same route and related routes
             assignments = await self.get_historical_assignments(
-                station_id, route_id, start_date, end_date
+                station_id, route_id, start_date, end_date, include_related_routes=True
             )
 
             if not assignments:
@@ -194,77 +322,97 @@ class TrackPredictor:
                 )
                 return {}
 
-            # Analyze patterns by different criteria
+            # Analyze patterns by different criteria with expanded windows
             patterns: dict[str, dict[str, int]] = {
                 "exact_match": defaultdict(int),  # Same headsign, time, direction
                 "headsign_match": defaultdict(int),  # Same headsign, direction
-                "time_match": defaultdict(int),  # Same time window (±30 min)
+                "time_match_30": defaultdict(int),  # Same time window (±30 min)
+                "time_match_60": defaultdict(int),  # Extended time window (±60 min)
+                "time_match_120": defaultdict(int),  # Wide time window (±120 min)
                 "direction_match": defaultdict(int),  # Same direction
                 "day_of_week_match": defaultdict(int),  # Same day of week
+                "service_type_match": defaultdict(int),  # Same service type
+                "weekend_pattern_match": defaultdict(int),  # Weekend vs weekday pattern
             }
 
             target_dow = scheduled_time.weekday()
             target_hour = scheduled_time.hour
             target_minute = scheduled_time.minute
+            target_service_type = self._detect_service_type(trip_headsign)
+            target_is_weekend = self._is_weekend_service(target_dow)
 
             for assignment in assignments:
                 if not assignment.track_number:
                     continue
 
                 if assignment.track_number:
-                    headsign_similarity = (
-                        textdistance.levenshtein.normalized_similarity(
-                            trip_headsign, assignment.headsign
-                        )
+                    # Use enhanced headsign similarity
+                    headsign_similarity = self._enhanced_headsign_similarity(
+                        trip_headsign, assignment.headsign
                     )
-                    # Exact match (same headsign, time window, direction)
-                    # we append the commuter rail line to the headsign when processing
-                    # in mbta_client.py so we do a substring match here
-                    if (
-                        headsign_similarity > 0.7
-                        and assignment.direction_id == direction_id
-                        and abs(assignment.hour - target_hour) <= 1
-                    ):
-                        logger.debug(
-                            f"Exact match found for station_id={station_id}, route_id={route_id}, trip_id={trip_headsign}, direction_id={direction_id}, scheduled_time={scheduled_time}, track_id={assignment.track_number}"
-                        )
-                        patterns["exact_match"][assignment.track_number] += 10
 
-                    # Headsign match
-                    if (
-                        headsign_similarity > 0.7
-                        and assignment.direction_id == direction_id
-                    ):
-                        logger.debug(
-                            f"Headsign match found for station_id={station_id}, route_id={route_id}, trip_id={trip_headsign}, direction_id={direction_id}, scheduled_time={scheduled_time}, track_id={assignment.track_number}"
-                        )
-                        patterns["headsign_match"][assignment.track_number] += 5
+                    assignment_service_type = self._detect_service_type(
+                        assignment.headsign
+                    )
+                    assignment_is_weekend = self._is_weekend_service(
+                        assignment.day_of_week
+                    )
 
-                    # Time match (±30 minutes)
-                    time_diff = abs(
+                    # Calculate time differences for multiple windows
+                    time_diff_minutes = abs(
                         assignment.hour * 60
                         + assignment.minute
                         - target_hour * 60
                         - target_minute
                     )
-                    if time_diff <= 30:
+
+                    # Exact match (enhanced similarity + time + direction)
+                    if (
+                        headsign_similarity > 0.6  # Lowered from 0.7
+                        and assignment.direction_id == direction_id
+                        and abs(assignment.hour - target_hour) <= 1
+                    ):
+                        score = 15 * headsign_similarity  # Graduated scoring
+                        patterns["exact_match"][assignment.track_number] += int(score)
                         logger.debug(
-                            f"Time match found for station_id={station_id}, route_id={route_id}, trip_id={trip_headsign}, direction_id={direction_id}, scheduled_time={scheduled_time}, track_id={assignment.track_number}"
+                            f"Exact match found (score={score}, similarity={headsign_similarity:.2f})"
                         )
-                        patterns["time_match"][assignment.track_number] += 3
+
+                    # Headsign match (lowered threshold)
+                    if (
+                        headsign_similarity > 0.5  # Lowered from 0.7
+                        and assignment.direction_id == direction_id
+                    ):
+                        score = 8 * headsign_similarity  # Graduated scoring
+                        patterns["headsign_match"][assignment.track_number] += int(
+                            score
+                        )
+                        logger.debug(
+                            f"Headsign match found (score={score}, similarity={headsign_similarity:.2f})"
+                        )
+
+                    # Multiple time windows with different weights
+                    if time_diff_minutes <= 30:
+                        patterns["time_match_30"][assignment.track_number] += 5
+                    elif time_diff_minutes <= 60:
+                        patterns["time_match_60"][assignment.track_number] += 3
+                    elif time_diff_minutes <= 120:
+                        patterns["time_match_120"][assignment.track_number] += 2
 
                     # Direction match
                     if assignment.direction_id == direction_id:
-                        logger.debug(
-                            f"Direction match found for station_id={station_id}, route_id={route_id}, trip_id={trip_headsign}, direction_id={direction_id}, scheduled_time={scheduled_time}, track_id={assignment.track_number}"
-                        )
                         patterns["direction_match"][assignment.track_number] += 2
 
-                    # Day of week match
+                    # Service type match (express vs local)
+                    if target_service_type == assignment_service_type:
+                        patterns["service_type_match"][assignment.track_number] += 3
+
+                    # Weekend vs weekday pattern matching
+                    if target_is_weekend == assignment_is_weekend:
+                        patterns["weekend_pattern_match"][assignment.track_number] += 2
+
+                    # Day of week match (reduced weight due to weekend pattern)
                     if assignment.day_of_week == target_dow:
-                        logger.debug(
-                            f"Day of week match found for station_id={station_id}, route_id={route_id}, trip_id={trip_headsign}, direction_id={direction_id}, scheduled_time={scheduled_time}, track_id={assignment.track_number}"
-                        )
                         patterns["day_of_week_match"][assignment.track_number] += 1
 
             # Combine all patterns with weights and time decay
@@ -280,44 +428,53 @@ class TrackPredictor:
                 days_old = (scheduled_time - assignment.scheduled_time).days
                 time_decay = max(0.1, 1.0 - (days_old / 90.0))  # 90-day decay
 
-                # Calculate pattern matches with existing logic
-                headsign_similarity = textdistance.levenshtein.normalized_similarity(
+                # Calculate enhanced pattern matches
+                headsign_similarity = self._enhanced_headsign_similarity(
                     trip_headsign, assignment.headsign
                 )
 
-                base_score = 0
+                assignment_service_type = self._detect_service_type(assignment.headsign)
+                assignment_is_weekend = self._is_weekend_service(assignment.day_of_week)
+
+                time_diff_minutes = abs(
+                    assignment.hour * 60
+                    + assignment.minute
+                    - target_hour * 60
+                    - target_minute
+                )
+
+                base_score = 0.0
+
+                # Exact match with enhanced similarity
                 if (
-                    headsign_similarity > 0.7
+                    headsign_similarity > 0.6
                     and assignment.direction_id == direction_id
                     and abs(assignment.hour - target_hour) <= 1
                 ):
-                    base_score = 10
+                    base_score = 15 * headsign_similarity
+                # Strong headsign match
                 elif (
-                    headsign_similarity > 0.7
+                    headsign_similarity > 0.5
                     and assignment.direction_id == direction_id
                 ):
-                    base_score = 5
-                elif (
-                    abs(
-                        assignment.hour * 60
-                        + assignment.minute
-                        - target_hour * 60
-                        - target_minute
-                    )
-                    <= 30
-                ):
-                    base_score = 3
+                    base_score = 8 * headsign_similarity
+                # Extended time windows
+                elif time_diff_minutes <= 30:
+                    base_score = 5.0
+                elif time_diff_minutes <= 60:
+                    base_score = 3.0
+                elif time_diff_minutes <= 120:
+                    base_score = 2.0
                 elif assignment.direction_id == direction_id:
-                    base_score = 2
+                    base_score = 2.0
+                elif target_is_weekend == assignment_is_weekend:
+                    base_score = 2.0  # Weekend/weekday pattern match
                 elif assignment.day_of_week == target_dow:
-                    # Enhanced day-type pattern matching
-                    is_weekend = target_dow in [5, 6]  # Saturday, Sunday
-                    is_assignment_weekend = assignment.day_of_week in [5, 6]
+                    base_score = 1.0  # Basic day match
 
-                    if is_weekend == is_assignment_weekend:
-                        base_score = 2  # Weekend/weekday pattern match
-                    else:
-                        base_score = 1  # Basic day match
+                # Bonus for service type match
+                if target_service_type == assignment_service_type and base_score > 0:
+                    base_score = base_score * 1.2  # 20% bonus
 
                 if base_score > 0:
                     combined_scores[assignment.track_number] += base_score * time_decay
@@ -417,7 +574,7 @@ class TrackPredictor:
 
             # it makes more sense to get the headsign client-side using the exact trip_id due to API rate limits
             async with aiohttp.ClientSession(MBTA_V3_ENDPOINT) as session:
-                async with mbta_client.MBTAApi(
+                async with MBTAApi(
                     watcher_type=shared_types.shared_types.TaskType.TRACK_PREDICTIONS
                 ) as api:
                     new_hs = await api.get_headsign(trip_id, session)
@@ -477,10 +634,11 @@ class TrackPredictor:
             best_track = max(patterns.keys(), key=lambda x: patterns[x])
             confidence = patterns[best_track]
 
-            # Only make predictions if confidence is above threshold
-            if confidence < 0.3:  # 30% confidence threshold
+            # Use station-specific confidence threshold
+            confidence_threshold = self._get_station_confidence_threshold(station_id)
+            if confidence < confidence_threshold:
                 logger.debug(
-                    f"No prediction made for station_id={station_id}, route_id={route_id}, trip_id={trip_id}, headsign={headsign}, direction_id={direction_id}, scheduled_time={scheduled_time}, confidence={confidence}"
+                    f"No prediction made for station_id={station_id}, route_id={route_id}, trip_id={trip_id}, headsign={headsign}, direction_id={direction_id}, scheduled_time={scheduled_time}, confidence={confidence}, threshold={confidence_threshold}"
                 )
                 return None
 

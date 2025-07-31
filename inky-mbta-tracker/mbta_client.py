@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 from queue import Queue
 from random import randint
 from types import TracebackType
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 from zoneinfo import ZoneInfo
 
 import aiohttp
@@ -47,7 +47,9 @@ from tenacity import (
     retry_if_not_exception_type,
     wait_exponential_jitter,
 )
-from track_predictor.track_predictor import TrackPredictor
+
+if TYPE_CHECKING:
+    from track_predictor.track_predictor import TrackPredictor
 
 MBTA_AUTH = os.environ.get("AUTH_TOKEN")
 logger = logging.getLogger(__name__)
@@ -186,7 +188,7 @@ class MBTAApi:
     facilities: Optional[Facilities]
     expiration_time: Optional[datetime]
     r_client: Redis
-    track_predictor: TrackPredictor
+    track_predictor: "TrackPredictor"
     show_on_display: bool = True
     route_substring_filter: Optional[str] = None
 
@@ -213,6 +215,8 @@ class MBTAApi:
             port=int(os.environ.get("IMT_REDIS_PORT", "6379")),
             password=os.environ.get("IMT_REDIS_PASSWORD", ""),
         )
+        from track_predictor.track_predictor import TrackPredictor
+
         self.track_predictor = TrackPredictor()
         self.show_on_display = show_on_display
         self.route_substring_filter = route_substring_filter
