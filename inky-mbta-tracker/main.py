@@ -138,6 +138,9 @@ def start_thread(  # type: ignore
                 route_id=route_id,
                 event_type=target,
             )
+        case TaskType.TRACK_PREDICTIONS:
+            # This case requires special handling with config parameters
+            return None  # Will be handled separately in __main__()
 
 
 async def __main__() -> None:
@@ -150,22 +153,6 @@ async def __main__() -> None:
 
     start_http_server(int(os.getenv("IMT_PROM_PORT", "8000")))
 
-    process_threads: list[threading.Thread] = list()
-    for i in range(int(os.getenv("IMT_PROCESS_QUEUE_THREADS", "1"))):
-        process_threads.append(
-            threading.Thread(
-                target=process_queue,
-                daemon=True,
-                args=[queue],
-                name=f"event_processor_{i}",
-            )
-        )
-        process_threads[i].start()
-
-    for process_thread in process_threads:
-        tasks.append(
-            TaskTracker(process_thread, stop=None, event_type=TaskType.PROCESSOR)
-        )
     for stop in config.stops:
         if stop.schedule_only:
             thr = start_thread(TaskType.SCHEDULES, stop=stop, queue=queue)
@@ -195,6 +182,46 @@ async def __main__() -> None:
     )
     backup_thr.start()
     tasks.append(TaskTracker(backup_thr, stop=None, event_type=TaskType.REDIS_BACKUP))
+
+    # Start track prediction precaching if enabled
+    if config.enable_track_predictions:
+        track_pred_thr = threading.Thread(
+            target=thread_runner,
+            kwargs={
+                "target": TaskType.TRACK_PREDICTIONS,
+                "queue": queue,
+                "precache_routes": config.track_prediction_routes,
+                "precache_stations": config.track_prediction_stations,
+                "precache_interval_hours": config.track_prediction_interval_hours,
+            },
+            daemon=True,
+            name="track_predictions_precache",
+        )
+        track_pred_thr.start()
+        tasks.append(
+            TaskTracker(
+                track_pred_thr, stop=None, event_type=TaskType.TRACK_PREDICTIONS
+            )
+        )
+
+    process_threads: list[threading.Thread] = list()
+    for i in range(int(os.getenv("IMT_PROCESS_QUEUE_THREADS", "1"))):
+        process_threads.append(
+            threading.Thread(
+                target=process_queue,
+                daemon=True,
+                args=[queue],
+                name=f"event_processor_{i}",
+            )
+        )
+        process_threads[i].start()
+        if i < len(process_threads) - 1:
+            await sleep(2)
+
+    for process_thread in process_threads:
+        tasks.append(
+            TaskTracker(process_thread, stop=None, event_type=TaskType.PROCESSOR)
+        )
 
     while True:
         running_threads.set(len(tasks))
@@ -228,6 +255,29 @@ async def __main__() -> None:
                         )
                         if thr:
                             tasks.append(thr)
+                    case TaskType.TRACK_PREDICTIONS:
+                        # Restart track predictions precaching thread
+                        if config.enable_track_predictions:
+                            track_pred_thr = threading.Thread(
+                                target=thread_runner,
+                                kwargs={
+                                    "target": TaskType.TRACK_PREDICTIONS,
+                                    "queue": queue,
+                                    "precache_routes": config.track_prediction_routes,
+                                    "precache_stations": config.track_prediction_stations,
+                                    "precache_interval_hours": config.track_prediction_interval_hours,
+                                },
+                                daemon=True,
+                                name="track_predictions_precache",
+                            )
+                            track_pred_thr.start()
+                            tasks.append(
+                                TaskTracker(
+                                    track_pred_thr,
+                                    stop=None,
+                                    event_type=TaskType.TRACK_PREDICTIONS,
+                                )
+                            )
 
 
 @click.command()

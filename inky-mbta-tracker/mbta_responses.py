@@ -23,6 +23,16 @@ class TypeAndID(BaseModel):
     id: str
 
 
+class SelfAndRelated(BaseModel):
+    self: str
+    related: str
+
+
+class LinksAndData(BaseModel):
+    links: Optional[SelfAndRelated] = None
+    data: Optional[TypeAndID] = None
+
+
 class ScheduleRelationship(BaseModel):
     data: Optional[TypeAndID] = None
 
@@ -100,11 +110,6 @@ class Route(BaseModel):
     data: list[RouteResource]
 
 
-class SelfAndRelated(BaseModel):
-    self: str
-    related: str
-
-
 class FacilityData(BaseModel):
     type: str
     id: str
@@ -172,6 +177,14 @@ class TripAttributes(BaseModel):
     bikes_allowed: Optional[int] = None
 
 
+class TripRelationship(BaseModel):
+    shape: Optional[LinksAndData] = None
+    service: Optional[LinksAndData] = None
+    route_pattern: Optional[LinksAndData] = None
+    route: Optional[LinksAndData] = None
+    occupancy: Optional[LinksAndData] = None
+
+
 class TripResource(BaseModel):
     type: str
     relationships: dict
@@ -219,11 +232,6 @@ class StopResource(BaseModel):
 
 class Stop(BaseModel):
     data: StopResource
-
-
-class LinksAndData(BaseModel):
-    links: Optional[SelfAndRelated] = None
-    data: Optional[TypeAndID] = None
 
 
 class PredictionRelationships(BaseModel):

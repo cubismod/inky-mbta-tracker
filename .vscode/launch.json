@@ -15,7 +15,8 @@
             "name": "Python Debugger: Track Prediction API",
             "type": "debugpy",
             "request": "launch",
-            "program": "${workspaceFolder}/.venv/bin/prediction-api",
+            "program": "${workspaceFolder}/.venv/bin/inky-mbta-tracker",
+            "args": ["--prediction-api"],
             "envFile": "${workspaceFolder}/.env"
         }
     ]

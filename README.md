@@ -116,6 +116,24 @@ Add this environment variable to enable track prediction features:
 IMT_TRACK_API_PORT=8080
 ```
 
+#### Track Prediction Precaching
+
+To enable automatic track prediction precaching, add these fields to your `config.json`:
+
+```json
+{
+  "enable_track_predictions": true,
+  "track_prediction_routes": ["CR-Worcester", "CR-Providence"],
+  "track_prediction_stations": ["place-sstat", "place-north", "place-bbsta"],
+  "track_prediction_interval_hours": 2
+}
+```
+
+- `enable_track_predictions`: Boolean to enable/disable precaching (default: false)
+- `track_prediction_routes`: List of commuter rail routes to precache (optional, defaults to all CR routes)
+- `track_prediction_stations`: List of station IDs to precache for (optional, defaults to major stations)
+- `track_prediction_interval_hours`: Hours between precaching runs (default: 2)
+
 Note that you will also need to add the following stations to your configuration:
 
 ```json

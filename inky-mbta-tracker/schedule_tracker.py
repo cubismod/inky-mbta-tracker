@@ -1,6 +1,7 @@
 import logging
 import os
 import random
+import threading
 import time
 from asyncio import QueueEmpty, Runner
 from datetime import UTC, datetime, timedelta
@@ -177,18 +178,37 @@ class Tracker:
 
     async def cleanup(self, pipeline: Pipeline) -> None:
         try:
-            obsolete_ids = await self.redis.zrange(
-                "time",
-                start=0,
-                end=int(datetime.now().astimezone(UTC).timestamp()),
-                withscores=False,
-                byscore=True,
-            )
-            redis_commands.labels("zrange").inc()
-            for item in obsolete_ids:
-                dec_i = item.decode("utf-8")
-                if dec_i:
-                    await self.rm(dummy_schedule_event(dec_i), pipeline)
+            async with RedisLock(
+                self.redis, "cleanup_operation", blocking_timeout=5, expire_timeout=10
+            ):
+                obsolete_ids = await self.redis.zrange(
+                    "time",
+                    start=0,
+                    end=int(datetime.now().astimezone(UTC).timestamp()),
+                    withscores=False,
+                    byscore=True,
+                )
+                redis_commands.labels("zrange").inc()
+                batch_size = 10
+                for i in range(0, len(obsolete_ids), batch_size):
+                    batch = obsolete_ids[i : i + batch_size]
+                    for item in batch:
+                        dec_i = item.decode("utf-8")
+                        if dec_i:
+                            await self.rm(dummy_schedule_event(dec_i), pipeline)
+
+                    if len(batch) > 0:
+                        try:
+                            await pipeline.execute()
+                            # Create a new pipeline for the next batch
+                            pipeline = self.redis.pipeline()
+                        except ResponseError as err:
+                            logger.error(
+                                f"Unable to execute cleanup batch {i // batch_size}",
+                                exc_info=err,
+                            )
+                            break
+
         except ResponseError as err:
             logger.error("unable to cleanup old entries", exc_info=err)
 
@@ -437,11 +457,20 @@ async def execute(
         redis_commands.labels("zremrangebyscore").inc()
     except ResponseError as err:
         logger.error("Unable to communicate with Redis", exc_info=err)
-    if random.randint(0, 10) < 5:
+
+    should_send_mqtt = random.randint(0, 10) < 3  # Reduced from 5 to 3
+
+    if should_send_mqtt:
         async with RedisLock(
             tracker.redis, "send_mqtt", blocking_timeout=15, expire_timeout=20
         ):
-            await tracker.cleanup(pipeline)
+            cleanup_pipeline = tracker.redis.pipeline()
+            await tracker.cleanup(cleanup_pipeline)
+            try:
+                await cleanup_pipeline.execute()
+            except ResponseError as err:
+                logger.error("Unable to execute cleanup pipeline", exc_info=err)
+
             await tracker.send_mqtt()
             try:
                 key_counts = await export_schema_key_counts(tracker.redis)
@@ -456,7 +485,17 @@ async def execute(
 )
 def process_queue(queue: Queue[ScheduleEvent]) -> None:
     tracker = Tracker()
+    thread_id = threading.current_thread().ident or 0
+    base_sleep = 5 + (thread_id % 10)
+
     with Runner() as runner:
         while True:
-            runner.run(execute(tracker, queue))
-            time.sleep(random.randint(5, 30))
+            try:
+                runner.run(execute(tracker, queue))
+                sleep_time = base_sleep + random.randint(0, 25)
+                time.sleep(sleep_time)
+            except Exception as e:
+                logger.error(
+                    f"Error in process_queue thread {threading.current_thread().name}: {e}"
+                )
+                time.sleep(min(60, base_sleep * 2))

@@ -5,6 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 ### Development Commands (using Task runner)
+
 - `task run` - Start the main MBTA tracker application
 - `task prediction-api` - Start the track prediction API server
 - `task test` - Run pytest test suite
@@ -14,6 +15,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `task compute-class-hashes` - Update class hashes for schema versioning
 
 ### Direct Commands
+
 - `uv run inky-mbta-tracker` - Run main application directly
 - `uv run inky-mbta-tracker --prediction-api` - Run prediction API directly
 - `uv run pytest` - Run tests directly
@@ -64,6 +66,7 @@ The application uses a `config.json` file to define stops to track, with options
 - Route and direction filtering  
 - Transit time calculations
 - Display preferences
+- Track prediction precaching (optional - see README.md for configuration)
 
 ### Dependencies
 
@@ -79,6 +82,10 @@ Tests are located in `inky-mbta-tracker/tests/` and focus on:
 - MBTA client functionality
 - Schedule tracking logic
 - Use pytest with async support
+
+### Checks
+
+Each time you modify the code please run `task format`, `task fix`, and `task check` and fix any type errors.
 
 ### Code Style
 
