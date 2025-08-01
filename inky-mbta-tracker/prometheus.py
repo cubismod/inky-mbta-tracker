@@ -69,3 +69,9 @@ schema_key_counts = Gauge(
     "Number of keys in each Redis schema namespace",
     ["schema_id"],
 )
+
+track_negative_cache_hits = Counter(
+    "imt_track_negative_cache_hits",
+    "Track prediction negative cache hits to avoid redundant calculations",
+    ["station_id", "route_id", "cache_reason", "instance"],
+)

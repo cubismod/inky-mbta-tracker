@@ -9,7 +9,7 @@ import aiohttp
 import shared_types.shared_types
 import textdistance
 from async_lru import alru_cache
-from consts import DAY, INSTANCE_ID, MBTA_V3_ENDPOINT, MINUTE, WEEK, YEAR
+from consts import DAY, HOUR, INSTANCE_ID, MBTA_V3_ENDPOINT, MINUTE, WEEK, YEAR
 from exceptions import RateLimitExceeded
 from mbta_client import MBTAApi
 from mbta_responses import Schedules
@@ -18,6 +18,7 @@ from prometheus import (
     mbta_api_requests,
     redis_commands,
     track_historical_assignments_stored,
+    track_negative_cache_hits,
     track_pattern_analysis_duration,
     track_prediction_confidence,
     track_predictions_cached,
@@ -315,6 +316,26 @@ class TrackPredictor:
         try:
             start_time = time.time()
 
+            # Check negative cache for this pattern
+            negative_cache_key = f"no_prediction:{station_id}:{route_id}:{scheduled_time.date()}:{scheduled_time.hour}"
+            cached_result = await check_cache(self.redis, negative_cache_key)
+            if cached_result:
+                cache_reason = (
+                    cached_result.decode()
+                    if isinstance(cached_result, bytes)
+                    else str(cached_result)
+                )
+                track_negative_cache_hits.labels(
+                    station_id=station_id,
+                    route_id=route_id,
+                    cache_reason=cache_reason,
+                    instance=INSTANCE_ID,
+                ).inc()
+                logger.debug(
+                    f"Negative cache hit for station_id={station_id}, route_id={route_id}, hour={scheduled_time.hour}, reason={cache_reason}"
+                )
+                return {}
+
             # Look back 3 months for historical data
             start_date = scheduled_time - timedelta(days=90)
             end_date = scheduled_time
@@ -327,6 +348,13 @@ class TrackPredictor:
             if not assignments:
                 logger.debug(
                     f"No historical assignments found for station_id={station_id}, route_id={route_id}, trip_id={trip_headsign}, direction_id={direction_id}, scheduled_time={scheduled_time}"
+                )
+                # Cache negative result for 1 hour to avoid repeated calculations
+                await write_cache(
+                    self.redis,
+                    negative_cache_key,
+                    "no_data",
+                    1 * HOUR,  # Cache for 1 hour
                 )
                 return {}
 
@@ -530,6 +558,14 @@ class TrackPredictor:
                 f"No patterns found for station_id={station_id}, route_id={route_id}, trip_id={trip_headsign}, direction_id={direction_id}, scheduled_time={scheduled_time}"
             )
 
+            # Cache negative result for 1 hour to avoid repeated calculations
+            await write_cache(
+                self.redis,
+                negative_cache_key,
+                "no_patterns",
+                1 * HOUR,  # Cache for 1 hour
+            )
+
             # Record analysis duration even for no patterns
             duration = time.time() - start_time
             track_pattern_analysis_duration.labels(
@@ -578,6 +614,26 @@ class TrackPredictor:
         try:
             # Only predict for commuter rail
             if not route_id.startswith("CR"):
+                return None
+
+            # Check negative cache first to avoid redundant calculations
+            negative_cache_key = f"no_prediction:{station_id}:{route_id}:{scheduled_time.date()}:{scheduled_time.hour}"
+            cached_result = await check_cache(self.redis, negative_cache_key)
+            if cached_result:
+                cache_reason = (
+                    cached_result.decode()
+                    if isinstance(cached_result, bytes)
+                    else str(cached_result)
+                )
+                track_negative_cache_hits.labels(
+                    station_id=station_id,
+                    route_id=route_id,
+                    cache_reason=cache_reason,
+                    instance=INSTANCE_ID,
+                ).inc()
+                logger.debug(
+                    f"Negative cache hit for station_id={station_id}, route_id={route_id}, hour={scheduled_time.hour}, reason={cache_reason}"
+                )
                 return None
 
             # it makes more sense to get the headsign client-side using the exact trip_id due to API rate limits
@@ -648,6 +704,16 @@ class TrackPredictor:
                 logger.debug(
                     f"No prediction made for station_id={station_id}, route_id={route_id}, trip_id={trip_id}, headsign={headsign}, direction_id={direction_id}, scheduled_time={scheduled_time}, confidence={confidence}, threshold={confidence_threshold}"
                 )
+
+                # Cache negative result for low confidence predictions
+                negative_cache_key = f"no_prediction:{station_id}:{route_id}:{scheduled_time.date()}:{scheduled_time.hour}"
+                await write_cache(
+                    self.redis,
+                    negative_cache_key,
+                    "low_confidence",
+                    1 * HOUR,  # Cache for 1 hour
+                )
+
                 return None
 
             # Determine prediction method

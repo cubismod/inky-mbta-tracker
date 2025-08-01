@@ -81,7 +81,7 @@ SCHEMAS = [
             class_hashes.TRIPATTRIBUTES_HASH,
             class_hashes.TRIPGENERIC_HASH,
         },
-    ),
+    )
 ]
 
 
