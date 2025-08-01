@@ -99,6 +99,5 @@ class TaskType(Enum):
     VEHICLES = 2
     PROCESSOR = 3
     LIGHT_STOP = 4
-    GEOJSON = 5
     TRACK_PREDICTIONS = 6
     REDIS_BACKUP = 7

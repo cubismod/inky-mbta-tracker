@@ -8,18 +8,17 @@ from queue import Queue
 from random import randint
 from typing import Optional
 
+import api_server
 import click
 from backup_scheduler import run_backup_scheduler
 from config import StopSetup, load_config
 from dotenv import load_dotenv
-from geojson_creator import run
 from mbta_client import thread_runner
 from prometheus import running_threads
 from prometheus_client import start_http_server
 from schedule_tracker import ScheduleEvent, VehicleRedisSchema, process_queue
 from shared_types.schema_versioner import schema_versioner
 from shared_types.shared_types import TaskType
-from track_predictor import track_prediction_api
 
 load_dotenv()
 
@@ -171,11 +170,6 @@ async def __main__() -> None:
             )
             if thr:
                 tasks.append(thr)
-        geojson_thr = threading.Thread(
-            target=run, daemon=True, args=[config], name="geojson"
-        )
-        geojson_thr.start()
-        tasks.append(TaskTracker(geojson_thr, stop=None, event_type=TaskType.GEOJSON))
 
     backup_thr = threading.Thread(
         target=run_backup_scheduler, daemon=True, name="redis_backup_scheduler"
@@ -281,10 +275,11 @@ async def __main__() -> None:
 
 
 @click.command()
-@click.option("--prediction-api", is_flag=True, default=False)
-def run_main(prediction_api: bool) -> None:
-    if prediction_api:
-        track_prediction_api.run_main()
+@click.option("--api-server", is_flag=True, default=False)
+def run_main(api_server: bool) -> None:
+    if api_server:
+        import api_server as server
+        server.run_main()
     else:
         with Runner() as runner:
             runner.run(__main__())

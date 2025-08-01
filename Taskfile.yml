@@ -20,7 +20,7 @@ tasks:
       - uv run inky-mbta-tracker
   prediction-api:
     cmds:
-      - uv run inky-mbta-tracker --prediction-api
+      - uv run inky-mbta-tracker --api-server
   logs:
     cmds:
       - uvx tail -f imt.log
