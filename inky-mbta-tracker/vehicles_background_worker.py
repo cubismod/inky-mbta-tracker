@@ -30,7 +30,7 @@ class BackgroundWorker:
 
     async def run(self) -> None:
         while True:
-            if datetime.now() > self.state_expiration:
+            if datetime.now() > self.state_expiration and self.state == State.TRAFFIC:
                 self.state = State.IDLE
                 self.state_expiration = datetime.now() + timedelta(seconds=60)
                 logger.info("Vehicle background worker is now idle")
