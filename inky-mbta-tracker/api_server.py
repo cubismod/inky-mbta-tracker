@@ -2,7 +2,7 @@ import asyncio
 import logging
 import os
 from datetime import datetime, timedelta
-from typing import Awaitable, Callable, List
+from typing import Any, Awaitable, Callable, List
 
 import aiohttp
 import uvicorn
@@ -23,6 +23,9 @@ from prometheus_fastapi_instrumentator import Instrumentator
 from pydantic import BaseModel, ValidationError
 from redis.asyncio import Redis
 from shared_types.shared_types import TrackAssignment, TrackPrediction
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 from starlette.middleware.base import BaseHTTPMiddleware
 from track_predictor.track_predictor import TrackPredictionStats, TrackPredictor
 
@@ -94,6 +97,45 @@ app = FastAPI(
     },
 )
 
+
+RATE_LIMITING_ENABLED = os.getenv("IMT_RATE_LIMITING_ENABLED", "true").lower() == "true"
+
+
+def get_client_ip(request: Request) -> str:
+    """Get client IP, handling Cloudflare proxy headers"""
+    # Check for Cloudflare's real IP header first
+    if "CF-Connecting-IP" in request.headers:
+        return request.headers["CF-Connecting-IP"]
+    # Fallback to standard proxy headers
+    if "X-Forwarded-For" in request.headers:
+        return request.headers["X-Forwarded-For"].split(",")[0].strip()
+    if "X-Real-IP" in request.headers:
+        return request.headers["X-Real-IP"]
+    # Default to remote address
+    return get_remote_address(request)
+
+
+if RATE_LIMITING_ENABLED:
+    limiter = Limiter(key_func=get_client_ip)
+    app.state.limiter = limiter
+    app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)  # type: ignore
+else:
+    # Create a no-op limiter for when rate limiting is disabled
+    from functools import wraps
+
+    class NoOpLimiter:
+        def limit(self, rate: str) -> Callable:
+            def decorator(func: Callable) -> Callable:
+                @wraps(func)
+                def wrapper(*args: Any, **kwargs: Any) -> Any:
+                    return func(*args, **kwargs)
+
+                return wrapper
+
+            return decorator
+
+    limiter = NoOpLimiter()  # type: ignore
+
 # Add header logging middleware
 app.add_middleware(HeaderLoggingMiddleware)
 
@@ -163,7 +205,9 @@ async def health_check() -> dict:
 
 # Track Prediction Endpoints
 @app.post("/predictions")
+@limiter.limit("100/minute")
 async def generate_track_prediction(
+    request: Request,
     station_id: str,
     route_id: str,
     trip_id: str,
@@ -230,7 +274,9 @@ async def generate_track_prediction(
 
 
 @app.post("/chained-predictions")
+@limiter.limit("50/minute")
 async def generate_chained_track_predictions(
+    http_request: Request,
     request: ChainedPredictionsRequest,
 ) -> ChainedPredictionsResponse:
     """
@@ -315,7 +361,9 @@ async def generate_chained_track_predictions(
 
 
 @app.get("/stats/{station_id}/{route_id}")
+@limiter.limit("50/minute")
 async def get_prediction_stats(
+    request: Request,
     station_id: str,
     route_id: str,
 ) -> TrackPredictionStatsResponse:
@@ -357,7 +405,9 @@ async def get_prediction_stats(
 
 
 @app.get("/historical/{station_id}/{route_id}")
+@limiter.limit("50/minute")
 async def get_historical_assignments(
+    request: Request,
     station_id: str,
     route_id: str,
     days: int = Query(30, description="Number of days to look back"),
@@ -429,7 +479,8 @@ async def get_historical_assignments(
         }
     },
 )
-async def get_vehicles() -> dict:
+@limiter.limit("70/minute")
+async def get_vehicles(request: Request) -> dict:
     """
     Get current vehicle positions as GeoJSON FeatureCollection. Also includes the next/current stop GeoJSON data.
     """
@@ -478,7 +529,8 @@ async def get_vehicles() -> dict:
     description="Get current vehicle positions as GeoJSON file. ⚠️ **WARNING: Do not use 'Try it out' - large response may crash browser!**",
     response_class=Response,
 )
-async def get_vehicles_json() -> Response:
+@limiter.limit("70/minute")
+async def get_vehicles_json(request: Request) -> Response:
     """
     Get current vehicle positions as GeoJSON file (for compatibility).
     """
@@ -561,7 +613,8 @@ async def get_vehicles_json() -> Response:
         }
     },
 )
-async def get_alerts() -> Response:
+@limiter.limit("100/minute")
+async def get_alerts(request: Request) -> Response:
     """
     Get current MBTA alerts.
     """
@@ -614,7 +667,8 @@ async def get_alerts() -> Response:
     description="Get current MBTA alerts as JSON file. ⚠️ **WARNING: Do not use 'Try it out' - large response may crash browser!**",
     response_class=Response,
 )
-async def get_alerts_json() -> Response:
+@limiter.limit("100/minute")
+async def get_alerts_json(request: Request) -> Response:
     """
     Get current MBTA alerts as JSON file (for compatibility).
     """
@@ -699,7 +753,8 @@ async def get_alerts_json() -> Response:
         }
     },
 )
-async def get_shapes() -> Response:
+@limiter.limit("70/minute")
+async def get_shapes(request: Request) -> Response:
     """
     Get route shapes as GeoJSON FeatureCollection.
     """
@@ -750,7 +805,8 @@ async def get_shapes() -> Response:
     description="Get route shapes as GeoJSON file. ⚠️ **WARNING: Do not use 'Try it out' - large response may crash browser!**",
     response_class=Response,
 )
-async def get_shapes_json() -> Response:
+@limiter.limit("70/minute")
+async def get_shapes_json(request: Request) -> Response:
     """
     Get route shapes as GeoJSON file (for compatibility).
     """
