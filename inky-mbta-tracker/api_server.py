@@ -135,7 +135,7 @@ class TrafficMonitoringMiddleware(BaseHTTPMiddleware):
         self, request: Request, call_next: Callable[[Request], Awaitable[Response]]
     ) -> Response:
         # Skip queuing for health check endpoint (used by synthetic monitoring)
-        if request.url.path != "/health":
+        if request.url.path != "/health" and request.url.path != "/metrics":
             # Queue a TRAFFIC message for the background worker
             try:
                 VEHICLES_QUEUE.put_nowait(State.TRAFFIC)
