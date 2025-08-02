@@ -104,7 +104,7 @@ class RedisBackup:
             return backup_filename
 
         except Exception as e:
-            logger.error(f"Failed to create Redis backup: {e}")
+            logger.error("Failed to create Redis backup", exc_info=e)
             if backup_path.exists():
                 backup_path.unlink()
             raise
@@ -125,7 +125,7 @@ class RedisBackup:
                 logger.info(f"Cleaned up {removed_count} old backup files")
 
         except Exception as e:
-            logger.error(f"Failed to cleanup old backups: {e}")
+            logger.error("Failed to cleanup old backups", exc_info=e)
 
 
 async def run_backup() -> None:

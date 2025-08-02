@@ -248,7 +248,7 @@ class MBTAApi:
     ) -> Optional[bool]:
         await self.r_client.aclose()
         if exc_value:
-            logger.error(f"Error in MBTAApi {exc_type}: {exc_value}\n{traceback}")
+            logger.error(f"Error in MBTAApi {exc_type}", exc_info=exc_value)
             return True
         return False
 
@@ -693,7 +693,7 @@ class MBTAApi:
                     await write_cache(self.r_client, key, trip.model_dump_json(), DAY)
                     return trip
         except ValidationError as err:
-            logger.error(f"Unable to parse trip, {err}")
+            logger.error("Unable to parse trip", exc_info=err)
         return None
 
     # saves a route to the dict of routes rather than redis
@@ -720,7 +720,7 @@ class MBTAApi:
                             logger.info(f"route {rd.id} saved")
                             self.routes[route_id] = rd
                     except ValidationError as err:
-                        logger.error(f"Unable to parse route, {err}")
+                        logger.error("Unable to parse route", exc_info=err)
 
     @retry(
         wait=wait_exponential_jitter(initial=2, jitter=5),
@@ -913,7 +913,7 @@ async def precache_track_predictions_runner(
                 logger.info(f"Precached {predictions_count} track predictions")
 
         except Exception as e:
-            logger.error(f"Error in track prediction precaching runner: {e}")
+            logger.error("Error in track prediction precaching runner", exc_info=e)
 
         # Wait for the specified interval
         await sleep(interval_hours * 3600)

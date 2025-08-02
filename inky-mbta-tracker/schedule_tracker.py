@@ -476,7 +476,7 @@ async def execute(
                 key_counts = await export_schema_key_counts(tracker.redis)
                 logger.debug(f"Schema key counts: {key_counts}")
             except ResponseError as e:
-                logger.error(f"Failed to export schema key counts: {e}")
+                logger.error("Failed to export schema key counts", exc_info=e)
 
 
 @retry(

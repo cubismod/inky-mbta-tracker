@@ -1,6 +1,6 @@
 [project]
 name = "inky-mbta-tracker"
-version = "0.1.0"
+version = "1.0.0"
 description = "Redis backed application to track MBTA vehicle schedules & vehicles postitions among other data"
 readme = "README.md"
 requires-python = ">=3.13"

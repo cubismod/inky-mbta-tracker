@@ -116,7 +116,10 @@ def get_client_ip(request: Request) -> str:
 
 
 if RATE_LIMITING_ENABLED:
-    limiter = Limiter(key_func=get_client_ip)
+    limiter = Limiter(
+        key_func=get_client_ip,
+        storage_uri=f"redis://:{os.environ.get('IMT_REDIS_PASSWORD', '')}@{os.environ.get('IMT_REDIS_ENDPOINT', '')}:{os.environ.get('IMT_REDIS_PORT', '6379')}",
+    )
     app.state.limiter = limiter
     app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)  # type: ignore
 else:

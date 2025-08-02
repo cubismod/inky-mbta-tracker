@@ -93,10 +93,10 @@ async def get_schema_version(redis: Redis, schema_key: str) -> Optional[RedisSch
             return None
         return RedisSchema.model_validate_json(schema_version)
     except ResponseError as e:
-        logger.error(f"Error getting schema version for {schema_key}: {e}")
+        logger.error(f"Error getting schema version for {schema_key}", exc_info=e)
         return None
     except ValidationError as e:
-        logger.error(f"Error validating schema version for {schema_key}: {e}")
+        logger.error(f"Error validating schema version for {schema_key}", exc_info=e)
         return None
 
 
@@ -158,7 +158,7 @@ async def export_schema_key_counts(redis: Redis) -> dict[str, int]:
             logger.debug(f"Schema {schema.id}: {total_keys} keys")
 
     except ResponseError as e:
-        logger.error(f"Error counting keys: {e}")
+        logger.error("Error counting keys", exc_info=e)
     finally:
         await redis.aclose()
 

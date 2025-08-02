@@ -76,13 +76,13 @@ class BackupScheduler:
                     await self.backup.cleanup_old_backups()
 
                 except Exception as e:
-                    logger.error(f"Scheduled backup failed: {e}")
+                    logger.error("Scheduled backup failed", exc_info=e)
 
             except asyncio.CancelledError:
                 logger.info("Backup scheduler cancelled")
                 break
             except Exception as e:
-                logger.error(f"Backup scheduler error: {e}")
+                logger.error("Backup scheduler error", exc_info=e)
                 # Wait 1 hour before retrying on error
                 await asyncio.sleep(3600)
 
