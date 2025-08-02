@@ -572,22 +572,22 @@ async def get_alerts() -> Response:
             cache_key = "api:alerts"
             cached_data = await redis_client.get(cache_key)
             if cached_data:
-                import json
-
-                return json.loads(cached_data)
+                return Response(
+                    content=cached_data,
+                    media_type="application/json",
+                )
 
             config = load_config()
             async with aiohttp.ClientSession(base_url=MBTA_V3_ENDPOINT) as session:
                 alerts = await collect_alerts(config, session)
 
-            import json
+            alerts_data = Alerts(data=alerts)
+            alerts_json = alerts_data.model_dump_json(exclude_unset=True)
 
-            await redis_client.setex(
-                cache_key, ALERTS_CACHE_TTL, json.dumps(alerts, default=str)
-            )
+            await redis_client.setex(cache_key, ALERTS_CACHE_TTL, alerts_json)
 
             return Response(
-                content=json.dumps(alerts, default=str),
+                content=alerts_json,
                 media_type="application/json",
             )
 
