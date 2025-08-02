@@ -40,6 +40,7 @@ class BackgroundWorker:
                 self.queue.task_done()
             if self.state == State.TRAFFIC:
                 _ = await get_vehicles_data(self.redis)
+                await sleep(3)
             else:
                 await sleep(4)
 
