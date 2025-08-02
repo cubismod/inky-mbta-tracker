@@ -13,12 +13,12 @@ import click
 from backup_scheduler import run_backup_scheduler
 from config import StopSetup, load_config
 from dotenv import load_dotenv
-from mbta_client import thread_runner
 from prometheus import running_threads
 from prometheus_client import start_http_server
 from schedule_tracker import ScheduleEvent, VehicleRedisSchema, process_queue
 from shared_types.schema_versioner import schema_versioner
 from shared_types.shared_types import TaskType
+from utils import thread_runner
 
 load_dotenv()
 

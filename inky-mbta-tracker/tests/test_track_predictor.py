@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 from typing import Generator
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from shared_types.shared_types import TrackAssignment, TrackAssignmentType
@@ -13,9 +13,11 @@ class TestTrackPredictor:
     @pytest.fixture
     def track_predictor(self) -> Generator[TrackPredictor, None, None]:
         """Create a TrackPredictor instance with mocked Redis."""
-        with patch("track_predictor.track_predictor.Redis"):
+        with patch("utils.get_redis"):
             predictor = TrackPredictor()
-            predictor.redis = AsyncMock()
+            predictor.redis = MagicMock()
+            # Configure async methods as AsyncMocks
+            predictor.redis.zrangebyscore = AsyncMock()
             yield predictor
 
     @pytest.fixture
@@ -42,7 +44,7 @@ class TestEnhancedHeadsignSimilarity:
 
     @pytest.fixture
     def track_predictor(self) -> Generator[TrackPredictor, None, None]:
-        with patch("track_predictor.track_predictor.Redis"):
+        with patch("utils.get_redis"):
             yield TrackPredictor()
 
     def test_exact_match(self, track_predictor: TrackPredictor) -> None:
@@ -130,7 +132,7 @@ class TestServiceType:
 
     @pytest.fixture
     def track_predictor(self) -> Generator[TrackPredictor, None, None]:
-        with patch("track_predictor.track_predictor.Redis"):
+        with patch("utils.get_redis"):
             yield TrackPredictor()
 
     def test_express_detection(self, track_predictor: TrackPredictor) -> None:
@@ -167,7 +169,7 @@ class TestWeekendService:
 
     @pytest.fixture
     def track_predictor(self) -> Generator[TrackPredictor, None, None]:
-        with patch("track_predictor.track_predictor.Redis"):
+        with patch("utils.get_redis"):
             yield TrackPredictor()
 
     def test_weekend_detection(self, track_predictor: TrackPredictor) -> None:
@@ -186,7 +188,7 @@ class TestConfidenceThresholds:
 
     @pytest.fixture
     def track_predictor(self) -> Generator[TrackPredictor, None, None]:
-        with patch("track_predictor.track_predictor.Redis"):
+        with patch("utils.get_redis"):
             yield TrackPredictor()
 
     def test_south_station_threshold(self, track_predictor: TrackPredictor) -> None:
@@ -215,7 +217,7 @@ class TestCrossRoutePatterns:
 
     @pytest.fixture
     def track_predictor(self) -> Generator[TrackPredictor, None, None]:
-        with patch("track_predictor.track_predictor.Redis"):
+        with patch("utils.get_redis"):
             predictor = TrackPredictor()
             predictor.redis = AsyncMock()
             yield predictor
@@ -226,7 +228,7 @@ class TestCrossRoutePatterns:
     ) -> None:
         """Test that related routes are included when requested."""
         # Mock the Redis calls to return empty results for simplicity
-        track_predictor.redis.zrangebyscore.return_value = []
+        track_predictor.redis.zrangebyscore.return_value = []  # type: ignore[attr-defined]
 
         start_date = datetime(2024, 1, 1, tzinfo=UTC)
         end_date = datetime(2024, 1, 31, tzinfo=UTC)
@@ -242,7 +244,8 @@ class TestCrossRoutePatterns:
 
         # Should have called Redis for both Worcester and Framingham
         actual_calls = [
-            call[0] for call in track_predictor.redis.zrangebyscore.call_args_list
+            call[0]
+            for call in track_predictor.redis.zrangebyscore.call_args_list  # type: ignore[attr-defined]
         ]
 
         # Check that both route keys were queried
@@ -261,7 +264,7 @@ class TestCrossRoutePatterns:
         self, track_predictor: TrackPredictor
     ) -> None:
         """Test that only single route is queried when related routes not requested."""
-        track_predictor.redis.zrangebyscore.return_value = []
+        track_predictor.redis.zrangebyscore.return_value = []  # type: ignore[attr-defined]
 
         start_date = datetime(2024, 1, 1, tzinfo=UTC)
         end_date = datetime(2024, 1, 31, tzinfo=UTC)
@@ -276,8 +279,8 @@ class TestCrossRoutePatterns:
         )
 
         # Should have called Redis only once for Worcester
-        assert track_predictor.redis.zrangebyscore.call_count == 1
-        actual_call = track_predictor.redis.zrangebyscore.call_args_list[0][0]
+        assert track_predictor.redis.zrangebyscore.call_count == 1  # type: ignore[attr-defined]
+        actual_call = track_predictor.redis.zrangebyscore.call_args_list[0][0]  # type: ignore[attr-defined]
         assert actual_call[0] == "track_timeseries:place-sstat:CR-Worcester"
 
     def test_route_families_mapping(self, track_predictor: TrackPredictor) -> None:
@@ -298,7 +301,7 @@ class TestExpandedTimeWindows:
 
     @pytest.fixture
     def track_predictor(self) -> Generator[TrackPredictor, None, None]:
-        with patch("track_predictor.track_predictor.Redis"):
+        with patch("utils.get_redis"):
             predictor = TrackPredictor()
             predictor.redis = AsyncMock()
             yield predictor

@@ -11,7 +11,6 @@ from mbta_client import (
     light_get_stop,
     parse_shape_data,
     silver_line_lookup,
-    thread_runner,
 )
 from mbta_responses import (
     CarriageStatus,
@@ -23,6 +22,7 @@ from mbta_responses import (
     VehicleAttributes,
 )
 from shared_types.shared_types import ScheduleEvent, TaskType, VehicleRedisSchema
+from utils import thread_runner
 
 
 class TestSilverLineLookup:
@@ -265,7 +265,7 @@ class TestMBTAApi:
 
 
 class TestThreadRunner:
-    @patch("mbta_client.Runner")
+    @patch("utils.Runner")
     def test_thread_runner_schedules(self, mock_runner: MagicMock) -> None:
         mock_instance = MagicMock()
         mock_runner.return_value.__enter__.return_value = mock_instance
@@ -282,7 +282,7 @@ class TestThreadRunner:
 
         mock_instance.run.assert_called_once()
 
-    @patch("mbta_client.Runner")
+    @patch("utils.Runner")
     def test_thread_runner_predictions(self, mock_runner: MagicMock) -> None:
         mock_instance = MagicMock()
         mock_runner.return_value.__enter__.return_value = mock_instance
@@ -299,7 +299,7 @@ class TestThreadRunner:
 
         mock_instance.run.assert_called_once()
 
-    @patch("mbta_client.Runner")
+    @patch("utils.Runner")
     def test_thread_runner_vehicles(self, mock_runner: MagicMock) -> None:
         mock_instance = MagicMock()
         mock_runner.return_value.__enter__.return_value = mock_instance
