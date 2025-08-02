@@ -210,13 +210,8 @@ async def health_check() -> dict:
 @app.post("/predictions")
 @limiter.limit("100/minute")
 async def generate_track_prediction(
-    request: Request,
-    station_id: str,
-    route_id: str,
-    trip_id: str,
-    headsign: str,
-    direction_id: int,
-    scheduled_time: datetime,
+    request: Request,  # noqa: ARG001  # pyright: ignore[reportUnusedParameter]
+    prediction_request: PredictionRequest,
 ) -> TrackPredictionResponse:
     """
     Generate a track prediction based on historical data.
@@ -225,7 +220,7 @@ async def generate_track_prediction(
 
         async def _generate_prediction() -> TrackPredictionResponse:
             station_id_resolved, has_track_predictions = determine_station_id(
-                station_id
+                prediction_request.station_id
             )
             if not has_track_predictions:
                 return TrackPredictionResponse(
@@ -234,11 +229,11 @@ async def generate_track_prediction(
                 )
             prediction = await track_predictor.predict_track(
                 station_id=station_id_resolved,
-                route_id=route_id,
-                trip_id=trip_id,
-                headsign=headsign,
-                direction_id=direction_id,
-                scheduled_time=scheduled_time,
+                route_id=prediction_request.route_id,
+                trip_id=prediction_request.trip_id,
+                headsign=prediction_request.headsign,
+                direction_id=prediction_request.direction_id,
+                scheduled_time=prediction_request.scheduled_time,
             )
 
             if prediction:
@@ -279,15 +274,15 @@ async def generate_track_prediction(
 @app.post("/chained-predictions")
 @limiter.limit("50/minute")
 async def generate_chained_track_predictions(
-    http_request: Request,
-    request: ChainedPredictionsRequest,
+    request: Request,  # noqa: ARG001  # pyright: ignore[reportUnusedParameter]
+    chained_request: ChainedPredictionsRequest,
 ) -> ChainedPredictionsResponse:
     """
     Generate multiple track predictions in a single request.
     """
     results = []
 
-    for pred_request in request.predictions:
+    for pred_request in chained_request.predictions:
         try:
             station_id, has_track_predictions = determine_station_id(
                 pred_request.station_id
@@ -366,7 +361,7 @@ async def generate_chained_track_predictions(
 @app.get("/stats/{station_id}/{route_id}")
 @limiter.limit("50/minute")
 async def get_prediction_stats(
-    request: Request,
+    request: Request,  # noqa: ARG001  # pyright: ignore[reportUnusedParameter]
     station_id: str,
     route_id: str,
 ) -> TrackPredictionStatsResponse:
@@ -410,7 +405,7 @@ async def get_prediction_stats(
 @app.get("/historical/{station_id}/{route_id}")
 @limiter.limit("50/minute")
 async def get_historical_assignments(
-    request: Request,
+    request: Request,  # noqa: ARG001  # pyright: ignore[reportUnusedParameter]
     station_id: str,
     route_id: str,
     days: int = Query(30, description="Number of days to look back"),
@@ -483,7 +478,7 @@ async def get_historical_assignments(
     },
 )
 @limiter.limit("70/minute")
-async def get_vehicles(request: Request) -> dict:
+async def get_vehicles(request: Request) -> dict:  # noqa: ARG001  # pyright: ignore[reportUnusedParameter]
     """
     Get current vehicle positions as GeoJSON FeatureCollection. Also includes the next/current stop GeoJSON data.
     """
@@ -528,7 +523,7 @@ async def get_vehicles(request: Request) -> dict:
     response_class=Response,
 )
 @limiter.limit("70/minute")
-async def get_vehicles_json(request: Request) -> Response:
+async def get_vehicles_json(request: Request) -> Response:  # noqa: ARG001  # pyright: ignore[reportUnusedParameter]
     """
     Get current vehicle positions as GeoJSON file (for compatibility).
     """
@@ -611,7 +606,7 @@ async def get_vehicles_json(request: Request) -> Response:
     },
 )
 @limiter.limit("100/minute")
-async def get_alerts(request: Request) -> Response:
+async def get_alerts(request: Request) -> Response:  # noqa: ARG001  # pyright: ignore[reportUnusedParameter]
     """
     Get current MBTA alerts.
     """
@@ -663,7 +658,7 @@ async def get_alerts(request: Request) -> Response:
     response_class=Response,
 )
 @limiter.limit("100/minute")
-async def get_alerts_json(request: Request) -> Response:
+async def get_alerts_json(request: Request) -> Response:  # noqa: ARG001  # pyright: ignore[reportUnusedParameter]
     """
     Get current MBTA alerts as JSON file (for compatibility).
     """
@@ -747,7 +742,7 @@ async def get_alerts_json(request: Request) -> Response:
     },
 )
 @limiter.limit("70/minute")
-async def get_shapes(request: Request) -> Response:
+async def get_shapes(request: Request) -> Response:  # noqa: ARG001  # pyright: ignore[reportUnusedParameter]
     """
     Get route shapes as GeoJSON FeatureCollection.
     """
@@ -793,7 +788,7 @@ async def get_shapes(request: Request) -> Response:
     response_class=Response,
 )
 @limiter.limit("70/minute")
-async def get_shapes_json(request: Request) -> Response:
+async def get_shapes_json(request: Request) -> Response:  # noqa: ARG001  # pyright: ignore[reportUnusedParameter]
     """
     Get route shapes as GeoJSON file (for compatibility).
     """
