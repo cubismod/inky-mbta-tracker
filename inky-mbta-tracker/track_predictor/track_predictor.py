@@ -194,7 +194,7 @@ class TrackPredictor:
                             )
                             results.append(assignment)
                         except ValidationError as e:
-                            logger.error(f"Failed to parse assignment data: {e}")
+                            logger.error("Failed to parse assignment data", exc_info=e)
 
             return results
 
@@ -637,7 +637,7 @@ class TrackPredictor:
                 return None
 
             # it makes more sense to get the headsign client-side using the exact trip_id due to API rate limits
-            async with aiohttp.ClientSession(MBTA_V3_ENDPOINT) as session:
+            async with aiohttp.ClientSession(base_url=MBTA_V3_ENDPOINT) as session:
                 async with MBTAApi(
                     watcher_type=shared_types.shared_types.TaskType.TRACK_PREDICTIONS
                 ) as api:
@@ -784,7 +784,7 @@ class TrackPredictor:
             return prediction
 
         except ValidationError as e:
-            logger.error(f"Failed to predict track: {e}")
+            logger.error("Failed to predict track", exc_info=e)
             return None
 
     async def _store_prediction(self, prediction: TrackPrediction) -> None:
@@ -830,7 +830,7 @@ class TrackPredictor:
             return 0.7
 
         except (ConnectionError, TimeoutError, ValueError) as e:
-            logger.error(f"Failed to get prediction accuracy: {e}")
+            logger.error("Failed to get prediction accuracy", exc_info=e)
             return 0.7  # Default accuracy
 
     async def validate_prediction(
@@ -1079,7 +1079,7 @@ class TrackPredictor:
         )
         return upcoming_departures
 
-    async def precache_track_predictions(
+    async def precache(
         self,
         routes: Optional[List[str]] = None,
         target_stations: Optional[List[str]] = None,
@@ -1144,7 +1144,9 @@ class TrackPredictor:
                             trip_id = departure_data["trip_id"]
                             station_id = departure_data["station_id"]
                             direction_id = departure_data["direction_id"]
-                            scheduled_time = departure_data["departure_time"]
+                            scheduled_time = datetime.fromisoformat(
+                                departure_data["departure_time"]
+                            )
 
                             if not trip_id:
                                 continue  # Skip if no trip ID available
@@ -1187,11 +1189,11 @@ class TrackPredictor:
                         ValidationError,
                         RateLimitExceeded,
                     ) as e:
-                        logger.error(f"Error processing route {route_id}: {e}")
+                        logger.error(f"Error processing route {route_id}", exc_info=e)
                         continue
 
         except (ConnectionError, TimeoutError, aiohttp.ClientError) as e:
-            logger.error(f"Error in precache_track_predictions: {e}")
+            logger.error("Error in precache_track_predictions", exc_info=e)
 
         logger.info(f"Precached {predictions_cached} track predictions")
         return predictions_cached

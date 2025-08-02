@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 import threading
 import time
 from asyncio import Runner, sleep
@@ -12,21 +13,64 @@ import click
 from backup_scheduler import run_backup_scheduler
 from config import StopSetup, load_config
 from dotenv import load_dotenv
-from geojson_creator import run
 from mbta_client import thread_runner
 from prometheus import running_threads
 from prometheus_client import start_http_server
 from schedule_tracker import ScheduleEvent, VehicleRedisSchema, process_queue
 from shared_types.schema_versioner import schema_versioner
 from shared_types.shared_types import TaskType
-from track_predictor import track_prediction_api
 
 load_dotenv()
+
+
+class APIKeyFilter(logging.Filter):
+    """Filter to remove API keys from log messages."""
+
+    def __init__(self, name: str = "", mask: str = "[REDACTED]") -> None:
+        super().__init__(name)
+        self.mask = mask
+        self.patterns = [
+            re.compile(r"api_key=([^&\s]+)", re.IGNORECASE),
+            re.compile(r"Bearer\s+([^\s]+)", re.IGNORECASE),
+            re.compile(r'AUTH_TOKEN[\'"]?\s*[:=]\s*[\'"]?([^\'"\s&]+)', re.IGNORECASE),
+        ]
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if hasattr(record, "msg") and record.msg:
+            record.msg = self._sanitize_message(str(record.msg))
+
+        if hasattr(record, "args") and record.args:
+            sanitized_args: list[object] = []
+            for arg in record.args:
+                if isinstance(arg, str):
+                    sanitized_args.append(self._sanitize_message(arg))
+                else:
+                    sanitized_args.append(arg)
+            record.args = tuple(sanitized_args)
+
+        return True
+
+    def _sanitize_message(self, message: str) -> str:
+        for pattern in self.patterns:
+            message = pattern.sub(
+                lambda m: m.group(0).replace(m.group(1), self.mask), message
+            )
+        return message
+
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO"),
     format="%(levelname)-8s %(message)s",
 )
+
+# Add API key filter to all loggers
+api_filter = APIKeyFilter()
+logging.getLogger().addFilter(api_filter)
+
+# Also add to all existing handlers
+for handler in logging.getLogger().handlers:
+    handler.addFilter(api_filter)
+
 logger = logging.getLogger(__name__)
 
 MIN_TASK_RESTART_MINS = 45
@@ -171,11 +215,6 @@ async def __main__() -> None:
             )
             if thr:
                 tasks.append(thr)
-        geojson_thr = threading.Thread(
-            target=run, daemon=True, args=[config], name="geojson"
-        )
-        geojson_thr.start()
-        tasks.append(TaskTracker(geojson_thr, stop=None, event_type=TaskType.GEOJSON))
 
     backup_thr = threading.Thread(
         target=run_backup_scheduler, daemon=True, name="redis_backup_scheduler"
@@ -281,10 +320,12 @@ async def __main__() -> None:
 
 
 @click.command()
-@click.option("--prediction-api", is_flag=True, default=False)
-def run_main(prediction_api: bool) -> None:
-    if prediction_api:
-        track_prediction_api.run_main()
+@click.option("--api-server", is_flag=True, default=False)
+def run_main(api_server: bool) -> None:
+    if api_server:
+        import api_server as server
+
+        server.run_main()
     else:
         with Runner() as runner:
             runner.run(__main__())

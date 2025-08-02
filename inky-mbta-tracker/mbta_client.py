@@ -34,7 +34,7 @@ from mbta_responses import (
     Vehicle,
 )
 from polyline import decode
-from prometheus import mbta_api_requests, tracker_executions
+from prometheus import mbta_api_requests, redis_commands, tracker_executions
 from pydantic import BaseModel, TypeAdapter, ValidationError
 from redis.asyncio.client import Redis
 from redis_cache import check_cache, write_cache
@@ -247,8 +247,9 @@ class MBTAApi:
         traceback: Optional[TracebackType],
     ) -> Optional[bool]:
         await self.r_client.aclose()
+        redis_commands.labels("aclose").inc()
         if exc_value:
-            logger.error(f"Error in MBTAApi {exc_type}: {exc_value}\n{traceback}")
+            logger.error(f"Error in MBTAApi {exc_type}", exc_info=exc_value)
             return True
         return False
 
@@ -693,7 +694,7 @@ class MBTAApi:
                     await write_cache(self.r_client, key, trip.model_dump_json(), DAY)
                     return trip
         except ValidationError as err:
-            logger.error(f"Unable to parse trip, {err}")
+            logger.error("Unable to parse trip", exc_info=err)
         return None
 
     # saves a route to the dict of routes rather than redis
@@ -720,7 +721,7 @@ class MBTAApi:
                             logger.info(f"route {rd.id} saved")
                             self.routes[route_id] = rd
                     except ValidationError as err:
-                        logger.error(f"Unable to parse route, {err}")
+                        logger.error("Unable to parse route", exc_info=err)
 
     @retry(
         wait=wait_exponential_jitter(initial=2, jitter=5),
@@ -732,7 +733,7 @@ class MBTAApi:
         trip_id: Optional[str] = None,
         route_id: Optional[str] = None,
     ) -> Optional[list[AlertResource]]:
-        endpoint = "alerts"
+        endpoint = "/alerts"
         if trip_id:
             endpoint += f"?filter[trip]={trip_id}"
         elif route_id:
@@ -878,7 +879,7 @@ class MBTAApi:
             Number of predictions cached
         """
         if self.track_predictor:
-            return await self.track_predictor.precache_track_predictions(
+            return await self.track_predictor.precache(
                 routes=routes, target_stations=target_stations
             )
         else:
@@ -913,7 +914,7 @@ async def precache_track_predictions_runner(
                 logger.info(f"Precached {predictions_count} track predictions")
 
         except Exception as e:
-            logger.error(f"Error in track prediction precaching runner: {e}")
+            logger.error("Error in track prediction precaching runner", exc_info=e)
 
         # Wait for the specified interval
         await sleep(interval_hours * 3600)
@@ -941,6 +942,7 @@ async def watch_server_side_events(
                 and datetime.now().astimezone(UTC) > watcher.expiration_time
             ):
                 await client.aclose()
+                redis_commands.labels("aclose").inc()
                 logger.info(
                     f"Restarting thread {watcher.watcher_type} - {watcher.stop_id}/{watcher.route}"
                 )
@@ -972,7 +974,7 @@ async def watch_static_schedule(
             f"Watching station {stop_id} for route substring filter {route_substring_filter}"
         )
     while True:
-        async with aiohttp.ClientSession(MBTA_V3_ENDPOINT) as session:
+        async with aiohttp.ClientSession(base_url=MBTA_V3_ENDPOINT) as session:
             async with MBTAApi(
                 stop_id=stop_id,
                 route=route,
@@ -1006,7 +1008,7 @@ async def watch_vehicles(
         watcher_type=TaskType.VEHICLES,
         expiration_time=expiration_time,
     ) as watcher:
-        async with aiohttp.ClientSession(MBTA_V3_ENDPOINT) as session:
+        async with aiohttp.ClientSession(base_url=MBTA_V3_ENDPOINT) as session:
             tracker_executions.labels("vehicles").inc()
             await watch_server_side_events(
                 watcher, endpoint, headers, queue, session=session, transit_time_min=0

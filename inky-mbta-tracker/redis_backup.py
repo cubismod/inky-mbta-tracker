@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Optional
 
+from prometheus import redis_commands
 from redis.asyncio.client import Redis
 
 logger = logging.getLogger(__name__)
@@ -31,6 +32,7 @@ class RedisBackup:
         try:
             # Get all keys
             keys = await self.redis.keys("*")
+            redis_commands.labels("keys").inc()
             logger.info(f"Found {len(keys)} keys to backup")
 
             with open(backup_path, "wb") as backup_file:
@@ -38,12 +40,14 @@ class RedisBackup:
 
                 for key in keys:
                     key_type = await self.redis.type(key)
+                    redis_commands.labels("type").inc()
 
                     backup_file.write(b"$" + str(len(key)).encode() + b"\r\n")
                     backup_file.write(key + b"\r\n")
 
                     if key_type == b"string":
                         value = await self.redis.get(key)
+                        redis_commands.labels("get").inc()
                         if value:
                             backup_file.write(b"$" + str(len(value)).encode() + b"\r\n")
                             backup_file.write(value + b"\r\n")
@@ -52,6 +56,7 @@ class RedisBackup:
 
                     elif key_type == b"hash":
                         hash_data = await self.redis.hgetall(key)
+                        redis_commands.labels("hgetall").inc()
                         # Write hash as array of field-value pairs
                         backup_file.write(
                             b"*" + str(len(hash_data) * 2).encode() + b"\r\n"
@@ -64,6 +69,7 @@ class RedisBackup:
 
                     elif key_type == b"list":
                         list_data = await self.redis.lrange(key, 0, -1)
+                        redis_commands.labels("lrange").inc()
                         backup_file.write(b"*" + str(len(list_data)).encode() + b"\r\n")
                         for item in list_data:
                             backup_file.write(b"$" + str(len(item)).encode() + b"\r\n")
@@ -71,6 +77,7 @@ class RedisBackup:
 
                     elif key_type == b"set":
                         set_data = await self.redis.smembers(key)
+                        redis_commands.labels("smembers").inc()
                         backup_file.write(b"*" + str(len(set_data)).encode() + b"\r\n")
                         for member in set_data:
                             backup_file.write(
@@ -80,6 +87,7 @@ class RedisBackup:
 
                     elif key_type == b"zset":
                         zset_data = await self.redis.zrange(key, 0, -1, withscores=True)
+                        redis_commands.labels("zrange").inc()
                         backup_file.write(b"*" + str(len(zset_data)).encode() + b"\r\n")
                         for member, score in zset_data:
                             backup_file.write(
@@ -97,6 +105,7 @@ class RedisBackup:
                         backup_file.write(b"$-1\r\n")
 
             await self.redis.aclose()
+            redis_commands.labels("aclose").inc()
 
             backup_size = backup_path.stat().st_size
             logger.info(f"Backup created: {backup_filename} ({backup_size} bytes)")
@@ -104,7 +113,7 @@ class RedisBackup:
             return backup_filename
 
         except Exception as e:
-            logger.error(f"Failed to create Redis backup: {e}")
+            logger.error("Failed to create Redis backup", exc_info=e)
             if backup_path.exists():
                 backup_path.unlink()
             raise
@@ -125,7 +134,7 @@ class RedisBackup:
                 logger.info(f"Cleaned up {removed_count} old backup files")
 
         except Exception as e:
-            logger.error(f"Failed to cleanup old backups: {e}")
+            logger.error("Failed to cleanup old backups", exc_info=e)
 
 
 async def run_backup() -> None:

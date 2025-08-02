@@ -94,4 +94,27 @@ Each time you modify the code please run `task format`, `task fix`, and `task ch
 - Python 3.13+ required
 - Black-compatible formatting style
 
+### Logging Guidelines
+
+- **Exception Logging**: Always use `exc_info` parameter when logging exceptions to capture stack traces
+- Use `exc_info=exception_variable` to pass the actual exception object
+- Remove exception details from string formatting when using `exc_info`
+- Examples:
+
+  ```python
+  # Good
+  try:
+      risky_operation()
+  except ValueError as e:
+      logger.error("Failed to process data", exc_info=e)
+  
+  # Bad - missing stack trace
+  except ValueError as e:
+      logger.error(f"Failed to process data: {e}")
+  
+  # Bad - redundant exception in message
+  except ValueError as e:
+      logger.error(f"Failed to process data: {e}", exc_info=e)
+  ```
+
 MBTA API available at <https://api-v3.mbta.com/docs/swagger/swagger.json>

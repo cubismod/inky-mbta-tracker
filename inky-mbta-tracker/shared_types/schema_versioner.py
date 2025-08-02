@@ -81,7 +81,7 @@ SCHEMAS = [
             class_hashes.TRIPATTRIBUTES_HASH,
             class_hashes.TRIPGENERIC_HASH,
         },
-    )
+    ),
 ]
 
 
@@ -93,10 +93,10 @@ async def get_schema_version(redis: Redis, schema_key: str) -> Optional[RedisSch
             return None
         return RedisSchema.model_validate_json(schema_version)
     except ResponseError as e:
-        logger.error(f"Error getting schema version for {schema_key}: {e}")
+        logger.error(f"Error getting schema version for {schema_key}", exc_info=e)
         return None
     except ValidationError as e:
-        logger.error(f"Error validating schema version for {schema_key}: {e}")
+        logger.error(f"Error validating schema version for {schema_key}", exc_info=e)
         return None
 
 
@@ -129,6 +129,7 @@ async def schema_versioner() -> None:
                         for key in keys:
                             pl.delete(key)
                         await pl.execute()
+                        redis_commands.labels("execute").inc()
                     await redis.set(schema_key, schema.model_dump_json())
                     redis_commands.labels("set").inc()
                     logger.info(f"{schema.id} set to {schema.model_dump_json()}")
@@ -158,8 +159,9 @@ async def export_schema_key_counts(redis: Redis) -> dict[str, int]:
             logger.debug(f"Schema {schema.id}: {total_keys} keys")
 
     except ResponseError as e:
-        logger.error(f"Error counting keys: {e}")
+        logger.error("Error counting keys", exc_info=e)
     finally:
         await redis.aclose()
+        redis_commands.labels("aclose").inc()
 
     return key_counts

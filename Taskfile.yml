@@ -18,9 +18,9 @@ tasks:
   run:
     cmds:
       - uv run inky-mbta-tracker
-  prediction-api:
+  api-server:
     cmds:
-      - uv run inky-mbta-tracker --prediction-api
+      - uv run inky-mbta-tracker --api-server
   logs:
     cmds:
       - uvx tail -f imt.log
@@ -34,3 +34,8 @@ tasks:
   test:
     cmds:
       - uv run pytest
+  check-all:
+    cmds:
+      - task: format
+      - task: check
+      - task: test
