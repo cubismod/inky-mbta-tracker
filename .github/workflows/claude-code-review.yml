@@ -10,7 +10,8 @@ on:
     #   - "src/**/*.js"
     #   - "src/**/*.jsx"
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: claude-review-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
 
 jobs:
   claude-review:
