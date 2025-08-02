@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 import time
@@ -169,8 +170,11 @@ class TrackPredictor:
             if include_related_routes and route_id in ROUTE_FAMILIES:
                 routes_to_check.extend(ROUTE_FAMILIES[route_id])
 
-            results = []
-            for current_route in routes_to_check:
+            async def fetch_route_assignments(
+                current_route: str,
+            ) -> List[TrackAssignment]:
+                """Fetch assignments for a single route."""
+                route_results: list[TrackAssignment] = []
                 time_series_key = f"track_timeseries:{station_id}:{current_route}"
 
                 # Get assignments within the time range
@@ -179,18 +183,53 @@ class TrackPredictor:
                 )
                 redis_commands.labels("zrangebyscore").inc()
 
-                for assignment_key in assignments:
-                    assignment_data = await check_cache(
-                        self.redis, assignment_key.decode()
+                if not assignments:
+                    return route_results
+
+                # Fetch all assignment data concurrently
+                async def fetch_assignment_data(
+                    assignment_key: bytes,
+                ) -> Optional[TrackAssignment]:
+                    try:
+                        assignment_data = await check_cache(
+                            self.redis, assignment_key.decode()
+                        )
+                        if assignment_data:
+                            return TrackAssignment.model_validate_json(assignment_data)
+                    except ValidationError as e:
+                        logger.error("Failed to parse assignment data", exc_info=e)
+                    return None
+
+                assignment_tasks = [
+                    fetch_assignment_data(assignment_key)
+                    for assignment_key in assignments
+                ]
+                assignment_results = await asyncio.gather(
+                    *assignment_tasks, return_exceptions=True
+                )
+
+                for result in assignment_results:
+                    if isinstance(result, TrackAssignment):
+                        route_results.append(result)
+                    elif isinstance(result, Exception):
+                        logger.error("Error fetching assignment data", exc_info=result)
+
+                return route_results
+
+            # Fetch assignments for all routes concurrently
+            route_tasks = [fetch_route_assignments(route) for route in routes_to_check]
+            route_results_list = await asyncio.gather(
+                *route_tasks, return_exceptions=True
+            )
+
+            results = []
+            for route_results in route_results_list:
+                if isinstance(route_results, list):
+                    results.extend(route_results)
+                elif isinstance(route_results, Exception):
+                    logger.error(
+                        "Error fetching route assignments", exc_info=route_results
                     )
-                    if assignment_data:
-                        try:
-                            assignment = TrackAssignment.model_validate_json(
-                                assignment_data
-                            )
-                            results.append(assignment)
-                        except ValidationError as e:
-                            logger.error("Failed to parse assignment data", exc_info=e)
 
             return results
 
@@ -1112,7 +1151,10 @@ class TrackPredictor:
 
         try:
             async with aiohttp.ClientSession() as session:
-                for route_id in routes:
+
+                async def process_route(route_id: str) -> int:
+                    """Process a single route and return number of predictions cached."""
+                    route_predictions_cached = 0
                     logger.info(f"Precaching predictions for route {route_id}")
 
                     try:
@@ -1121,22 +1163,23 @@ class TrackPredictor:
                             session, route_id, target_stations, current_time
                         )
 
-                        for departure_data in upcoming_departures:
-                            trip_id = departure_data["trip_id"]
-                            station_id = departure_data["station_id"]
-                            direction_id = departure_data["direction_id"]
-                            scheduled_time = datetime.fromisoformat(
-                                departure_data["departure_time"]
-                            )
-
-                            if not trip_id:
-                                continue  # Skip if no trip ID available
-
+                        async def process_departure(departure_data: dict) -> bool:
+                            """Process a single departure and return True if cached."""
                             try:
+                                trip_id = departure_data["trip_id"]
+                                station_id = departure_data["station_id"]
+                                direction_id = departure_data["direction_id"]
+                                scheduled_time = datetime.fromisoformat(
+                                    departure_data["departure_time"]
+                                )
+
+                                if not trip_id:
+                                    return False  # Skip if no trip ID available
+
                                 # Check if we already have a cached prediction
                                 cache_key = f"track_prediction:{station_id}:{route_id}:{trip_id}:{scheduled_time.date()}"
                                 if await check_cache(self.redis, cache_key):
-                                    continue  # Already cached
+                                    return False  # Already cached
 
                                 # Generate prediction using actual scheduled departure time
                                 prediction = await self.predict_track(
@@ -1149,10 +1192,12 @@ class TrackPredictor:
                                 )
 
                                 if prediction:
-                                    predictions_cached += 1
                                     logger.debug(
                                         f"Precached prediction: {station_id} {route_id} {trip_id} @ {scheduled_time.strftime('%H:%M')} -> Track {prediction.track_number}"
                                     )
+                                    return True
+
+                                return False
 
                             except (
                                 ConnectionError,
@@ -1161,8 +1206,28 @@ class TrackPredictor:
                                 RateLimitExceeded,
                             ) as e:
                                 logger.error(
-                                    f"Error precaching prediction for {station_id} {route_id} {trip_id}",
+                                    f"Error precaching prediction for {departure_data.get('station_id')} {route_id} {departure_data.get('trip_id')}",
                                     exc_info=e,
+                                )
+                                return False
+
+                        # Process all departures for this route concurrently
+                        departure_tasks = [
+                            process_departure(departure_data)
+                            for departure_data in upcoming_departures
+                        ]
+                        departure_results = await asyncio.gather(
+                            *departure_tasks, return_exceptions=True
+                        )
+
+                        # Count successful predictions
+                        for result in departure_results:
+                            if result is True:
+                                route_predictions_cached += 1
+                            elif isinstance(result, Exception):
+                                logger.error(
+                                    f"Unexpected error in departure processing for {route_id}",
+                                    exc_info=result,
                                 )
 
                     except (
@@ -1172,7 +1237,23 @@ class TrackPredictor:
                         RateLimitExceeded,
                     ) as e:
                         logger.error(f"Error processing route {route_id}", exc_info=e)
-                        continue
+
+                    return route_predictions_cached
+
+                # Process all routes concurrently
+                route_tasks = [process_route(route_id) for route_id in routes]
+                route_results = await asyncio.gather(
+                    *route_tasks, return_exceptions=True
+                )
+
+                # Sum up all predictions cached
+                for result in route_results:
+                    if isinstance(result, int):
+                        predictions_cached += result
+                    elif isinstance(result, Exception):
+                        logger.error(
+                            "Unexpected error in route processing", exc_info=result
+                        )
 
         except (ConnectionError, TimeoutError, aiohttp.ClientError) as e:
             logger.error("Error in precache_track_predictions", exc_info=e)

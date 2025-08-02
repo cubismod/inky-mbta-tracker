@@ -861,6 +861,98 @@ async def get_shapes_json(request: Request) -> Response:  # noqa: ARG001  # pyri
 
 
 # ============================================================================
+# CACHE WARMING UTILITIES
+# ============================================================================
+
+
+async def warm_all_caches_internal() -> dict[str, bool]:
+    """
+    Internal utility to warm all API endpoint caches concurrently.
+    Used for optimizing cache performance during startup or maintenance.
+
+    Returns:
+        Dictionary indicating success/failure for each cache type
+    """
+    results = {}
+
+    async def warm_vehicles_cache() -> bool:
+        try:
+            features = await get_vehicle_features(REDIS_CLIENT)
+            feature_collection = FeatureCollection(features)
+            geojson_str = dumps(feature_collection, sort_keys=True)
+
+            # Warm both regular and JSON caches
+            await asyncio.gather(
+                REDIS_CLIENT.setex("api:vehicles", VEHICLES_CACHE_TTL, geojson_str),
+                REDIS_CLIENT.setex(
+                    "api:vehicles:json", VEHICLES_CACHE_TTL, geojson_str
+                ),
+            )
+            return True
+        except Exception as e:
+            logging.error("Failed to warm vehicles cache", exc_info=e)
+            return False
+
+    async def warm_alerts_cache() -> bool:
+        try:
+            async with aiohttp.ClientSession() as session:
+                alerts = await collect_alerts(CONFIG, session)
+                feature_collection = FeatureCollection(alerts)
+                geojson_str = dumps(feature_collection, sort_keys=True)
+
+                # Warm both regular and JSON caches
+                await asyncio.gather(
+                    REDIS_CLIENT.setex("api:alerts", ALERTS_CACHE_TTL, geojson_str),
+                    REDIS_CLIENT.setex(
+                        "api:alerts:json", ALERTS_CACHE_TTL, geojson_str
+                    ),
+                )
+                return True
+        except Exception as e:
+            logging.error("Failed to warm alerts cache", exc_info=e)
+            return False
+
+    async def warm_shapes_cache() -> bool:
+        try:
+            features = await get_shapes_features(CONFIG, REDIS_CLIENT)
+            feature_collection = FeatureCollection(features)
+            geojson_str = dumps(feature_collection, sort_keys=True)
+
+            # Warm both regular and JSON caches
+            await asyncio.gather(
+                REDIS_CLIENT.setex("api:shapes", SHAPES_CACHE_TTL, geojson_str),
+                REDIS_CLIENT.setex("api:shapes:json", SHAPES_CACHE_TTL, geojson_str),
+            )
+            return True
+        except Exception as e:
+            logging.error("Failed to warm shapes cache", exc_info=e)
+            return False
+
+    # Warm all caches concurrently
+    cache_tasks = [
+        ("vehicles", warm_vehicles_cache()),
+        ("alerts", warm_alerts_cache()),
+        ("shapes", warm_shapes_cache()),
+    ]
+
+    cache_results = await asyncio.gather(
+        *[task for _, task in cache_tasks], return_exceptions=True
+    )
+
+    for i, (cache_name, _) in enumerate(cache_tasks):
+        result = cache_results[i]
+        if isinstance(result, Exception):
+            logging.error(f"Error warming {cache_name} cache", exc_info=result)
+            results[cache_name] = False
+        elif isinstance(result, bool):
+            results[cache_name] = result
+        else:
+            results[cache_name] = False
+
+    return results
+
+
+# ============================================================================
 # MAIN FUNCTION
 # ============================================================================
 
