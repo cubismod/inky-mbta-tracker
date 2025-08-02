@@ -318,21 +318,19 @@ async def generate_chained_track_predictions(
     """
     Generate multiple track predictions in a single request.
     """
-    results = []
 
-    for pred_request in chained_request.predictions:
+    async def process_single_prediction(
+        pred_request: PredictionRequest,
+    ) -> TrackPredictionResponse:
         try:
             station_id, has_track_predictions = determine_station_id(
                 pred_request.station_id
             )
             if not has_track_predictions:
-                results.append(
-                    TrackPredictionResponse(
-                        success=False,
-                        prediction="Predictions are not available for this station",
-                    )
+                return TrackPredictionResponse(
+                    success=False,
+                    prediction="Predictions are not available for this station",
                 )
-                continue
 
             prediction = await TRACK_PREDICTOR.predict_track(
                 station_id=station_id,
@@ -344,55 +342,49 @@ async def generate_chained_track_predictions(
             )
 
             if prediction:
-                results.append(
-                    TrackPredictionResponse(
-                        success=True,
-                        prediction=prediction,
-                    )
+                return TrackPredictionResponse(
+                    success=True,
+                    prediction=prediction,
                 )
             else:
-                results.append(
-                    TrackPredictionResponse(
-                        success=False,
-                        prediction="No prediction could be generated",
-                    )
+                return TrackPredictionResponse(
+                    success=False,
+                    prediction="No prediction could be generated",
                 )
 
         except (ConnectionError, TimeoutError) as e:
             logging.error(
-                f"Error generating chained prediction due to connection issue: {e}",
-                exc_info=True,
+                "Error generating chained prediction due to connection issue",
+                exc_info=e,
             )
-            results.append(
-                TrackPredictionResponse(
-                    success=False,
-                    prediction="Connection error occurred",
-                )
+            return TrackPredictionResponse(
+                success=False,
+                prediction="Connection error occurred",
             )
         except ValidationError as e:
             logging.error(
-                f"Error generating chained prediction due to validation error: {e}",
-                exc_info=True,
+                "Error generating chained prediction due to validation error",
+                exc_info=e,
             )
-            results.append(
-                TrackPredictionResponse(
-                    success=False,
-                    prediction="Validation error occurred",
-                )
+            return TrackPredictionResponse(
+                success=False,
+                prediction="Validation error occurred",
             )
         except Exception as e:
-            logging.error(
-                f"Unexpected error generating chained prediction: {e}", exc_info=True
-            )
-            results.append(
-                TrackPredictionResponse(
-                    success=False,
-                    prediction="Unexpected error occurred",
-                )
+            logging.error("Unexpected error generating chained prediction", exc_info=e)
+            return TrackPredictionResponse(
+                success=False,
+                prediction="Unexpected error occurred",
             )
 
+    tasks = [
+        process_single_prediction(pred_request)
+        for pred_request in chained_request.predictions
+    ]
+    results = await asyncio.gather(*tasks)
+
     return ChainedPredictionsResponse(
-        results=results,
+        results=list(results),
     )
 
 

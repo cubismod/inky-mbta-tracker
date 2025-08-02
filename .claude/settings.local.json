@@ -5,7 +5,8 @@
       "Bash(task format)",
       "Bash(task fix)",
       "Bash(task check)",
-      "mcp__code-index-mcp__search_code_advanced"
+      "mcp__code-index-mcp__search_code_advanced",
+      "mcp__code-index-mcp__set_project_path"
     ],
     "deny": []
   }

@@ -1161,7 +1161,8 @@ class TrackPredictor:
                                 RateLimitExceeded,
                             ) as e:
                                 logger.error(
-                                    f"Error precaching prediction for {station_id} {route_id} {trip_id}: {e}"
+                                    f"Error precaching prediction for {station_id} {route_id} {trip_id}",
+                                    exc_info=e,
                                 )
 
                     except (
