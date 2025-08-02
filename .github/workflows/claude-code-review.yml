@@ -5,9 +5,6 @@ on:
     types: [submitted]
   pull_request_review_comment:
     types: [created]
-concurrency:
-  group: claude-review-${{ github.ref }}-${{ github.event_name }}
-  cancel-in-progress: true
 
 jobs:
   claude-review:
