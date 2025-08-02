@@ -51,7 +51,7 @@ def thread_runner(
     route_substring_filter: Optional[str] = None,
     precache_routes: Optional[list[str]] = None,
     precache_stations: Optional[list[str]] = None,
-    precache_interval_hours: int = 2,
+    precache_interval_hours: int = 4,
     vehicles_queue: Optional["Queue[State]"] = None,
 ) -> None:
     from mbta_client import (

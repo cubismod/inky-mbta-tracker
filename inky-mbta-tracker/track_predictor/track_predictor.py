@@ -987,11 +987,10 @@ class TrackPredictor:
         # Fetch schedules for all stations in a single API call
         stations_str = ",".join(station_ids)
 
-        # Filter to only upcoming departures (next 4 hours)
         current_time = target_date.strftime("%H:%M")
-        four_hours_later = (target_date + timedelta(hours=4)).strftime("%H:%M")
+        eight_hours_later = (target_date + timedelta(hours=8)).strftime("%H:%M")
 
-        endpoint = f"{MBTA_V3_ENDPOINT}/schedules?filter[stop]={stations_str}&filter[route]={route_id}&filter[date]={date_str}&sort=departure_time&include=trip&api_key={auth_token}&filter[min_time]={current_time}&filter[max_time]={four_hours_later}"
+        endpoint = f"{MBTA_V3_ENDPOINT}/schedules?filter[stop]={stations_str}&filter[route]={route_id}&filter[date]={date_str}&sort=departure_time&include=trip&api_key={auth_token}&filter[min_time]={current_time}&filter[max_time]={eight_hours_later}"
 
         try:
             async with session.get(endpoint) as response:
