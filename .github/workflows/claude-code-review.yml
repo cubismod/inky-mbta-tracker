@@ -22,7 +22,8 @@ jobs:
     if: |
       (github.actor != 'cubis-renovate[bot]') &&
       (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')) ||
-      (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude'))
+      (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude')) ||
+      (github.event_name == 'pull_request' && contains(github.event.pull_request.body, '@claude'))
 
     runs-on: ubuntu-latest
     permissions:
