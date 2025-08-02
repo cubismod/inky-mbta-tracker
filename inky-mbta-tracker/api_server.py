@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 from datetime import datetime, timedelta
@@ -6,13 +7,18 @@ from typing import Awaitable, Callable, List
 import aiohttp
 import uvicorn
 from config import load_config
+from consts import (
+    ALERTS_CACHE_TTL,
+    MBTA_V3_ENDPOINT,
+    SHAPES_CACHE_TTL,
+    VEHICLES_CACHE_TTL,
+)
 from fastapi import FastAPI, HTTPException, Query, Request, Response
-from fastapi.openapi.models import Example
 from fastapi.middleware.cors import CORSMiddleware
 from geojson import FeatureCollection, dumps
 from geojson_utils import collect_alerts, get_shapes_features, get_vehicle_features
 from mbta_client import determine_station_id
-from mbta_responses import Alerts
+from mbta_responses import Alerts, Shapes
 from prometheus_fastapi_instrumentator import Instrumentator
 from pydantic import BaseModel, ValidationError
 from redis.asyncio import Redis
@@ -28,6 +34,12 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
+
+# API timeout configurations
+API_REQUEST_TIMEOUT = int(os.environ.get("IMT_API_REQUEST_TIMEOUT", "30"))  # seconds
+TRACK_PREDICTION_TIMEOUT = int(
+    os.environ.get("IMT_TRACK_PREDICTION_TIMEOUT", "15")
+)  # seconds
 
 
 class HeaderLoggingMiddleware(BaseHTTPMiddleware):
@@ -79,7 +91,7 @@ app = FastAPI(
         "displayRequestDuration": True,
         "docExpansion": "none",
         "tryItOutEnabled": True,  # Keep enabled for track prediction endpoints
-    }
+    },
 )
 
 # Add header logging middleware
@@ -101,7 +113,6 @@ app.add_middleware(
 )
 
 instrumenter = Instrumentator().instrument(app).expose(app)
-
 
 
 # Initialize track predictor
@@ -164,32 +175,48 @@ async def generate_track_prediction(
     Generate a track prediction based on historical data.
     """
     try:
-        station_id, has_track_predictions = determine_station_id(station_id)
-        if not has_track_predictions:
-            return TrackPredictionResponse(
-                success=False,
-                prediction="Predictions are not available for this station",
+
+        async def _generate_prediction() -> TrackPredictionResponse:
+            station_id_resolved, has_track_predictions = determine_station_id(
+                station_id
             )
-        prediction = await track_predictor.predict_track(
-            station_id=station_id,
-            route_id=route_id,
-            trip_id=trip_id,
-            headsign=headsign,
-            direction_id=direction_id,
-            scheduled_time=scheduled_time,
+            if not has_track_predictions:
+                return TrackPredictionResponse(
+                    success=False,
+                    prediction="Predictions are not available for this station",
+                )
+            prediction = await track_predictor.predict_track(
+                station_id=station_id_resolved,
+                route_id=route_id,
+                trip_id=trip_id,
+                headsign=headsign,
+                direction_id=direction_id,
+                scheduled_time=scheduled_time,
+            )
+
+            if prediction:
+                return TrackPredictionResponse(
+                    success=True,
+                    prediction=prediction,
+                )
+            else:
+                return TrackPredictionResponse(
+                    success=False,
+                    prediction="No prediction could be generated",
+                )
+
+        return await asyncio.wait_for(
+            _generate_prediction(), timeout=TRACK_PREDICTION_TIMEOUT
         )
 
-        if prediction:
-            return TrackPredictionResponse(
-                success=True,
-                prediction=prediction,
-            )
-        else:
-            return TrackPredictionResponse(
-                success=False,
-                prediction="No prediction could be generated",
-            )
-
+    except asyncio.TimeoutError:
+        logging.error(
+            f"Track prediction request timed out after {TRACK_PREDICTION_TIMEOUT} seconds"
+        )
+        return TrackPredictionResponse(
+            success=False,
+            prediction="Request timed out",
+        )
     except (ConnectionError, TimeoutError) as e:
         logging.error(
             f"Error generating prediction due to connection issue: {e}", exc_info=True
@@ -382,37 +409,66 @@ async def get_historical_assignments(
                                 {
                                     "type": "Feature",
                                     "id": "vehicle-123",
-                                    "geometry": {"type": "Point", "coordinates": [-71.0589, 42.3601]},
+                                    "geometry": {
+                                        "type": "Point",
+                                        "coordinates": [-71.0589, 42.3601],
+                                    },
                                     "properties": {
                                         "route": "Red",
                                         "status": "IN_TRANSIT_TO",
                                         "marker-color": "#FA2D27",
                                         "speed": 25.0,
-                                        "direction": 0
-                                    }
+                                        "direction": 0,
+                                    },
                                 }
-                            ]
+                            ],
                         }
                     }
-                }
+                },
             }
         }
-    }
+    },
 )
 async def get_vehicles() -> dict:
     """
-    Get current vehicle positions as GeoJSON FeatureCollection.
+    Get current vehicle positions as GeoJSON FeatureCollection. Also includes the next/current stop GeoJSON data.
     """
     try:
-        config = load_config()
-        redis_client = get_redis_client()
 
-        features = await get_vehicle_features(config, redis_client)
+        async def _get_vehicles_data() -> dict:
+            config = load_config()
+            redis_client = get_redis_client()
+            try:
+                # Check cache first
+                cache_key = "api:vehicles"
+                cached_data = await redis_client.get(cache_key)
+                if cached_data:
+                    import json
 
-        await redis_client.aclose()
+                    return json.loads(cached_data)
 
-        return {"type": "FeatureCollection", "features": features}
+                # Generate fresh data
+                features = await get_vehicle_features(config, redis_client)
+                result = {"type": "FeatureCollection", "features": features}
 
+                # Cache the result
+                import json
+
+                await redis_client.setex(
+                    cache_key, VEHICLES_CACHE_TTL, json.dumps(result)
+                )
+
+                return result
+            finally:
+                await redis_client.aclose()
+
+        return await asyncio.wait_for(_get_vehicles_data(), timeout=API_REQUEST_TIMEOUT)
+
+    except asyncio.TimeoutError:
+        logging.error(
+            f"Vehicle data request timed out after {API_REQUEST_TIMEOUT} seconds"
+        )
+        raise HTTPException(status_code=504, detail="Request timed out")
     except (ConnectionError, TimeoutError) as e:
         logging.error(
             f"Error getting vehicles due to connection issue: {e}", exc_info=True
@@ -429,29 +485,57 @@ async def get_vehicles() -> dict:
     "/vehicles.json",
     summary="Get Vehicle Positions (JSON File)",
     description="Get current vehicle positions as GeoJSON file. ⚠️ **WARNING: Do not use 'Try it out' - large response may crash browser!**",
-    response_class=Response
+    response_class=Response,
 )
 async def get_vehicles_json() -> Response:
     """
     Get current vehicle positions as GeoJSON file (for compatibility).
     """
     try:
-        config = load_config()
-        redis_client = get_redis_client()
 
-        features = await get_vehicle_features(config, redis_client)
+        async def _get_vehicles_json_data() -> Response:
+            config = load_config()
+            redis_client = get_redis_client()
+            try:
+                # Check cache first
+                cache_key = "api:vehicles:json"
+                cached_data = await redis_client.get(cache_key)
+                if cached_data:
+                    return Response(
+                        content=cached_data,
+                        media_type="application/json",
+                        headers={
+                            "Content-Disposition": "attachment; filename=vehicles.json"
+                        },
+                    )
 
-        await redis_client.aclose()
+                # Generate fresh data
+                features = await get_vehicle_features(config, redis_client)
+                feature_collection = FeatureCollection(features)
+                geojson_str = dumps(feature_collection, sort_keys=True)
 
-        feature_collection = FeatureCollection(features)
-        geojson_str = dumps(feature_collection, sort_keys=True)
+                # Cache the result
+                await redis_client.setex(cache_key, VEHICLES_CACHE_TTL, geojson_str)
 
-        return Response(
-            content=geojson_str,
-            media_type="application/json",
-            headers={"Content-Disposition": "attachment; filename=vehicles.json"},
+                return Response(
+                    content=geojson_str,
+                    media_type="application/json",
+                    headers={
+                        "Content-Disposition": "attachment; filename=vehicles.json"
+                    },
+                )
+            finally:
+                await redis_client.aclose()
+
+        return await asyncio.wait_for(
+            _get_vehicles_json_data(), timeout=API_REQUEST_TIMEOUT
         )
 
+    except asyncio.TimeoutError:
+        logging.error(
+            f"Vehicle JSON request timed out after {API_REQUEST_TIMEOUT} seconds"
+        )
+        raise HTTPException(status_code=504, detail="Request timed out")
     except (ConnectionError, TimeoutError) as e:
         logging.error(
             f"Error getting vehicles JSON due to connection issue: {e}", exc_info=True
@@ -484,29 +568,56 @@ async def get_vehicles_json() -> Response:
                                         "cause": "MAINTENANCE",
                                         "effect": "DELAY",
                                         "header": "Service Alert",
-                                        "description": "Delays expected on Red Line"
-                                    }
+                                        "description": "Delays expected on Red Line",
+                                    },
                                 }
                             ]
                         }
                     }
-                }
+                },
             }
         }
-    }
+    },
 )
-async def get_alerts() -> dict:
+async def get_alerts() -> Alerts:
     """
     Get current MBTA alerts.
     """
     try:
-        config = load_config()
 
-        async with aiohttp.ClientSession() as session:
-            alerts = await collect_alerts(config, session)
+        async def _get_alerts_data() -> Alerts:
+            redis_client = get_redis_client()
+            try:
+                # Check cache first
+                cache_key = "api:alerts"
+                cached_data = await redis_client.get(cache_key)
+                if cached_data:
+                    import json
 
-        return {"data": alerts}
+                    return json.loads(cached_data)
 
+                # Generate fresh data
+                config = load_config()
+                async with aiohttp.ClientSession(base_url=MBTA_V3_ENDPOINT) as session:
+                    alerts = await collect_alerts(config, session)
+                result = Alerts(data=alerts)
+
+                # Cache the result
+                import json
+
+                await redis_client.setex(
+                    cache_key, ALERTS_CACHE_TTL, json.dumps(result, default=str)
+                )
+
+                return result
+            finally:
+                await redis_client.aclose()
+
+        return await asyncio.wait_for(_get_alerts_data(), timeout=API_REQUEST_TIMEOUT)
+
+    except asyncio.TimeoutError:
+        logging.error(f"Alerts request timed out after {API_REQUEST_TIMEOUT} seconds")
+        raise HTTPException(status_code=504, detail="Request timed out")
     except (ConnectionError, TimeoutError) as e:
         logging.error(
             f"Error getting alerts due to connection issue: {e}", exc_info=True
@@ -523,27 +634,56 @@ async def get_alerts() -> dict:
     "/alerts.json",
     summary="Get MBTA Alerts (JSON File)",
     description="Get current MBTA alerts as JSON file. ⚠️ **WARNING: Do not use 'Try it out' - large response may crash browser!**",
-    response_class=Response
+    response_class=Response,
 )
 async def get_alerts_json() -> Response:
     """
     Get current MBTA alerts as JSON file (for compatibility).
     """
     try:
-        config = load_config()
 
-        async with aiohttp.ClientSession() as session:
-            alerts = await collect_alerts(config, session)
+        async def _get_alerts_json_data() -> Response:
+            redis_client = get_redis_client()
+            try:
+                # Check cache first
+                cache_key = "api:alerts:json"
+                cached_data = await redis_client.get(cache_key)
+                if cached_data:
+                    return Response(
+                        content=cached_data,
+                        media_type="application/json",
+                        headers={
+                            "Content-Disposition": "attachment; filename=alerts.json"
+                        },
+                    )
 
-        alerts_data = Alerts(data=alerts)
-        alerts_json = alerts_data.model_dump_json(exclude_unset=True)
+                # Generate fresh data
+                config = load_config()
+                async with aiohttp.ClientSession(base_url=MBTA_V3_ENDPOINT) as session:
+                    alerts = await collect_alerts(config, session)
+                alerts_data = Alerts(data=alerts)
+                alerts_json = alerts_data.model_dump_json(exclude_unset=True)
 
-        return Response(
-            content=alerts_json,
-            media_type="application/json",
-            headers={"Content-Disposition": "attachment; filename=alerts.json"},
+                # Cache the result
+                await redis_client.setex(cache_key, ALERTS_CACHE_TTL, alerts_json)
+
+                return Response(
+                    content=alerts_json,
+                    media_type="application/json",
+                    headers={"Content-Disposition": "attachment; filename=alerts.json"},
+                )
+            finally:
+                await redis_client.aclose()
+
+        return await asyncio.wait_for(
+            _get_alerts_json_data(), timeout=API_REQUEST_TIMEOUT
         )
 
+    except asyncio.TimeoutError:
+        logging.error(
+            f"Alerts JSON request timed out after {API_REQUEST_TIMEOUT} seconds"
+        )
+        raise HTTPException(status_code=504, detail="Request timed out")
     except (ConnectionError, TimeoutError) as e:
         logging.error(
             f"Error getting alerts JSON due to connection issue: {e}", exc_info=True
@@ -574,32 +714,59 @@ async def get_alerts_json() -> Response:
                                     "type": "Feature",
                                     "geometry": {
                                         "type": "LineString",
-                                        "coordinates": [[-71.0589, 42.3601], [-71.0575, 42.3584]]
+                                        "coordinates": [
+                                            [-71.0589, 42.3601],
+                                            [-71.0575, 42.3584],
+                                        ],
                                     },
-                                    "properties": {"route": "Red"}
+                                    "properties": {"route": "Red"},
                                 }
-                            ]
+                            ],
                         }
                     }
-                }
+                },
             }
         }
-    }
+    },
 )
-async def get_shapes() -> dict:
+async def get_shapes() -> Shapes:
     """
     Get route shapes as GeoJSON FeatureCollection.
     """
     try:
-        config = load_config()
-        redis_client = get_redis_client()
 
-        features = await get_shapes_features(config, redis_client)
+        async def _get_shapes_data() -> Shapes:
+            config = load_config()
+            redis_client = get_redis_client()
+            try:
+                # Check cache first
+                cache_key = "api:shapes"
+                cached_data = await redis_client.get(cache_key)
+                if cached_data:
+                    import json
 
-        await redis_client.aclose()
+                    return json.loads(cached_data)
 
-        return {"type": "FeatureCollection", "features": features}
+                # Generate fresh data
+                features = await get_shapes_features(config, redis_client)
+                result = Shapes(data=features)
 
+                # Cache the result
+                import json
+
+                await redis_client.setex(
+                    cache_key, SHAPES_CACHE_TTL, json.dumps(result)
+                )
+
+                return result
+            finally:
+                await redis_client.aclose()
+
+        return await asyncio.wait_for(_get_shapes_data(), timeout=API_REQUEST_TIMEOUT)
+
+    except asyncio.TimeoutError:
+        logging.error(f"Shapes request timed out after {API_REQUEST_TIMEOUT} seconds")
+        raise HTTPException(status_code=504, detail="Request timed out")
     except (ConnectionError, TimeoutError) as e:
         logging.error(
             f"Error getting shapes due to connection issue: {e}", exc_info=True
@@ -613,32 +780,58 @@ async def get_shapes() -> dict:
 
 
 @app.get(
-    "/shapes.json", 
+    "/shapes.json",
     summary="Get Route Shapes (JSON File)",
     description="Get route shapes as GeoJSON file. ⚠️ **WARNING: Do not use 'Try it out' - large response may crash browser!**",
-    response_class=Response
+    response_class=Response,
 )
 async def get_shapes_json() -> Response:
     """
     Get route shapes as GeoJSON file (for compatibility).
     """
     try:
-        config = load_config()
-        redis_client = get_redis_client()
 
-        features = await get_shapes_features(config, redis_client)
+        async def _get_shapes_json_data() -> Response:
+            config = load_config()
+            redis_client = get_redis_client()
+            try:
+                # Check cache first
+                cache_key = "api:shapes:json"
+                cached_data = await redis_client.get(cache_key)
+                if cached_data:
+                    return Response(
+                        content=cached_data,
+                        media_type="application/json",
+                        headers={
+                            "Content-Disposition": "attachment; filename=shapes.json"
+                        },
+                    )
 
-        await redis_client.aclose()
+                # Generate fresh data
+                features = await get_shapes_features(config, redis_client)
+                feature_collection = FeatureCollection(features)
+                geojson_str = dumps(feature_collection, sort_keys=True)
 
-        feature_collection = FeatureCollection(features)
-        geojson_str = dumps(feature_collection, sort_keys=True)
+                # Cache the result
+                await redis_client.setex(cache_key, SHAPES_CACHE_TTL, geojson_str)
 
-        return Response(
-            content=geojson_str,
-            media_type="application/json",
-            headers={"Content-Disposition": "attachment; filename=shapes.json"},
+                return Response(
+                    content=geojson_str,
+                    media_type="application/json",
+                    headers={"Content-Disposition": "attachment; filename=shapes.json"},
+                )
+            finally:
+                await redis_client.aclose()
+
+        return await asyncio.wait_for(
+            _get_shapes_json_data(), timeout=API_REQUEST_TIMEOUT
         )
 
+    except asyncio.TimeoutError:
+        logging.error(
+            f"Shapes JSON request timed out after {API_REQUEST_TIMEOUT} seconds"
+        )
+        raise HTTPException(status_code=504, detail="Request timed out")
     except (ConnectionError, TimeoutError) as e:
         logging.error(
             f"Error getting shapes JSON due to connection issue: {e}", exc_info=True

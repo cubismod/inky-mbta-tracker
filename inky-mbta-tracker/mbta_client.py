@@ -732,7 +732,7 @@ class MBTAApi:
         trip_id: Optional[str] = None,
         route_id: Optional[str] = None,
     ) -> Optional[list[AlertResource]]:
-        endpoint = "alerts"
+        endpoint = "/alerts"
         if trip_id:
             endpoint += f"?filter[trip]={trip_id}"
         elif route_id:
@@ -972,7 +972,7 @@ async def watch_static_schedule(
             f"Watching station {stop_id} for route substring filter {route_substring_filter}"
         )
     while True:
-        async with aiohttp.ClientSession(MBTA_V3_ENDPOINT) as session:
+        async with aiohttp.ClientSession(base_url=MBTA_V3_ENDPOINT) as session:
             async with MBTAApi(
                 stop_id=stop_id,
                 route=route,
@@ -1006,7 +1006,7 @@ async def watch_vehicles(
         watcher_type=TaskType.VEHICLES,
         expiration_time=expiration_time,
     ) as watcher:
-        async with aiohttp.ClientSession(MBTA_V3_ENDPOINT) as session:
+        async with aiohttp.ClientSession(base_url=MBTA_V3_ENDPOINT) as session:
             tracker_executions.labels("vehicles").inc()
             await watch_server_side_events(
                 watcher, endpoint, headers, queue, session=session, transit_time_min=0

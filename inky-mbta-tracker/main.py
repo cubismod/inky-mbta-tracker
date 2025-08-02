@@ -8,7 +8,6 @@ from queue import Queue
 from random import randint
 from typing import Optional
 
-import api_server
 import click
 from backup_scheduler import run_backup_scheduler
 from config import StopSetup, load_config
@@ -279,6 +278,7 @@ async def __main__() -> None:
 def run_main(api_server: bool) -> None:
     if api_server:
         import api_server as server
+
         server.run_main()
     else:
         with Runner() as runner:

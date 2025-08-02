@@ -1,7 +1,6 @@
-import asyncio
 import logging
 from datetime import datetime, timedelta
-from random import randint
+from typing import Optional
 from zoneinfo import ZoneInfo
 
 import aiohttp
@@ -13,7 +12,6 @@ from geojson import Feature, LineString, Point
 from mbta_client import (
     determine_station_id,
     get_shapes,
-    light_get_alerts,
     light_get_stop,
     silver_line_lookup,
 )
@@ -26,6 +24,35 @@ from track_predictor.track_predictor import TrackPredictor
 from turfpy.measurement import bearing, distance
 
 logger = logging.getLogger("geojson_utils")
+
+
+async def light_get_alerts_batch(
+    routes_str: str, session: ClientSession
+) -> Optional[list[AlertResource]]:
+    """Get alerts for multiple routes in a single API call"""
+    from mbta_client import MBTA_AUTH
+    from mbta_responses import Alerts
+
+    endpoint = f"/alerts?filter[route]={routes_str}&api_key={MBTA_AUTH}&filter[lifecycle]=NEW,ONGOING,ONGOING_UPCOMING&filter[datetime]=NOW&filter[severity]=3,4,5,6,7,8,9,10"
+
+    try:
+        async with session.get(endpoint) as response:
+            if response.status == 429:
+                logger.warning("Rate limit hit while fetching alerts")
+                return None
+            elif response.status != 200:
+                logger.error(f"HTTP {response.status} while fetching alerts")
+                return None
+
+            data = await response.json()
+            alerts_response = Alerts.model_validate(data)
+            return alerts_response.data if alerts_response.data else []
+    except ValidationError as err:
+        logger.error("Unable to validate alerts response", exc_info=err)
+        return None
+    except Exception as err:
+        logger.error("Error fetching alerts", exc_info=err)
+        return None
 
 
 def ret_color(vehicle: VehicleRedisSchema) -> str:
@@ -62,12 +89,12 @@ def calculate_bearing(start: Point, end: Point) -> float:
 async def collect_alerts(config: Config, session: ClientSession) -> list[AlertResource]:
     alerts = dict[str, AlertResource]()
     if config.vehicles_by_route:
-        for v in config.vehicles_by_route:
-            await asyncio.sleep(randint(1, 3))
-            al = await light_get_alerts(v, session)
-            if al:
-                for a in al:
-                    alerts[a.id] = a
+        # Batch all routes into a single API call instead of individual calls
+        routes_str = ",".join(config.vehicles_by_route)
+        al = await light_get_alerts_batch(routes_str, session)
+        if al:
+            for a in al:
+                alerts[a.id] = a
     collected_alerts = list(alerts.values())
     collected_alerts.sort(
         key=lambda alert: alert.attributes.updated_at or alert.attributes.created_at,
@@ -80,7 +107,7 @@ async def get_vehicle_features(config: Config, redis_client: Redis) -> list[Feat
     """Extract vehicle features from Redis data"""
     features = dict[str, Feature]()
 
-    async with aiohttp.ClientSession(MBTA_V3_ENDPOINT) as session:
+    async with aiohttp.ClientSession(base_url=MBTA_V3_ENDPOINT) as session:
         # periodically clean up the set during overnight hours to avoid unnecessary redis calls
         delete_all_pos_data = False
         now = datetime.now().astimezone(ZoneInfo("US/Eastern"))
@@ -232,7 +259,7 @@ async def get_shapes_features(config: Config, redis_client: Redis) -> list[Featu
     """Get route shapes as GeoJSON features"""
     lines = list()
     if config.vehicles_by_route:
-        async with aiohttp.ClientSession(MBTA_V3_ENDPOINT) as session:
+        async with aiohttp.ClientSession(base_url=MBTA_V3_ENDPOINT) as session:
             shapes = await get_shapes(redis_client, config.vehicles_by_route, session)
             if shapes:
                 for k, v in shapes.items():

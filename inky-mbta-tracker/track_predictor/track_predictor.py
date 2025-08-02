@@ -637,7 +637,7 @@ class TrackPredictor:
                 return None
 
             # it makes more sense to get the headsign client-side using the exact trip_id due to API rate limits
-            async with aiohttp.ClientSession(MBTA_V3_ENDPOINT) as session:
+            async with aiohttp.ClientSession(base_url=MBTA_V3_ENDPOINT) as session:
                 async with MBTAApi(
                     watcher_type=shared_types.shared_types.TaskType.TRACK_PREDICTIONS
                 ) as api:

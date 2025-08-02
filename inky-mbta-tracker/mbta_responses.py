@@ -346,7 +346,6 @@ class Vehicle(BaseModel):
     relationships: Optional[VehicleRelationships] = None
     type: str
 
-
 class ShapeAttributes(BaseModel):
     polyline: str
 
