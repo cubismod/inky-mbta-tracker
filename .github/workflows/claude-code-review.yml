@@ -18,6 +18,7 @@ jobs:
       (github.actor != 'cubis-renovate[bot]') &&
       (github.event.pull_request.draft == false || github.event.pull_request == null)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: read
       pull-requests: read
@@ -43,12 +44,13 @@ jobs:
 
           # Direct prompt for automated review (no @claude mention needed)
           direct_prompt: |
-            Please review this pull request and provide feedback on:
-            - Code quality and best practices
-            - Potential bugs or issues
-            - Performance considerations
-            - Security concerns
-            - Test coverage
+            Please review this pull request focusing on Python/MBTA tracker code:
+            - Code quality and adherence to project standards in CLAUDE.md
+            - Proper exception handling with exc_info logging
+            - Performance considerations for real-time data processing
+            - Security concerns, especially API key handling
+            - Test coverage and async code patterns
+            - Redis/MQTT integration best practices
 
             Be constructive and helpful in your feedback.
 
@@ -69,8 +71,8 @@ jobs:
           #   'Welcome! Please review this PR from a first-time contributor. Be encouraging and provide detailed explanations for any suggestions.' ||
           #   'Please provide a thorough code review focusing on our coding standards and best practices.' }}
 
-          # Optional: Add specific tools for running tests or linting
-          # allowed_tools: "Bash(npm run test),Bash(npm run lint),Bash(npm run typecheck)"
+          # Allow Claude to run project-specific commands for testing
+          allowed_tools: "Bash(task test),Bash(task check),Bash(task fix),Bash(task format)"
 
           # Optional: Skip review for certain conditions
           # if: |
