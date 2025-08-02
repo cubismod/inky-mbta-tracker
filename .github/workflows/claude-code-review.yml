@@ -1,24 +1,19 @@
 name: Claude Code Review
 
 on:
+  issue_comment:
+    types: [created]
   pull_request_review_comment:
     types: [created]
-    # Optional: Only run on specific file changes
-    # paths:
-    #   - "src/**/*.ts"
-    #   - "src/**/*.tsx"
-    #   - "src/**/*.js"
-    #   - "src/**/*.jsx"
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  issues:
+    types: [opened, assigned, labeled]
+  pull_request_review:
+    types: [submitted]
 
 jobs:
   claude-review:
     if: |
-      (github.actor != 'cubis-renovate[bot]') &&
-      (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude'))
-
+      (github.actor != 'cubis-renovate[bot]')
     runs-on: ubuntu-latest
     permissions:
       contents: read
