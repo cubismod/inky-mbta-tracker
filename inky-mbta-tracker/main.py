@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 import threading
 import time
 from asyncio import Runner, sleep
@@ -21,10 +22,55 @@ from shared_types.shared_types import TaskType
 
 load_dotenv()
 
+
+class APIKeyFilter(logging.Filter):
+    """Filter to remove API keys from log messages."""
+
+    def __init__(self, name: str = "", mask: str = "[REDACTED]") -> None:
+        super().__init__(name)
+        self.mask = mask
+        self.patterns = [
+            re.compile(r"api_key=([^&\s]+)", re.IGNORECASE),
+            re.compile(r"Bearer\s+([^\s]+)", re.IGNORECASE),
+            re.compile(r'AUTH_TOKEN[\'"]?\s*[:=]\s*[\'"]?([^\'"\s&]+)', re.IGNORECASE),
+        ]
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if hasattr(record, "msg") and record.msg:
+            record.msg = self._sanitize_message(str(record.msg))
+
+        if hasattr(record, "args") and record.args:
+            sanitized_args: list[object] = []
+            for arg in record.args:
+                if isinstance(arg, str):
+                    sanitized_args.append(self._sanitize_message(arg))
+                else:
+                    sanitized_args.append(arg)
+            record.args = tuple(sanitized_args)
+
+        return True
+
+    def _sanitize_message(self, message: str) -> str:
+        for pattern in self.patterns:
+            message = pattern.sub(
+                lambda m: m.group(0).replace(m.group(1), self.mask), message
+            )
+        return message
+
+
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO"),
     format="%(levelname)-8s %(message)s",
 )
+
+# Add API key filter to all loggers
+api_filter = APIKeyFilter()
+logging.getLogger().addFilter(api_filter)
+
+# Also add to all existing handlers
+for handler in logging.getLogger().handlers:
+    handler.addFilter(api_filter)
+
 logger = logging.getLogger(__name__)
 
 MIN_TASK_RESTART_MINS = 45
