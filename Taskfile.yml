@@ -37,5 +37,6 @@ tasks:
   check-all:
     cmds:
       - task: format
+      - task: fix
       - task: check
       - task: test

@@ -41,9 +41,9 @@ class BackgroundWorker:
                 self.queue.task_done()
             if self.state == State.TRAFFIC:
                 _ = await get_vehicles_data(self.redis)
-                await sleep(3)
+                await sleep(random.randint(1, 4))
             else:
-                await sleep(random.randint(3, 15))
+                await sleep(random.randint(5, 60))
 
     async def process(self, item: State) -> None:
         prev_state = self.state
