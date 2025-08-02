@@ -1,4 +1,5 @@
 import logging
+import random
 from asyncio import sleep
 from datetime import datetime, timedelta
 from enum import Enum
@@ -42,7 +43,7 @@ class BackgroundWorker:
                 _ = await get_vehicles_data(self.redis)
                 await sleep(3)
             else:
-                await sleep(4)
+                await sleep(random.randint(3, 15))
 
     async def process(self, item: State) -> None:
         prev_state = self.state
