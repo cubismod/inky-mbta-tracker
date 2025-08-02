@@ -15,7 +15,8 @@ on:
 jobs:
   claude-review:
     if: |
-      (github.actor != 'cubis-renovate[bot]')
+      (github.actor != 'cubis-renovate[bot]') &&
+      (github.event.pull_request.draft == false || github.event.pull_request == null)
     runs-on: ubuntu-latest
     permissions:
       contents: read
