@@ -13,7 +13,7 @@ class TestTrackPredictor:
     @pytest.fixture
     def track_predictor(self) -> Generator[TrackPredictor, None, None]:
         """Create a TrackPredictor instance with mocked Redis."""
-        with patch("track_predictor.track_predictor.Redis"):
+        with patch("utils.get_redis"):
             predictor = TrackPredictor()
             predictor.redis = MagicMock()
             # Configure async methods as AsyncMocks
@@ -44,7 +44,7 @@ class TestEnhancedHeadsignSimilarity:
 
     @pytest.fixture
     def track_predictor(self) -> Generator[TrackPredictor, None, None]:
-        with patch("track_predictor.track_predictor.Redis"):
+        with patch("utils.get_redis"):
             yield TrackPredictor()
 
     def test_exact_match(self, track_predictor: TrackPredictor) -> None:
@@ -132,7 +132,7 @@ class TestServiceType:
 
     @pytest.fixture
     def track_predictor(self) -> Generator[TrackPredictor, None, None]:
-        with patch("track_predictor.track_predictor.Redis"):
+        with patch("utils.get_redis"):
             yield TrackPredictor()
 
     def test_express_detection(self, track_predictor: TrackPredictor) -> None:
@@ -169,7 +169,7 @@ class TestWeekendService:
 
     @pytest.fixture
     def track_predictor(self) -> Generator[TrackPredictor, None, None]:
-        with patch("track_predictor.track_predictor.Redis"):
+        with patch("utils.get_redis"):
             yield TrackPredictor()
 
     def test_weekend_detection(self, track_predictor: TrackPredictor) -> None:
@@ -188,7 +188,7 @@ class TestConfidenceThresholds:
 
     @pytest.fixture
     def track_predictor(self) -> Generator[TrackPredictor, None, None]:
-        with patch("track_predictor.track_predictor.Redis"):
+        with patch("utils.get_redis"):
             yield TrackPredictor()
 
     def test_south_station_threshold(self, track_predictor: TrackPredictor) -> None:
@@ -217,7 +217,7 @@ class TestCrossRoutePatterns:
 
     @pytest.fixture
     def track_predictor(self) -> Generator[TrackPredictor, None, None]:
-        with patch("track_predictor.track_predictor.Redis"):
+        with patch("utils.get_redis"):
             predictor = TrackPredictor()
             predictor.redis = AsyncMock()
             yield predictor
@@ -301,7 +301,7 @@ class TestExpandedTimeWindows:
 
     @pytest.fixture
     def track_predictor(self) -> Generator[TrackPredictor, None, None]:
-        with patch("track_predictor.track_predictor.Redis"):
+        with patch("utils.get_redis"):
             predictor = TrackPredictor()
             predictor.redis = AsyncMock()
             yield predictor

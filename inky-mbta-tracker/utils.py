@@ -66,7 +66,7 @@ def thread_runner(
     with Runner() as runner:
         match target:
             case TaskType.SCHEDULES:
-                if stop_id:
+                if stop_id and queue is not None:
                     runner.run(
                         watch_static_schedule(
                             stop_id,
@@ -79,26 +79,28 @@ def thread_runner(
                         )
                     )
             case TaskType.SCHEDULE_PREDICTIONS:
-                runner.run(
-                    watch_station(
-                        stop_id or "place-sstat",
-                        route,
-                        direction_filter,
-                        queue,
-                        transit_time_min,
-                        expiration_time,
-                        show_on_display,
-                        route_substring_filter,
+                if queue is not None:
+                    runner.run(
+                        watch_station(
+                            stop_id or "place-sstat",
+                            route,
+                            direction_filter,
+                            queue,
+                            transit_time_min,
+                            expiration_time,
+                            show_on_display,
+                            route_substring_filter,
+                        )
                     )
-                )
             case TaskType.VEHICLES:
-                runner.run(
-                    watch_vehicles(
-                        queue,
-                        expiration_time,
-                        route or "Red",
+                if queue is not None:
+                    runner.run(
+                        watch_vehicles(
+                            queue,
+                            expiration_time,
+                            route or "Red",
+                        )
                     )
-                )
             case TaskType.TRACK_PREDICTIONS:
                 runner.run(
                     precache_track_predictions_runner(
