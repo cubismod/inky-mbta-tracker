@@ -18,7 +18,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from geojson import FeatureCollection, dumps
 from geojson_utils import collect_alerts, get_shapes_features, get_vehicle_features
 from mbta_client import determine_station_id
-from mbta_responses import Alerts, Shapes
+from mbta_responses import Alerts
 from prometheus_fastapi_instrumentator import Instrumentator
 from pydantic import BaseModel, ValidationError
 from redis.asyncio import Redis
@@ -561,13 +561,13 @@ async def get_vehicles_json() -> Response:
         }
     },
 )
-async def get_alerts() -> Alerts:
+async def get_alerts() -> Response:
     """
     Get current MBTA alerts.
     """
     try:
 
-        async def _get_alerts_data() -> Alerts:
+        async def _get_alerts_data() -> Response:
             redis_client = get_redis_client()
             cache_key = "api:alerts"
             cached_data = await redis_client.get(cache_key)
@@ -579,15 +579,17 @@ async def get_alerts() -> Alerts:
             config = load_config()
             async with aiohttp.ClientSession(base_url=MBTA_V3_ENDPOINT) as session:
                 alerts = await collect_alerts(config, session)
-            result = Alerts(data=alerts)
 
             import json
 
             await redis_client.setex(
-                cache_key, ALERTS_CACHE_TTL, json.dumps(result, default=str)
+                cache_key, ALERTS_CACHE_TTL, json.dumps(alerts, default=str)
             )
 
-            return result
+            return Response(
+                content=json.dumps(alerts, default=str),
+                media_type="application/json",
+            )
 
         return await asyncio.wait_for(_get_alerts_data(), timeout=API_REQUEST_TIMEOUT)
 
@@ -697,13 +699,13 @@ async def get_alerts_json() -> Response:
         }
     },
 )
-async def get_shapes() -> Shapes:
+async def get_shapes() -> Response:
     """
     Get route shapes as GeoJSON FeatureCollection.
     """
     try:
 
-        async def _get_shapes_data() -> Shapes:
+        async def _get_shapes_data() -> Response:
             config = load_config()
             redis_client = get_redis_client()
             cache_key = "api:shapes"
@@ -714,13 +716,16 @@ async def get_shapes() -> Shapes:
                 return json.loads(cached_data)
 
             features = await get_shapes_features(config, redis_client)
-            result = Shapes(data=features)
+            result = {"type": "FeatureCollection", "features": features}
 
             import json
 
             await redis_client.setex(cache_key, SHAPES_CACHE_TTL, json.dumps(result))
 
-            return result
+            return Response(
+                content=json.dumps(result),
+                media_type="application/json",
+            )
 
         return await asyncio.wait_for(_get_shapes_data(), timeout=API_REQUEST_TIMEOUT)
 
