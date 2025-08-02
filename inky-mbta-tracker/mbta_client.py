@@ -878,7 +878,7 @@ class MBTAApi:
             Number of predictions cached
         """
         if self.track_predictor:
-            return await self.track_predictor.precache_track_predictions(
+            return await self.track_predictor.precache(
                 routes=routes, target_stations=target_stations
             )
         else:

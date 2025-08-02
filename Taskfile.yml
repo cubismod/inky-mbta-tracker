@@ -34,3 +34,8 @@ tasks:
   test:
     cmds:
       - uv run pytest
+  check-all:
+    cmds:
+      - task: format
+      - task: check
+      - task: test

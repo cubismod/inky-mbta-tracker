@@ -1079,7 +1079,7 @@ class TrackPredictor:
         )
         return upcoming_departures
 
-    async def precache_track_predictions(
+    async def precache(
         self,
         routes: Optional[List[str]] = None,
         target_stations: Optional[List[str]] = None,
@@ -1144,7 +1144,9 @@ class TrackPredictor:
                             trip_id = departure_data["trip_id"]
                             station_id = departure_data["station_id"]
                             direction_id = departure_data["direction_id"]
-                            scheduled_time = departure_data["departure_time"]
+                            scheduled_time = datetime.fromisoformat(
+                                departure_data["departure_time"]
+                            )
 
                             if not trip_id:
                                 continue  # Skip if no trip ID available
