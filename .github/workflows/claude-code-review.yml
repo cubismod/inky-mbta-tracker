@@ -39,6 +39,7 @@ jobs:
           assignee_trigger: cubismod
           max_turns: 5
           use_sticky_comment: true
+          model: "claude-3-5-haiku-latest"
           
           # Optional: Specify model (defaults to Claude Sonnet 4, uncomment for Claude Opus 4)
           # model: "claude-opus-4-20250514"
