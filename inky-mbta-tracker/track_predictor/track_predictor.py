@@ -870,10 +870,17 @@ class TrackPredictor:
             route_id: The route ID
             trip_id: The trip ID
             scheduled_time: The scheduled departure time
-            actual_platform_code: The actual platform code assigned
-            actual_platform_name: The actual platform name assigned
+            actual_track_number: The actual track number assigned
         """
         try:
+            # Check if this prediction has already been validated
+            validation_key = f"track_validation:{station_id}:{route_id}:{trip_id}:{scheduled_time.date()}"
+            if await check_cache(self.redis, validation_key):
+                logger.debug(
+                    f"Prediction already validated for {station_id} {route_id} {trip_id} on {scheduled_time.date()}"
+                )
+                return
+
             key = f"track_prediction:{station_id}:{route_id}:{trip_id}:{scheduled_time.date()}"
             prediction_data = await check_cache(self.redis, key)
 
@@ -898,6 +905,14 @@ class TrackPredictor:
                 result=result,
                 instance=INSTANCE_ID,
             ).inc()
+
+            # Mark as validated to prevent duplicate processing
+            await write_cache(
+                self.redis,
+                validation_key,
+                "validated",
+                WEEK,  # Store validation flag for 1 week
+            )
 
             logger.info(
                 f"Validated prediction for {station_id} {route_id}: {'CORRECT' if is_correct else 'INCORRECT'}"
