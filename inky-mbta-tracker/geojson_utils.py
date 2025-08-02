@@ -38,6 +38,7 @@ async def light_get_alerts_batch(
     try:
         async with session.get(endpoint) as response:
             if response.status == 429:
+                # we don't retry here because the client expects an immediate response
                 logger.warning("Rate limit hit while fetching alerts")
                 return None
             elif response.status != 200:
@@ -55,7 +56,7 @@ async def light_get_alerts_batch(
         return None
 
 
-def ret_color(vehicle: VehicleRedisSchema) -> str:
+def lookup_vehicle_color(vehicle: VehicleRedisSchema) -> str:
     if vehicle.route.startswith("Amtrak"):
         return "#18567D"
     if vehicle.route.startswith("Green"):
@@ -87,9 +88,9 @@ def calculate_bearing(start: Point, end: Point) -> float:
 
 
 async def collect_alerts(config: Config, session: ClientSession) -> list[AlertResource]:
+    """Collect alerts for the routes specified in the config"""
     alerts = dict[str, AlertResource]()
     if config.vehicles_by_route:
-        # Batch all routes into a single API call instead of individual calls
         routes_str = ",".join(config.vehicles_by_route)
         al = await light_get_alerts_batch(routes_str, session)
         if al:
@@ -103,7 +104,7 @@ async def collect_alerts(config: Config, session: ClientSession) -> list[AlertRe
     return collected_alerts
 
 
-async def get_vehicle_features(config: Config, redis_client: Redis) -> list[Feature]:
+async def get_vehicle_features(redis_client: Redis) -> list[Feature]:
     """Extract vehicle features from Redis data"""
     features = dict[str, Feature]()
 
@@ -208,7 +209,7 @@ async def get_vehicle_features(config: Config, redis_client: Redis) -> list[Feat
                             "status": vehicle_info.current_status,
                             "marker-size": "medium",
                             "marker-symbol": route_icon,
-                            "marker-color": ret_color(vehicle_info),
+                            "marker-color": lookup_vehicle_color(vehicle_info),
                             "speed": vehicle_info.speed,
                             "direction": vehicle_info.direction_id,
                             "id": vehicle_info.id,
@@ -245,7 +246,7 @@ async def get_vehicle_features(config: Config, redis_client: Redis) -> list[Feat
                             properties={
                                 "marker-size": "small",
                                 "marker-symbol": "building",
-                                "marker-color": ret_color(vehicle_info),
+                                "marker-color": lookup_vehicle_color(vehicle_info),
                                 "name": stop.stop_id,
                                 "id": vehicle_info.stop,
                             },

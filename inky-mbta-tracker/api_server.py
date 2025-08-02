@@ -436,31 +436,22 @@ async def get_vehicles() -> dict:
     try:
 
         async def _get_vehicles_data() -> dict:
-            config = load_config()
             redis_client = get_redis_client()
-            try:
-                # Check cache first
-                cache_key = "api:vehicles"
-                cached_data = await redis_client.get(cache_key)
-                if cached_data:
-                    import json
-
-                    return json.loads(cached_data)
-
-                # Generate fresh data
-                features = await get_vehicle_features(config, redis_client)
-                result = {"type": "FeatureCollection", "features": features}
-
-                # Cache the result
+            cache_key = "api:vehicles"
+            cached_data = await redis_client.get(cache_key)
+            if cached_data:
                 import json
 
-                await redis_client.setex(
-                    cache_key, VEHICLES_CACHE_TTL, json.dumps(result)
-                )
+                return json.loads(cached_data)
 
-                return result
-            finally:
-                await redis_client.aclose()
+            features = await get_vehicle_features(redis_client)
+            result = {"type": "FeatureCollection", "features": features}
+
+            import json
+
+            await redis_client.setex(cache_key, VEHICLES_CACHE_TTL, json.dumps(result))
+
+            return result
 
         return await asyncio.wait_for(_get_vehicles_data(), timeout=API_REQUEST_TIMEOUT)
 
@@ -494,38 +485,29 @@ async def get_vehicles_json() -> Response:
     try:
 
         async def _get_vehicles_json_data() -> Response:
-            config = load_config()
             redis_client = get_redis_client()
-            try:
-                # Check cache first
-                cache_key = "api:vehicles:json"
-                cached_data = await redis_client.get(cache_key)
-                if cached_data:
-                    return Response(
-                        content=cached_data,
-                        media_type="application/json",
-                        headers={
-                            "Content-Disposition": "attachment; filename=vehicles.json"
-                        },
-                    )
-
-                # Generate fresh data
-                features = await get_vehicle_features(config, redis_client)
-                feature_collection = FeatureCollection(features)
-                geojson_str = dumps(feature_collection, sort_keys=True)
-
-                # Cache the result
-                await redis_client.setex(cache_key, VEHICLES_CACHE_TTL, geojson_str)
-
+            cache_key = "api:vehicles:json"
+            cached_data = await redis_client.get(cache_key)
+            if cached_data:
                 return Response(
-                    content=geojson_str,
+                    content=cached_data,
                     media_type="application/json",
                     headers={
                         "Content-Disposition": "attachment; filename=vehicles.json"
                     },
                 )
-            finally:
-                await redis_client.aclose()
+
+            features = await get_vehicle_features(redis_client)
+            feature_collection = FeatureCollection(features)
+            geojson_str = dumps(feature_collection, sort_keys=True)
+
+            await redis_client.setex(cache_key, VEHICLES_CACHE_TTL, geojson_str)
+
+            return Response(
+                content=geojson_str,
+                media_type="application/json",
+                headers={"Content-Disposition": "attachment; filename=vehicles.json"},
+            )
 
         return await asyncio.wait_for(
             _get_vehicles_json_data(), timeout=API_REQUEST_TIMEOUT
@@ -587,31 +569,25 @@ async def get_alerts() -> Alerts:
 
         async def _get_alerts_data() -> Alerts:
             redis_client = get_redis_client()
-            try:
-                # Check cache first
-                cache_key = "api:alerts"
-                cached_data = await redis_client.get(cache_key)
-                if cached_data:
-                    import json
-
-                    return json.loads(cached_data)
-
-                # Generate fresh data
-                config = load_config()
-                async with aiohttp.ClientSession(base_url=MBTA_V3_ENDPOINT) as session:
-                    alerts = await collect_alerts(config, session)
-                result = Alerts(data=alerts)
-
-                # Cache the result
+            cache_key = "api:alerts"
+            cached_data = await redis_client.get(cache_key)
+            if cached_data:
                 import json
 
-                await redis_client.setex(
-                    cache_key, ALERTS_CACHE_TTL, json.dumps(result, default=str)
-                )
+                return json.loads(cached_data)
 
-                return result
-            finally:
-                await redis_client.aclose()
+            config = load_config()
+            async with aiohttp.ClientSession(base_url=MBTA_V3_ENDPOINT) as session:
+                alerts = await collect_alerts(config, session)
+            result = Alerts(data=alerts)
+
+            import json
+
+            await redis_client.setex(
+                cache_key, ALERTS_CACHE_TTL, json.dumps(result, default=str)
+            )
+
+            return result
 
         return await asyncio.wait_for(_get_alerts_data(), timeout=API_REQUEST_TIMEOUT)
 
@@ -644,36 +620,28 @@ async def get_alerts_json() -> Response:
 
         async def _get_alerts_json_data() -> Response:
             redis_client = get_redis_client()
-            try:
-                # Check cache first
-                cache_key = "api:alerts:json"
-                cached_data = await redis_client.get(cache_key)
-                if cached_data:
-                    return Response(
-                        content=cached_data,
-                        media_type="application/json",
-                        headers={
-                            "Content-Disposition": "attachment; filename=alerts.json"
-                        },
-                    )
-
-                # Generate fresh data
-                config = load_config()
-                async with aiohttp.ClientSession(base_url=MBTA_V3_ENDPOINT) as session:
-                    alerts = await collect_alerts(config, session)
-                alerts_data = Alerts(data=alerts)
-                alerts_json = alerts_data.model_dump_json(exclude_unset=True)
-
-                # Cache the result
-                await redis_client.setex(cache_key, ALERTS_CACHE_TTL, alerts_json)
-
+            cache_key = "api:alerts:json"
+            cached_data = await redis_client.get(cache_key)
+            if cached_data:
                 return Response(
-                    content=alerts_json,
+                    content=cached_data,
                     media_type="application/json",
                     headers={"Content-Disposition": "attachment; filename=alerts.json"},
                 )
-            finally:
-                await redis_client.aclose()
+
+            config = load_config()
+            async with aiohttp.ClientSession(base_url=MBTA_V3_ENDPOINT) as session:
+                alerts = await collect_alerts(config, session)
+            alerts_data = Alerts(data=alerts)
+            alerts_json = alerts_data.model_dump_json(exclude_unset=True)
+
+            await redis_client.setex(cache_key, ALERTS_CACHE_TTL, alerts_json)
+
+            return Response(
+                content=alerts_json,
+                media_type="application/json",
+                headers={"Content-Disposition": "attachment; filename=alerts.json"},
+            )
 
         return await asyncio.wait_for(
             _get_alerts_json_data(), timeout=API_REQUEST_TIMEOUT
@@ -738,29 +706,21 @@ async def get_shapes() -> Shapes:
         async def _get_shapes_data() -> Shapes:
             config = load_config()
             redis_client = get_redis_client()
-            try:
-                # Check cache first
-                cache_key = "api:shapes"
-                cached_data = await redis_client.get(cache_key)
-                if cached_data:
-                    import json
-
-                    return json.loads(cached_data)
-
-                # Generate fresh data
-                features = await get_shapes_features(config, redis_client)
-                result = Shapes(data=features)
-
-                # Cache the result
+            cache_key = "api:shapes"
+            cached_data = await redis_client.get(cache_key)
+            if cached_data:
                 import json
 
-                await redis_client.setex(
-                    cache_key, SHAPES_CACHE_TTL, json.dumps(result)
-                )
+                return json.loads(cached_data)
 
-                return result
-            finally:
-                await redis_client.aclose()
+            features = await get_shapes_features(config, redis_client)
+            result = Shapes(data=features)
+
+            import json
+
+            await redis_client.setex(cache_key, SHAPES_CACHE_TTL, json.dumps(result))
+
+            return result
 
         return await asyncio.wait_for(_get_shapes_data(), timeout=API_REQUEST_TIMEOUT)
 
@@ -794,34 +754,26 @@ async def get_shapes_json() -> Response:
         async def _get_shapes_json_data() -> Response:
             config = load_config()
             redis_client = get_redis_client()
-            try:
-                # Check cache first
-                cache_key = "api:shapes:json"
-                cached_data = await redis_client.get(cache_key)
-                if cached_data:
-                    return Response(
-                        content=cached_data,
-                        media_type="application/json",
-                        headers={
-                            "Content-Disposition": "attachment; filename=shapes.json"
-                        },
-                    )
-
-                # Generate fresh data
-                features = await get_shapes_features(config, redis_client)
-                feature_collection = FeatureCollection(features)
-                geojson_str = dumps(feature_collection, sort_keys=True)
-
-                # Cache the result
-                await redis_client.setex(cache_key, SHAPES_CACHE_TTL, geojson_str)
-
+            cache_key = "api:shapes:json"
+            cached_data = await redis_client.get(cache_key)
+            if cached_data:
                 return Response(
-                    content=geojson_str,
+                    content=cached_data,
                     media_type="application/json",
                     headers={"Content-Disposition": "attachment; filename=shapes.json"},
                 )
-            finally:
-                await redis_client.aclose()
+
+            features = await get_shapes_features(config, redis_client)
+            feature_collection = FeatureCollection(features)
+            geojson_str = dumps(feature_collection, sort_keys=True)
+
+            await redis_client.setex(cache_key, SHAPES_CACHE_TTL, geojson_str)
+
+            return Response(
+                content=geojson_str,
+                media_type="application/json",
+                headers={"Content-Disposition": "attachment; filename=shapes.json"},
+            )
 
         return await asyncio.wait_for(
             _get_shapes_json_data(), timeout=API_REQUEST_TIMEOUT
