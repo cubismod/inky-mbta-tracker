@@ -90,6 +90,9 @@ app = FastAPI(
     description="API for MBTA transit data including track predictions, vehicle positions, alerts, and route shapes",
     version="2.0.0",
     docs_url="/",
+    servers=[
+        {"url": "https://imt.ryanwallace.cloud", "description": "Production"},
+    ],
     swagger_ui_parameters={
         "defaultModelsExpandDepth": 1,
         "defaultModelExpandDepth": 1,
