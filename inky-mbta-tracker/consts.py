@@ -11,6 +11,6 @@ MINUTE = 60
 INSTANCE_ID = uuid.uuid4()
 
 # API Cache TTL configurations
-VEHICLES_CACHE_TTL = 5  # seconds
+VEHICLES_CACHE_TTL = 3  # seconds
 ALERTS_CACHE_TTL = 10 * MINUTE  # 10 minutes
 SHAPES_CACHE_TTL = 2 * WEEK  # 2 weeks
