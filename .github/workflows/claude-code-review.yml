@@ -13,9 +13,7 @@ on:
 jobs:
   claude-review:
     if: |
-      (github.actor != 'cubis-renovate[bot]') &&
-      (github.event.issue.pull_request && contains(github.event.comment.body, '@claude'))
-
+      (github.actor != 'cubis-renovate[bot]')
     runs-on: ubuntu-latest
     permissions:
       contents: read
