@@ -200,6 +200,7 @@ class Tracker:
                     if len(batch) > 0:
                         try:
                             await pipeline.execute()
+                            redis_commands.labels("execute").inc()
                             # Create a new pipeline for the next batch
                             pipeline = self.redis.pipeline()
                         except ResponseError as err:
@@ -451,6 +452,7 @@ async def execute(
             break
     try:
         await pipeline.execute()
+        redis_commands.labels("execute").inc()
         await tracker.redis.zremrangebyscore(
             "time", "-inf", str(datetime.now().timestamp())
         )
@@ -468,6 +470,7 @@ async def execute(
             await tracker.cleanup(cleanup_pipeline)
             try:
                 await cleanup_pipeline.execute()
+                redis_commands.labels("execute").inc()
             except ResponseError as err:
                 logger.error("Unable to execute cleanup pipeline", exc_info=err)
 

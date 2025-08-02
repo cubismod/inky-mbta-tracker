@@ -34,7 +34,7 @@ from mbta_responses import (
     Vehicle,
 )
 from polyline import decode
-from prometheus import mbta_api_requests, tracker_executions
+from prometheus import mbta_api_requests, redis_commands, tracker_executions
 from pydantic import BaseModel, TypeAdapter, ValidationError
 from redis.asyncio.client import Redis
 from redis_cache import check_cache, write_cache
@@ -247,6 +247,7 @@ class MBTAApi:
         traceback: Optional[TracebackType],
     ) -> Optional[bool]:
         await self.r_client.aclose()
+        redis_commands.labels("aclose").inc()
         if exc_value:
             logger.error(f"Error in MBTAApi {exc_type}", exc_info=exc_value)
             return True
@@ -941,6 +942,7 @@ async def watch_server_side_events(
                 and datetime.now().astimezone(UTC) > watcher.expiration_time
             ):
                 await client.aclose()
+                redis_commands.labels("aclose").inc()
                 logger.info(
                     f"Restarting thread {watcher.watcher_type} - {watcher.stop_id}/{watcher.route}"
                 )

@@ -131,6 +131,7 @@ async def get_vehicle_features(redis_client: Redis) -> list[Feature]:
                 redis_commands.labels("get").inc()
 
         results = await pl.execute()
+        redis_commands.labels("execute").inc()
         for result in results:
             if result:
                 vehicle_bearing = None

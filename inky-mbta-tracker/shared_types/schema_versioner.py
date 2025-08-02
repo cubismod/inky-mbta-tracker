@@ -129,6 +129,7 @@ async def schema_versioner() -> None:
                         for key in keys:
                             pl.delete(key)
                         await pl.execute()
+                        redis_commands.labels("execute").inc()
                     await redis.set(schema_key, schema.model_dump_json())
                     redis_commands.labels("set").inc()
                     logger.info(f"{schema.id} set to {schema.model_dump_json()}")
@@ -161,5 +162,6 @@ async def export_schema_key_counts(redis: Redis) -> dict[str, int]:
         logger.error("Error counting keys", exc_info=e)
     finally:
         await redis.aclose()
+        redis_commands.labels("aclose").inc()
 
     return key_counts

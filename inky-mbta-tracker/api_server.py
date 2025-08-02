@@ -1,7 +1,9 @@
 import asyncio
+import json
 import logging
 import os
 from datetime import datetime, timedelta
+from functools import wraps
 from typing import Any, Awaitable, Callable, List
 
 import aiohttp
@@ -116,16 +118,11 @@ def get_client_ip(request: Request) -> str:
 
 
 if RATE_LIMITING_ENABLED:
-    limiter = Limiter(
-        key_func=get_client_ip,
-        storage_uri=f"redis://:{os.environ.get('IMT_REDIS_PASSWORD', '')}@{os.environ.get('IMT_REDIS_ENDPOINT', '')}:{os.environ.get('IMT_REDIS_PORT', '6379')}",
-    )
+    limiter = Limiter(key_func=get_client_ip)
     app.state.limiter = limiter
     app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)  # type: ignore
 else:
     # Create a no-op limiter for when rate limiting is disabled
-    from functools import wraps
-
     class NoOpLimiter:
         def limit(self, rate: str) -> Callable:
             def decorator(func: Callable) -> Callable:
@@ -164,13 +161,13 @@ instrumenter = Instrumentator().instrument(app).expose(app)
 track_predictor = TrackPredictor()
 
 
-# Initialize Redis connection
-def get_redis_client() -> Redis:
-    return Redis(
-        host=os.environ.get("IMT_REDIS_ENDPOINT", ""),
-        port=int(os.environ.get("IMT_REDIS_PORT", "6379")),
-        password=os.environ.get("IMT_REDIS_PASSWORD", ""),
-    )
+r_client = Redis(
+    host=os.environ.get("IMT_REDIS_ENDPOINT", ""),
+    port=int(os.environ.get("IMT_REDIS_PORT", "6379")),
+    password=os.environ.get("IMT_REDIS_PASSWORD", ""),
+)
+
+config = load_config()
 
 
 class TrackPredictionResponse(BaseModel):
@@ -490,20 +487,15 @@ async def get_vehicles(request: Request) -> dict:
     try:
 
         async def _get_vehicles_data() -> dict:
-            redis_client = get_redis_client()
             cache_key = "api:vehicles"
-            cached_data = await redis_client.get(cache_key)
+            cached_data = await r_client.get(cache_key)
             if cached_data:
-                import json
-
                 return json.loads(cached_data)
 
-            features = await get_vehicle_features(redis_client)
+            features = await get_vehicle_features(r_client)
             result = {"type": "FeatureCollection", "features": features}
 
-            import json
-
-            await redis_client.setex(cache_key, VEHICLES_CACHE_TTL, json.dumps(result))
+            await r_client.setex(cache_key, VEHICLES_CACHE_TTL, json.dumps(result))
 
             return result
 
@@ -540,9 +532,8 @@ async def get_vehicles_json(request: Request) -> Response:
     try:
 
         async def _get_vehicles_json_data() -> Response:
-            redis_client = get_redis_client()
             cache_key = "api:vehicles:json"
-            cached_data = await redis_client.get(cache_key)
+            cached_data = await r_client.get(cache_key)
             if cached_data:
                 return Response(
                     content=cached_data,
@@ -552,11 +543,11 @@ async def get_vehicles_json(request: Request) -> Response:
                     },
                 )
 
-            features = await get_vehicle_features(redis_client)
+            features = await get_vehicle_features(r_client)
             feature_collection = FeatureCollection(features)
             geojson_str = dumps(feature_collection, sort_keys=True)
 
-            await redis_client.setex(cache_key, VEHICLES_CACHE_TTL, geojson_str)
+            await r_client.setex(cache_key, VEHICLES_CACHE_TTL, geojson_str)
 
             return Response(
                 content=geojson_str,
@@ -624,23 +615,21 @@ async def get_alerts(request: Request) -> Response:
     try:
 
         async def _get_alerts_data() -> Response:
-            redis_client = get_redis_client()
             cache_key = "api:alerts"
-            cached_data = await redis_client.get(cache_key)
+            cached_data = await r_client.get(cache_key)
             if cached_data:
                 return Response(
                     content=cached_data,
                     media_type="application/json",
                 )
 
-            config = load_config()
             async with aiohttp.ClientSession(base_url=MBTA_V3_ENDPOINT) as session:
                 alerts = await collect_alerts(config, session)
 
             alerts_data = Alerts(data=alerts)
             alerts_json = alerts_data.model_dump_json(exclude_unset=True)
 
-            await redis_client.setex(cache_key, ALERTS_CACHE_TTL, alerts_json)
+            await r_client.setex(cache_key, ALERTS_CACHE_TTL, alerts_json)
 
             return Response(
                 content=alerts_json,
@@ -678,9 +667,8 @@ async def get_alerts_json(request: Request) -> Response:
     try:
 
         async def _get_alerts_json_data() -> Response:
-            redis_client = get_redis_client()
             cache_key = "api:alerts:json"
-            cached_data = await redis_client.get(cache_key)
+            cached_data = await r_client.get(cache_key)
             if cached_data:
                 return Response(
                     content=cached_data,
@@ -688,13 +676,12 @@ async def get_alerts_json(request: Request) -> Response:
                     headers={"Content-Disposition": "attachment; filename=alerts.json"},
                 )
 
-            config = load_config()
             async with aiohttp.ClientSession(base_url=MBTA_V3_ENDPOINT) as session:
                 alerts = await collect_alerts(config, session)
             alerts_data = Alerts(data=alerts)
             alerts_json = alerts_data.model_dump_json(exclude_unset=True)
 
-            await redis_client.setex(cache_key, ALERTS_CACHE_TTL, alerts_json)
+            await r_client.setex(cache_key, ALERTS_CACHE_TTL, alerts_json)
 
             return Response(
                 content=alerts_json,
@@ -764,21 +751,15 @@ async def get_shapes(request: Request) -> Response:
     try:
 
         async def _get_shapes_data() -> Response:
-            config = load_config()
-            redis_client = get_redis_client()
             cache_key = "api:shapes"
-            cached_data = await redis_client.get(cache_key)
+            cached_data = await r_client.get(cache_key)
             if cached_data:
-                import json
-
                 return json.loads(cached_data)
 
-            features = await get_shapes_features(config, redis_client)
+            features = await get_shapes_features(config, r_client)
             result = {"type": "FeatureCollection", "features": features}
 
-            import json
-
-            await redis_client.setex(cache_key, SHAPES_CACHE_TTL, json.dumps(result))
+            await r_client.setex(cache_key, SHAPES_CACHE_TTL, json.dumps(result))
 
             return Response(
                 content=json.dumps(result),
@@ -816,10 +797,8 @@ async def get_shapes_json(request: Request) -> Response:
     try:
 
         async def _get_shapes_json_data() -> Response:
-            config = load_config()
-            redis_client = get_redis_client()
             cache_key = "api:shapes:json"
-            cached_data = await redis_client.get(cache_key)
+            cached_data = await r_client.get(cache_key)
             if cached_data:
                 return Response(
                     content=cached_data,
@@ -827,11 +806,11 @@ async def get_shapes_json(request: Request) -> Response:
                     headers={"Content-Disposition": "attachment; filename=shapes.json"},
                 )
 
-            features = await get_shapes_features(config, redis_client)
+            features = await get_shapes_features(config, r_client)
             feature_collection = FeatureCollection(features)
             geojson_str = dumps(feature_collection, sort_keys=True)
 
-            await redis_client.setex(cache_key, SHAPES_CACHE_TTL, geojson_str)
+            await r_client.setex(cache_key, SHAPES_CACHE_TTL, geojson_str)
 
             return Response(
                 content=geojson_str,
