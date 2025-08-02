@@ -299,7 +299,9 @@ class TestExpandedTimeWindows:
     @pytest.fixture
     def track_predictor(self) -> Generator[TrackPredictor, None, None]:
         with patch("track_predictor.track_predictor.Redis"):
-            yield TrackPredictor()
+            predictor = TrackPredictor()
+            predictor.redis = AsyncMock()
+            yield predictor
 
     @pytest.mark.asyncio
     async def test_multiple_time_windows_in_patterns(
@@ -331,6 +333,7 @@ class TestExpandedTimeWindows:
                 return_value=[sample_assignment],
             ),
             patch.object(track_predictor, "_get_prediction_accuracy", return_value=0.7),
+            patch("track_predictor.track_predictor.check_cache", return_value=None),
         ):
             patterns = await track_predictor.analyze_patterns(
                 "place-sstat",

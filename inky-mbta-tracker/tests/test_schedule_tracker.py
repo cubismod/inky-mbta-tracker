@@ -367,7 +367,14 @@ class TestTracker:
         obsolete_ids = [b"event-1", b"event-2"]
         mock_redis.zrange.return_value = obsolete_ids
 
-        await tracker.cleanup(mock_pipeline)
+        # Mock RedisLock to avoid actual locking during tests
+        with patch("schedule_tracker.RedisLock") as mock_lock:
+            mock_lock_instance = AsyncMock()
+            mock_lock.return_value = mock_lock_instance
+            mock_lock_instance.__aenter__.return_value = mock_lock_instance
+            mock_lock_instance.__aexit__.return_value = None
+
+            await tracker.cleanup(mock_pipeline)
 
         mock_redis.zrange.assert_called_once()
         # Should call rm for each obsolete ID
