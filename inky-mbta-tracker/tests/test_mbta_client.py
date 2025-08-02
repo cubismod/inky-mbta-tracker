@@ -11,7 +11,6 @@ from mbta_client import (
     light_get_stop,
     parse_shape_data,
     silver_line_lookup,
-    thread_runner,
 )
 from mbta_responses import (
     CarriageStatus,
@@ -23,6 +22,7 @@ from mbta_responses import (
     VehicleAttributes,
 )
 from shared_types.shared_types import ScheduleEvent, TaskType, VehicleRedisSchema
+from utils import thread_runner
 
 
 class TestSilverLineLookup:

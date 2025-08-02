@@ -4,7 +4,8 @@
       "Bash(uv add:*)",
       "Bash(task format)",
       "Bash(task fix)",
-      "Bash(task check)"
+      "Bash(task check)",
+      "mcp__code-index-mcp__search_code_advanced"
     ],
     "deny": []
   }

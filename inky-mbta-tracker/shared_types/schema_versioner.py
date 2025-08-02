@@ -1,5 +1,4 @@
 import logging
-import os
 from typing import Optional
 
 from prometheus import redis_commands, schema_key_counts
@@ -8,6 +7,7 @@ from redis import ResponseError
 from redis.asyncio.client import Redis
 from redis_lock.asyncio import RedisLock
 from tenacity import retry, stop_after_attempt, wait_exponential
+from utils import get_redis
 
 import shared_types.class_hashes as class_hashes
 
@@ -104,11 +104,7 @@ async def get_schema_version(redis: Redis, schema_key: str) -> Optional[RedisSch
 # the tracker is able to gracefully recreate missing keys using the MBTA API
 @retry(stop=stop_after_attempt(5), wait=wait_exponential(multiplier=1, min=4, max=15))
 async def schema_versioner() -> None:
-    redis = Redis(
-        host=os.environ.get("IMT_REDIS_ENDPOINT", ""),
-        port=int(os.environ.get("IMT_REDIS_PORT", "6379")),
-        password=os.environ.get("IMT_REDIS_PASSWORD", ""),
-    )
+    redis = get_redis()
     for schema in SCHEMAS:
         schema_key = f"schema:{schema.id}"
         schema_version = await get_schema_version(redis, schema_key)

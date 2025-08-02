@@ -26,7 +26,6 @@ from prometheus import (
     track_predictions_validated,
 )
 from pydantic import ValidationError
-from redis.asyncio.client import Redis
 from redis_cache import check_cache, write_cache
 from shared_types.shared_types import (
     TrackAssignment,
@@ -38,6 +37,7 @@ from tenacity import (
     retry,
     wait_exponential_jitter,
 )
+from utils import get_redis
 
 logger = logging.getLogger(__name__)
 
@@ -83,11 +83,7 @@ class TrackPredictor:
     """
 
     def __init__(self) -> None:
-        self.redis = Redis(
-            host=os.environ.get("IMT_REDIS_ENDPOINT", ""),
-            port=int(os.environ.get("IMT_REDIS_PORT", "6379")),
-            password=os.environ.get("IMT_REDIS_PASSWORD", ""),
-        )
+        self.redis = get_redis()
 
     async def store_historical_assignment(self, assignment: TrackAssignment) -> None:
         """
@@ -320,19 +316,14 @@ class TrackPredictor:
             negative_cache_key = f"no_prediction:{station_id}:{route_id}:{scheduled_time.date()}:{scheduled_time.hour}"
             cached_result = await check_cache(self.redis, negative_cache_key)
             if cached_result:
-                cache_reason = (
-                    cached_result.decode()
-                    if isinstance(cached_result, bytes)
-                    else str(cached_result)
-                )
                 track_negative_cache_hits.labels(
                     station_id=station_id,
                     route_id=route_id,
-                    cache_reason=cache_reason,
+                    cache_reason=cached_result,
                     instance=INSTANCE_ID,
                 ).inc()
                 logger.debug(
-                    f"Negative cache hit for station_id={station_id}, route_id={route_id}, hour={scheduled_time.hour}, reason={cache_reason}"
+                    f"Negative cache hit for station_id={station_id}, route_id={route_id}, hour={scheduled_time.hour}, reason={cached_result}"
                 )
                 return {}
 
@@ -616,25 +607,29 @@ class TrackPredictor:
             if not route_id.startswith("CR"):
                 return None
 
-            # Check negative cache first to avoid redundant calculations
+            # Check if this is a negative cache hit first
             negative_cache_key = f"no_prediction:{station_id}:{route_id}:{scheduled_time.date()}:{scheduled_time.hour}"
             cached_result = await check_cache(self.redis, negative_cache_key)
             if cached_result:
-                cache_reason = (
-                    cached_result.decode()
-                    if isinstance(cached_result, bytes)
-                    else str(cached_result)
-                )
                 track_negative_cache_hits.labels(
                     station_id=station_id,
                     route_id=route_id,
-                    cache_reason=cache_reason,
+                    cache_reason=cached_result,
                     instance=INSTANCE_ID,
                 ).inc()
                 logger.debug(
-                    f"Negative cache hit for station_id={station_id}, route_id={route_id}, hour={scheduled_time.hour}, reason={cache_reason}"
+                    f"Negative cache hit for station_id={station_id}, route_id={route_id}, hour={scheduled_time.hour}, reason={cached_result}"
                 )
                 return None
+
+            # If not, maybe we have a cached prediction
+            cache_key = f"track_prediction:{station_id}:{route_id}:{trip_id}:{scheduled_time.date()}"
+            cached_prediction = await check_cache(self.redis, cache_key)
+            if cached_prediction:
+                track_predictions_cached.labels(
+                    station_id=station_id, route_id=route_id, instance=INSTANCE_ID
+                ).inc()
+                return TrackPrediction.model_validate_json(cached_prediction)
 
             # it makes more sense to get the headsign client-side using the exact trip_id due to API rate limits
             async with aiohttp.ClientSession(base_url=MBTA_V3_ENDPOINT) as session:
@@ -677,15 +672,6 @@ class TrackPredictor:
 
                         return prediction
 
-            # Check if this is a cache hit
-            cache_key = f"track_prediction:{station_id}:{route_id}:{trip_id}:{scheduled_time.date()}"
-            cached_prediction = await check_cache(self.redis, cache_key)
-            if cached_prediction:
-                track_predictions_cached.labels(
-                    station_id=station_id, route_id=route_id, instance=INSTANCE_ID
-                ).inc()
-                return TrackPrediction.model_validate_json(cached_prediction)
-
             # Analyze patterns
             patterns = await self.analyze_patterns(
                 station_id, route_id, headsign, direction_id, scheduled_time
@@ -700,7 +686,7 @@ class TrackPredictor:
 
             # Use station-specific confidence threshold
             confidence_threshold = self._get_station_confidence_threshold(station_id)
-            if confidence < confidence_threshold:
+            if confidence < confidence_threshold or not best_track.isdigit():
                 logger.debug(
                     f"No prediction made for station_id={station_id}, route_id={route_id}, trip_id={trip_id}, headsign={headsign}, direction_id={direction_id}, scheduled_time={scheduled_time}, confidence={confidence}, threshold={confidence_threshold}"
                 )
@@ -739,10 +725,6 @@ class TrackPredictor:
                 )
             )
             logger.debug(f"Historical matches={historical_matches}")
-
-            if not best_track.isdigit():
-                logger.debug(f"Discarding non-digit track {best_track}")
-                return None
 
             # Create prediction
             prediction = TrackPrediction(

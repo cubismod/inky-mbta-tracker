@@ -1,11 +1,10 @@
 import logging
-import os
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from prometheus import redis_commands
-from redis.asyncio.client import Redis
+from utils import get_redis
 
 logger = logging.getLogger(__name__)
 
@@ -14,11 +13,7 @@ class RedisBackup:
     """Handles Redis backups in RESP format"""
 
     def __init__(self, redis_url: Optional[str] = None, backup_dir: str = "./backups"):
-        r = Redis(
-            host=os.environ.get("IMT_REDIS_ENDPOINT") or "",
-            port=int(os.environ.get("IMT_REDIS_PORT", "6379") or ""),
-            password=os.environ.get("IMT_REDIS_PASSWORD") or "",
-        )
+        r = get_redis()
         self.redis = r
         self.backup_dir = Path(backup_dir)
         self.backup_dir.mkdir(exist_ok=True)
@@ -55,7 +50,7 @@ class RedisBackup:
                             backup_file.write(b"$-1\r\n")
 
                     elif key_type == b"hash":
-                        hash_data = await self.redis.hgetall(key)
+                        hash_data: dict[Any, Any] = await self.redis.hgetall(key)  # type: ignore[misc]
                         redis_commands.labels("hgetall").inc()
                         # Write hash as array of field-value pairs
                         backup_file.write(
@@ -68,7 +63,7 @@ class RedisBackup:
                             backup_file.write(value + b"\r\n")
 
                     elif key_type == b"list":
-                        list_data = await self.redis.lrange(key, 0, -1)
+                        list_data: list[Any] = await self.redis.lrange(key, 0, -1)  # type: ignore[misc]
                         redis_commands.labels("lrange").inc()
                         backup_file.write(b"*" + str(len(list_data)).encode() + b"\r\n")
                         for item in list_data:
@@ -76,7 +71,7 @@ class RedisBackup:
                             backup_file.write(item + b"\r\n")
 
                     elif key_type == b"set":
-                        set_data = await self.redis.smembers(key)
+                        set_data: set[Any] = await self.redis.smembers(key)  # type: ignore[misc]
                         redis_commands.labels("smembers").inc()
                         backup_file.write(b"*" + str(len(set_data)).encode() + b"\r\n")
                         for member in set_data:

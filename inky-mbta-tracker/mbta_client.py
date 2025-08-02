@@ -1,6 +1,6 @@
 import logging
 import os
-from asyncio import CancelledError, Runner, sleep
+from asyncio import CancelledError, sleep
 from collections import Counter
 from datetime import UTC, datetime, timedelta
 from queue import Queue
@@ -47,6 +47,7 @@ from tenacity import (
     retry_if_not_exception_type,
     wait_exponential_jitter,
 )
+from utils import get_redis
 
 if TYPE_CHECKING:
     from track_predictor.track_predictor import TrackPredictor
@@ -210,11 +211,7 @@ class MBTAApi:
         self.expiration_time = expiration_time
         self.watcher_type = watcher_type
 
-        self.r_client = Redis(
-            host=os.environ.get("IMT_REDIS_ENDPOINT", ""),
-            port=int(os.environ.get("IMT_REDIS_PORT", "6379")),
-            password=os.environ.get("IMT_REDIS_PASSWORD", ""),
-        )
+        self.r_client = get_redis()
         from track_predictor.track_predictor import TrackPredictor
 
         self.track_predictor = TrackPredictor()
@@ -1060,66 +1057,6 @@ async def watch_station(
             transit_time_min=transit_time_min,
             session=session,
         )
-
-
-def thread_runner(
-    target: TaskType,
-    queue: Queue[ScheduleEvent | VehicleRedisSchema],
-    transit_time_min: int = 0,
-    stop_id: Optional[str] = None,
-    route: Optional[str] = None,
-    direction_filter: Optional[int] = None,
-    expiration_time: Optional[datetime] = None,
-    show_on_display: bool = True,
-    route_substring_filter: Optional[str] = None,
-    precache_routes: Optional[list[str]] = None,
-    precache_stations: Optional[list[str]] = None,
-    precache_interval_hours: int = 2,
-) -> None:
-    with Runner() as runner:
-        match target:
-            case TaskType.SCHEDULES:
-                if stop_id:
-                    runner.run(
-                        watch_static_schedule(
-                            stop_id,
-                            route,
-                            direction_filter,
-                            queue,
-                            transit_time_min,
-                            show_on_display,
-                            route_substring_filter,
-                        )
-                    )
-            case TaskType.SCHEDULE_PREDICTIONS:
-                runner.run(
-                    watch_station(
-                        stop_id or "place-sstat",
-                        route,
-                        direction_filter,
-                        queue,
-                        transit_time_min,
-                        expiration_time,
-                        show_on_display,
-                        route_substring_filter,
-                    )
-                )
-            case TaskType.VEHICLES:
-                runner.run(
-                    watch_vehicles(
-                        queue,
-                        expiration_time,
-                        route or "Red",
-                    )
-                )
-            case TaskType.TRACK_PREDICTIONS:
-                runner.run(
-                    precache_track_predictions_runner(
-                        routes=precache_routes,
-                        target_stations=precache_stations,
-                        interval_hours=precache_interval_hours,
-                    )
-                )
 
 
 # takes a stop_id from the vehicle API and returns the station_id and if it is one of the stations that has track predictions

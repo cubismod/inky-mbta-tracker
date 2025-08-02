@@ -2,8 +2,10 @@ import asyncio
 import json
 import logging
 import os
+import threading
 from datetime import datetime, timedelta
 from functools import wraps
+from queue import Queue
 from typing import Any, Awaitable, Callable, List
 
 import aiohttp
@@ -23,28 +25,43 @@ from mbta_client import determine_station_id
 from mbta_responses import Alerts
 from prometheus_fastapi_instrumentator import Instrumentator
 from pydantic import BaseModel, ValidationError
-from redis.asyncio import Redis
-from shared_types.shared_types import TrackAssignment, TrackPrediction
+from shared_types.shared_types import TaskType, TrackAssignment, TrackPrediction
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 from starlette.middleware.base import BaseHTTPMiddleware
 from track_predictor.track_predictor import TrackPredictionStats, TrackPredictor
+from utils import get_redis, get_vehicles_data, thread_runner
+from vehicles_background_worker import State
+
+# ============================================================================
+# CONFIGURATION AND GLOBALS
+# ============================================================================
 
 # This is intended as a separate entrypoint to be run as a separate container
-
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO"),
     format="%(levelname)-8s %(message)s",
 )
-
 logger = logging.getLogger(__name__)
+
+# Global constants and instances
+VEHICLES_QUEUE = Queue[State]()
+REDIS_CLIENT = get_redis()
+CONFIG = load_config()
+TRACK_PREDICTOR = TrackPredictor()
 
 # API timeout configurations
 API_REQUEST_TIMEOUT = int(os.environ.get("IMT_API_REQUEST_TIMEOUT", "30"))  # seconds
 TRACK_PREDICTION_TIMEOUT = int(
     os.environ.get("IMT_TRACK_PREDICTION_TIMEOUT", "15")
 )  # seconds
+RATE_LIMITING_ENABLED = os.getenv("IMT_RATE_LIMITING_ENABLED", "true").lower() == "true"
+
+
+# ============================================================================
+# MIDDLEWARE AND UTILITIES
+# ============================================================================
 
 
 class HeaderLoggingMiddleware(BaseHTTPMiddleware):
@@ -79,11 +96,61 @@ class HeaderLoggingMiddleware(BaseHTTPMiddleware):
         )
 
         response = await call_next(request)
-
         logger.debug(f"Response status: {response.status_code}")
-
         return response
 
+
+def get_client_ip(request: Request) -> str:
+    """Get client IP, handling Cloudflare proxy headers"""
+    # Check for Cloudflare's real IP header first
+    if "CF-Connecting-IP" in request.headers:
+        return request.headers["CF-Connecting-IP"]
+    # Fallback to standard proxy headers
+    if "X-Forwarded-For" in request.headers:
+        return request.headers["X-Forwarded-For"].split(",")[0].strip()
+    if "X-Real-IP" in request.headers:
+        return request.headers["X-Real-IP"]
+    # Default to remote address
+    return get_remote_address(request)
+
+
+class NoOpLimiter:
+    """No-op limiter for when rate limiting is disabled"""
+
+    def limit(self, rate: str) -> Callable:
+        def decorator(func: Callable) -> Callable:
+            @wraps(func)
+            def wrapper(*args: Any, **kwargs: Any) -> Any:
+                return func(*args, **kwargs)
+
+            return wrapper
+
+        return decorator
+
+
+class TrafficMonitoringMiddleware(BaseHTTPMiddleware):
+    """Middleware to queue TRAFFIC state messages for background vehicle data processing"""
+
+    async def dispatch(
+        self, request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
+        # Skip queuing for health check endpoint (used by synthetic monitoring)
+        if request.url.path != "/health":
+            # Queue a TRAFFIC message for the background worker
+            try:
+                VEHICLES_QUEUE.put_nowait(State.TRAFFIC)
+                logger.debug("Queued TRAFFIC state for background worker")
+            except Exception as e:
+                # Queue might be full, log but don't fail the request
+                logger.warning(f"Failed to queue TRAFFIC state: {e}")
+
+        response = await call_next(request)
+        return response
+
+
+# ============================================================================
+# FASTAPI APP SETUP AND CONFIGURATION
+# ============================================================================
 
 app = FastAPI(
     title="MBTA Transit Data API",
@@ -102,44 +169,16 @@ app = FastAPI(
     },
 )
 
-
-RATE_LIMITING_ENABLED = os.getenv("IMT_RATE_LIMITING_ENABLED", "true").lower() == "true"
-
-
-def get_client_ip(request: Request) -> str:
-    """Get client IP, handling Cloudflare proxy headers"""
-    # Check for Cloudflare's real IP header first
-    if "CF-Connecting-IP" in request.headers:
-        return request.headers["CF-Connecting-IP"]
-    # Fallback to standard proxy headers
-    if "X-Forwarded-For" in request.headers:
-        return request.headers["X-Forwarded-For"].split(",")[0].strip()
-    if "X-Real-IP" in request.headers:
-        return request.headers["X-Real-IP"]
-    # Default to remote address
-    return get_remote_address(request)
-
-
+# Configure rate limiting
 if RATE_LIMITING_ENABLED:
     limiter = Limiter(key_func=get_client_ip)
     app.state.limiter = limiter
     app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)  # type: ignore
 else:
-    # Create a no-op limiter for when rate limiting is disabled
-    class NoOpLimiter:
-        def limit(self, rate: str) -> Callable:
-            def decorator(func: Callable) -> Callable:
-                @wraps(func)
-                def wrapper(*args: Any, **kwargs: Any) -> Any:
-                    return func(*args, **kwargs)
-
-                return wrapper
-
-            return decorator
-
     limiter = NoOpLimiter()  # type: ignore
 
-# Add header logging middleware
+# Add middleware
+app.add_middleware(TrafficMonitoringMiddleware)
 app.add_middleware(HeaderLoggingMiddleware)
 
 origins = [
@@ -157,20 +196,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Add instrumentation
 instrumenter = Instrumentator().instrument(app).expose(app)
 
 
-# Initialize track predictor
-track_predictor = TrackPredictor()
-
-
-r_client = Redis(
-    host=os.environ.get("IMT_REDIS_ENDPOINT", ""),
-    port=int(os.environ.get("IMT_REDIS_PORT", "6379")),
-    password=os.environ.get("IMT_REDIS_PASSWORD", ""),
-)
-
-config = load_config()
+# ============================================================================
+# PYDANTIC MODELS
+# ============================================================================
 
 
 class TrackPredictionResponse(BaseModel):
@@ -200,6 +232,12 @@ class ChainedPredictionsResponse(BaseModel):
     results: List[TrackPredictionResponse]
 
 
+# ============================================================================
+# API ENDPOINTS
+# ============================================================================
+
+
+# Health Check
 @app.get("/health")
 async def health_check() -> dict:
     """Health check endpoint"""
@@ -227,7 +265,7 @@ async def generate_track_prediction(
                     success=False,
                     prediction="Predictions are not available for this station",
                 )
-            prediction = await track_predictor.predict_track(
+            prediction = await TRACK_PREDICTOR.predict_track(
                 station_id=station_id_resolved,
                 route_id=prediction_request.route_id,
                 trip_id=prediction_request.trip_id,
@@ -296,7 +334,7 @@ async def generate_chained_track_predictions(
                 )
                 continue
 
-            prediction = await track_predictor.predict_track(
+            prediction = await TRACK_PREDICTOR.predict_track(
                 station_id=station_id,
                 route_id=pred_request.route_id,
                 trip_id=pred_request.trip_id,
@@ -375,7 +413,7 @@ async def get_prediction_stats(
                 success=False,
                 stats="Prediction stats are not available for this station",
             )
-        stats = await track_predictor.get_prediction_stats(station_id, route_id)
+        stats = await TRACK_PREDICTOR.get_prediction_stats(station_id, route_id)
 
         if stats:
             return TrackPredictionStatsResponse(
@@ -419,7 +457,7 @@ async def get_historical_assignments(
         station_id, has_track_predictions = determine_station_id(station_id)
         if not has_track_predictions:
             return []
-        assignments = await track_predictor.get_historical_assignments(
+        assignments = await TRACK_PREDICTOR.get_historical_assignments(
             station_id, route_id, start_date, end_date
         )
 
@@ -437,6 +475,11 @@ async def get_historical_assignments(
             exc_info=True,
         )
         raise HTTPException(status_code=500, detail="Internal server error")
+
+
+# ============================================================================
+# HELPER FUNCTIONS
+# ============================================================================
 
 
 # Vehicle Data Endpoints
@@ -483,21 +526,9 @@ async def get_vehicles(request: Request) -> dict:  # noqa: ARG001  # pyright: ig
     Get current vehicle positions as GeoJSON FeatureCollection. Also includes the next/current stop GeoJSON data.
     """
     try:
-
-        async def _get_vehicles_data() -> dict:
-            cache_key = "api:vehicles"
-            cached_data = await r_client.get(cache_key)
-            if cached_data:
-                return json.loads(cached_data)
-
-            features = await get_vehicle_features(r_client)
-            result = {"type": "FeatureCollection", "features": features}
-
-            await r_client.setex(cache_key, VEHICLES_CACHE_TTL, json.dumps(result))
-
-            return result
-
-        return await asyncio.wait_for(_get_vehicles_data(), timeout=API_REQUEST_TIMEOUT)
+        return await asyncio.wait_for(
+            get_vehicles_data(REDIS_CLIENT), timeout=API_REQUEST_TIMEOUT
+        )
 
     except asyncio.TimeoutError:
         logging.error(
@@ -531,7 +562,7 @@ async def get_vehicles_json(request: Request) -> Response:  # noqa: ARG001  # py
 
         async def _get_vehicles_json_data() -> Response:
             cache_key = "api:vehicles:json"
-            cached_data = await r_client.get(cache_key)
+            cached_data = await REDIS_CLIENT.get(cache_key)
             if cached_data:
                 return Response(
                     content=cached_data,
@@ -541,11 +572,11 @@ async def get_vehicles_json(request: Request) -> Response:  # noqa: ARG001  # py
                     },
                 )
 
-            features = await get_vehicle_features(r_client)
+            features = await get_vehicle_features(REDIS_CLIENT)
             feature_collection = FeatureCollection(features)
             geojson_str = dumps(feature_collection, sort_keys=True)
 
-            await r_client.setex(cache_key, VEHICLES_CACHE_TTL, geojson_str)
+            await REDIS_CLIENT.setex(cache_key, VEHICLES_CACHE_TTL, geojson_str)
 
             return Response(
                 content=geojson_str,
@@ -614,7 +645,7 @@ async def get_alerts(request: Request) -> Response:  # noqa: ARG001  # pyright: 
 
         async def _get_alerts_data() -> Response:
             cache_key = "api:alerts"
-            cached_data = await r_client.get(cache_key)
+            cached_data = await REDIS_CLIENT.get(cache_key)
             if cached_data:
                 return Response(
                     content=cached_data,
@@ -622,12 +653,12 @@ async def get_alerts(request: Request) -> Response:  # noqa: ARG001  # pyright: 
                 )
 
             async with aiohttp.ClientSession(base_url=MBTA_V3_ENDPOINT) as session:
-                alerts = await collect_alerts(config, session)
+                alerts = await collect_alerts(CONFIG, session)
 
             alerts_data = Alerts(data=alerts)
             alerts_json = alerts_data.model_dump_json(exclude_unset=True)
 
-            await r_client.setex(cache_key, ALERTS_CACHE_TTL, alerts_json)
+            await REDIS_CLIENT.setex(cache_key, ALERTS_CACHE_TTL, alerts_json)
 
             return Response(
                 content=alerts_json,
@@ -666,7 +697,7 @@ async def get_alerts_json(request: Request) -> Response:  # noqa: ARG001  # pyri
 
         async def _get_alerts_json_data() -> Response:
             cache_key = "api:alerts:json"
-            cached_data = await r_client.get(cache_key)
+            cached_data = await REDIS_CLIENT.get(cache_key)
             if cached_data:
                 return Response(
                     content=cached_data,
@@ -675,11 +706,11 @@ async def get_alerts_json(request: Request) -> Response:  # noqa: ARG001  # pyri
                 )
 
             async with aiohttp.ClientSession(base_url=MBTA_V3_ENDPOINT) as session:
-                alerts = await collect_alerts(config, session)
+                alerts = await collect_alerts(CONFIG, session)
             alerts_data = Alerts(data=alerts)
             alerts_json = alerts_data.model_dump_json(exclude_unset=True)
 
-            await r_client.setex(cache_key, ALERTS_CACHE_TTL, alerts_json)
+            await REDIS_CLIENT.setex(cache_key, ALERTS_CACHE_TTL, alerts_json)
 
             return Response(
                 content=alerts_json,
@@ -750,14 +781,14 @@ async def get_shapes(request: Request) -> Response:  # noqa: ARG001  # pyright: 
 
         async def _get_shapes_data() -> Response:
             cache_key = "api:shapes"
-            cached_data = await r_client.get(cache_key)
+            cached_data = await REDIS_CLIENT.get(cache_key)
             if cached_data:
                 return json.loads(cached_data)
 
-            features = await get_shapes_features(config, r_client)
+            features = await get_shapes_features(CONFIG, REDIS_CLIENT)
             result = {"type": "FeatureCollection", "features": features}
 
-            await r_client.setex(cache_key, SHAPES_CACHE_TTL, json.dumps(result))
+            await REDIS_CLIENT.setex(cache_key, SHAPES_CACHE_TTL, json.dumps(result))
 
             return Response(
                 content=json.dumps(result),
@@ -796,7 +827,7 @@ async def get_shapes_json(request: Request) -> Response:  # noqa: ARG001  # pyri
 
         async def _get_shapes_json_data() -> Response:
             cache_key = "api:shapes:json"
-            cached_data = await r_client.get(cache_key)
+            cached_data = await REDIS_CLIENT.get(cache_key)
             if cached_data:
                 return Response(
                     content=cached_data,
@@ -804,11 +835,11 @@ async def get_shapes_json(request: Request) -> Response:  # noqa: ARG001  # pyri
                     headers={"Content-Disposition": "attachment; filename=shapes.json"},
                 )
 
-            features = await get_shapes_features(config, r_client)
+            features = await get_shapes_features(CONFIG, REDIS_CLIENT)
             feature_collection = FeatureCollection(features)
             geojson_str = dumps(feature_collection, sort_keys=True)
 
-            await r_client.setex(cache_key, SHAPES_CACHE_TTL, geojson_str)
+            await REDIS_CLIENT.setex(cache_key, SHAPES_CACHE_TTL, geojson_str)
 
             return Response(
                 content=geojson_str,
@@ -837,6 +868,21 @@ async def get_shapes_json(request: Request) -> Response:  # noqa: ARG001  # pyri
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
+# ============================================================================
+# MAIN FUNCTION
+# ============================================================================
+
+
 def run_main() -> None:
+    thr = threading.Thread(
+        target=thread_runner,
+        kwargs={
+            "target": TaskType.VEHICLES_BACKGROUND_WORKER,
+            "queue": None,
+            "vehicles_queue": VEHICLES_QUEUE,
+        },
+        name="vehicles_background_worker",
+    )
+    thr.start()
     port = int(os.environ.get("IMT_API_PORT", "8080"))
     uvicorn.run(app, host="0.0.0.0", port=port)
