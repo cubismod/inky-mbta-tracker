@@ -5,16 +5,11 @@ on:
     types: [created]
   pull_request_review_comment:
     types: [created]
-  issues:
-    types: [opened, assigned, labeled]
-  pull_request_review:
-    types: [submitted]
-  pull_request:
-    types: [opened, synchronize]
 
 jobs:
   claude-review:
     if: |
+      contains(github.event.comment.body, '@claude') &&
       (github.actor != 'cubis-renovate[bot]') &&
       (github.event.pull_request.draft == false || github.event.pull_request == null)
     runs-on: ubuntu-latest
@@ -42,7 +37,7 @@ jobs:
           # Optional: Specify model (defaults to Claude Sonnet 4, uncomment for Claude Opus 4)
           # model: "claude-opus-4-20250514"
 
-          # Direct prompt for automated review (no @claude mention needed)
+          # Direct prompt for @claude mention triggered review
           direct_prompt: |
             Please review this pull request focusing on Python/MBTA tracker code:
             - Code quality and adherence to project standards in CLAUDE.md
