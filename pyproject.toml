@@ -59,7 +59,7 @@ dev = [
     "mypy>=1.15.0",
     "pytest>=8.4.1",
     "pytest-asyncio>=1.0.0",
-    "ruff==0.12.5",
+    "ruff==0.12.7",
 ]
 
 [project.scripts]
