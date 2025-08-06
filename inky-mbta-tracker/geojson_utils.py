@@ -232,27 +232,27 @@ async def get_vehicle_features(redis_client: Redis) -> list[Feature]:
                     )
                     features[f"v-{vehicle_info.id}"] = feature
 
-                    if (
-                        stop
-                        and stop.stop_id
-                        and vehicle_info.stop
-                        and stop.long
-                        and stop.lat
-                        and not vehicle_info.route.isdecimal()
-                    ):
-                        stop_point = Point((stop.long, stop.lat))
-                        stop_feature = Feature(
-                            geometry=stop_point,
-                            id=vehicle_info.stop,
-                            properties={
-                                "marker-size": "small",
-                                "marker-symbol": "building",
-                                "marker-color": lookup_vehicle_color(vehicle_info),
-                                "name": stop.stop_id,
-                                "id": vehicle_info.stop,
-                            },
-                        )
-                        features[f"v-{vehicle_info.stop}"] = stop_feature
+                    # if (
+                    #     stop
+                    #     and stop.stop_id
+                    #     and vehicle_info.stop
+                    #     and stop.long
+                    #     and stop.lat
+                    #     and not vehicle_info.route.isdecimal()
+                    # ):
+                    #     stop_point = Point((stop.long, stop.lat))
+                    #     stop_feature = Feature(
+                    #         geometry=stop_point,
+                    #         id=vehicle_info.stop,
+                    #         properties={
+                    #             "marker-size": "small",
+                    #             "marker-symbol": "building",
+                    #             "marker-color": lookup_vehicle_color(vehicle_info),
+                    #             "name": stop.stop_id,
+                    #             "id": vehicle_info.stop,
+                    #         },
+                    #     )
+                    #     features[f"v-{vehicle_info.stop}"] = stop_feature
 
     return list(features.values())
 
