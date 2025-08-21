@@ -30,6 +30,7 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import StreamingResponse
 from track_predictor.track_predictor import TrackPredictionStats, TrackPredictor
 from utils import get_redis, get_vehicles_data, thread_runner
 from vehicles_background_worker import State
@@ -57,6 +58,7 @@ TRACK_PREDICTION_TIMEOUT = int(
     os.environ.get("IMT_TRACK_PREDICTION_TIMEOUT", "15")
 )  # seconds
 RATE_LIMITING_ENABLED = os.getenv("IMT_RATE_LIMITING_ENABLED", "true").lower() == "true"
+SSE_ENABLED = os.getenv("IMT_SSE_ENABLED", "true").lower() == "true"
 
 
 # ============================================================================
@@ -537,6 +539,88 @@ async def get_vehicles(request: Request) -> dict:  # noqa: ARG001  # pyright: ig
             f"Error getting vehicles due to validation error: {e}", exc_info=True
         )
         raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.get(
+    "/vehicles/stream",
+    summary="Stream Vehicle Positions (SSE)",
+    description=(
+        "Server-Sent Events stream of vehicle positions. Emits a new event whenever the"
+        " vehicles cache updates. Disable via IMT_SSE_ENABLED=false."
+    ),
+    response_class=StreamingResponse,
+)
+@limiter.limit("20/minute")
+async def stream_vehicles(
+    request: Request,  # noqa: ARG001  # pyright: ignore[reportUnusedParameter]
+    poll_interval: float = Query(
+        1.0, ge=0.1, le=10.0, description="Poll interval seconds"
+    ),
+    heartbeat_interval: float = Query(
+        15.0, ge=1.0, le=120.0, description="Heartbeat interval seconds"
+    ),
+) -> StreamingResponse:
+    """
+    Stream vehicle updates as SSE. Sends the full FeatureCollection whenever the
+    cached payload changes. Also sends periodic heartbeats to keep the connection alive.
+    """
+    if not SSE_ENABLED:
+        raise HTTPException(status_code=404, detail="SSE is disabled")
+
+    cache_key = "api:vehicles"
+
+    async def event_generator() -> Any:
+        last_payload: bytes | None = None
+        last_heartbeat = datetime.now()
+
+        # Send initial payload if available (or force-populate)
+        try:
+            data = await REDIS_CLIENT.get(cache_key)
+            if not data:
+                try:
+                    # Populate cache if empty
+                    initial = await get_vehicles_data(REDIS_CLIENT)
+                    data = json.dumps(initial).encode("utf-8")
+                except Exception:
+                    data = None
+            if data:
+                last_payload = data
+                yield f"event: vehicles\ndata: {data.decode('utf-8')}\n\n"
+        except Exception as e:
+            logger.error("Failed to send initial SSE payload", exc_info=e)
+
+        while True:
+            # Client disconnect check
+            try:
+                if await request.is_disconnected():
+                    break
+            except Exception:
+                break
+
+            try:
+                current = await REDIS_CLIENT.get(cache_key)
+                if current and current != last_payload:
+                    last_payload = current
+                    yield f"event: vehicles\ndata: {current.decode('utf-8')}\n\n"
+            except Exception as e:
+                logger.error("SSE loop error while reading cache", exc_info=e)
+
+            # Heartbeat
+            now = datetime.now()
+            if (now - last_heartbeat).total_seconds() >= heartbeat_interval:
+                last_heartbeat = now
+                yield f": keep-alive {now.isoformat()}\n\n"
+
+            await asyncio.sleep(poll_interval)
+
+    headers = {
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+        "X-Accel-Buffering": "no",
+    }
+    return StreamingResponse(
+        event_generator(), media_type="text/event-stream", headers=headers
+    )
 
 
 @app.get(
