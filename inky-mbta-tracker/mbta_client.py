@@ -1,6 +1,6 @@
 import logging
 import os
-from asyncio import CancelledError, sleep, Queue
+from asyncio import CancelledError, Queue, sleep
 from collections import Counter
 from datetime import UTC, datetime, timedelta
 from random import randint

@@ -1,8 +1,9 @@
+import asyncio
 import logging
 import os
 import re
-import asyncio
-from asyncio import Runner, sleep, Queue as AsyncQueue
+from asyncio import Queue as AsyncQueue
+from asyncio import Runner, sleep
 from datetime import UTC, datetime, timedelta
 from random import randint
 from typing import Optional
@@ -11,6 +12,12 @@ import click
 from backup_scheduler import run_backup_scheduler
 from config import StopSetup, load_config
 from dotenv import load_dotenv
+from mbta_client import (
+    precache_track_predictions_runner,
+    watch_static_schedule,
+    watch_station,
+    watch_vehicles,
+)
 from prometheus import running_threads
 from prometheus_client import start_http_server
 from schedule_tracker import (
@@ -20,12 +27,6 @@ from schedule_tracker import (
 )
 from shared_types.schema_versioner import schema_versioner
 from shared_types.shared_types import TaskType
-from mbta_client import (
-    watch_static_schedule,
-    watch_station,
-    watch_vehicles,
-    precache_track_predictions_runner,
-)
 
 load_dotenv()
 
@@ -238,9 +239,7 @@ async def __main__() -> None:
     process_tasks: list[asyncio.Task[None]] = []
     num_proc = int(os.getenv("IMT_PROCESS_QUEUE_THREADS", "1"))
     for i in range(num_proc):
-        t = asyncio.create_task(
-            process_queue_async(queue), name=f"event_processor_{i}"
-        )
+        t = asyncio.create_task(process_queue_async(queue), name=f"event_processor_{i}")
         process_tasks.append(t)
         # Stagger processor start to reduce initial contention
         if i < num_proc - 1:
@@ -310,7 +309,7 @@ def run_main(api_server: bool) -> None:
     else:
         # Install uvloop if available for better async performance
         try:
-            import uvloop  # type: ignore
+            import uvloop
 
             uvloop.install()
             logging.info("uvloop installed as event loop policy")

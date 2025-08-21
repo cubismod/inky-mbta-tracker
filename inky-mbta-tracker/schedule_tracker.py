@@ -1,21 +1,21 @@
+import asyncio
 import logging
 import os
 import random
 import threading
 import time
-import asyncio
 from asyncio import QueueEmpty, Runner
-from typing import Union, Deque
-from collections import deque
 from datetime import UTC, datetime, timedelta
 from queue import Queue
-from typing import Optional
+from typing import Optional, Union
 from zoneinfo import ZoneInfo
 
 import humanize
 from geojson import Feature, Point
 from paho.mqtt import MQTTException, publish
 from prometheus import (
+    coalesced_events_dropped,
+    queue_backpressure_ratio,
     queue_processed_item,
     queue_size,
     redis_commands,
@@ -518,47 +518,16 @@ async def process_queue_async(
     to keep latency low while maximizing pipeline efficiency.
     """
     tracker = Tracker()
-    BATCH_SIZE = int(os.getenv("IMT_PIPELINE_BATCH", "200"))
-    FLUSH_TIMEOUT_SEC = float(os.getenv("IMT_PIPELINE_TIMEOUT_SEC", "0.2"))
+    BASE_BATCH = int(os.getenv("IMT_PIPELINE_BATCH", "200"))
+    BASE_TIMEOUT_SEC = float(os.getenv("IMT_PIPELINE_TIMEOUT_SEC", "0.2"))
+    # Backpressure logging configuration
+    HIGH_RATIO = float(os.getenv("IMT_QUEUE_BACKPRESSURE_RATIO", "0.8"))
+    SUSTAIN_SEC = float(os.getenv("IMT_QUEUE_BACKPRESSURE_SUSTAIN_SEC", "5"))
+    RELOG_SEC = float(os.getenv("IMT_QUEUE_BACKPRESSURE_RELOG_SEC", "60"))
+    high_since: float | None = None
+    last_log: float = 0.0
 
-    while True:
-        pipeline = tracker.redis.pipeline()
-        processed = 0
-        queue_size.set(queue.qsize())
-
-        # Ensure we process at least one item (blocking briefly)
-        try:
-            item = await asyncio.wait_for(queue.get(), timeout=FLUSH_TIMEOUT_SEC)
-            await tracker.process_queue_item(item, pipeline)
-            if isinstance(item, ScheduleEvent):
-                queue_processed_item.labels("schedule").inc()
-            if isinstance(item, VehicleRedisSchema):
-                queue_processed_item.labels("vehicle").inc()
-            processed += 1
-        except asyncio.TimeoutError:
-            # Nothing to process right now; small idle to yield
-            await asyncio.sleep(0.05)
-        except QueueEmpty:
-            pass
-
-        # Drain additional items without blocking, up to batch size
-        while processed < BATCH_SIZE:
-            try:
-                item2 = queue.get_nowait()
-            except QueueEmpty:
-                break
-            await tracker.process_queue_item(item2, pipeline)
-            if isinstance(item2, ScheduleEvent):
-                queue_processed_item.labels("schedule").inc()
-            if isinstance(item2, VehicleRedisSchema):
-                queue_processed_item.labels("vehicle").inc()
-            processed += 1
-
-        if processed == 0:
-            # Nothing batched; continue loop
-            continue
-
-        # Flush pipeline and perform maintenance
+    async def flush(pipeline: Pipeline) -> None:
         try:
             await pipeline.execute()
             redis_commands.labels("execute").inc()
@@ -569,23 +538,165 @@ async def process_queue_async(
         except ResponseError as err:
             logger.error("Unable to communicate with Redis", exc_info=err)
 
-        # Occasionally: distributed cleanup and MQTT publish
-        should_send_mqtt = random.randint(0, 10) < 3
-        if should_send_mqtt:
-            async with RedisLock(
-                tracker.redis, "send_mqtt", blocking_timeout=15, expire_timeout=20
-            ):
-                cleanup_pipeline = tracker.redis.pipeline()
-                await tracker.cleanup(cleanup_pipeline)
-                try:
-                    await cleanup_pipeline.execute()
-                    redis_commands.labels("execute").inc()
-                except ResponseError as err:
-                    logger.error("Unable to execute cleanup pipeline", exc_info=err)
+    try:
+        while True:
+            # Adaptive batch and timeout based on queue depth
+            qdepth = queue.qsize()
+            qmax = getattr(queue, "maxsize", 0) or 5000
+            depth_ratio = min(1.0, max(0.0, qdepth / qmax))
+            queue_backpressure_ratio.set(depth_ratio)
+            batch_limit = int(BASE_BATCH * (1 + 4 * depth_ratio))  # up to 5x
+            flush_timeout = max(0.02, BASE_TIMEOUT_SEC * (1 - 0.8 * depth_ratio))
 
-                await tracker.send_mqtt()
+            pipeline = tracker.redis.pipeline(transaction=False)
+            processed = 0
+            queue_size.set(qdepth)
+
+            # Backpressure detection and rate-limited logging
+            now = time.monotonic()
+            qmax_int = int(qmax)
+            if qdepth >= int(qmax_int * HIGH_RATIO):
+                if high_since is None:
+                    high_since = now
+                if (now - high_since) >= SUSTAIN_SEC and (now - last_log) >= RELOG_SEC:
+                    pct = (qdepth / qmax_int) * 100 if qmax_int else 0
+                    logger.warning(
+                        f"Queue backpressure: depth={qdepth}/{qmax_int} ({pct:.1f}%). "
+                        f"Consumers may be saturated; consider increasing IMT_PROCESS_QUEUE_THREADS or tuning batching."
+                    )
+                    last_log = now
+            else:
+                high_since = None
+
+            # Ensure at least one item or timeout
+            # Coalescing buffers: by event id, and by trip key for schedules
+            sched_buf: dict[str, ScheduleEvent] = {}
+            sched_trip_buf: dict[tuple[str, str], ScheduleEvent] = {}
+            veh_buf: dict[str, VehicleRedisSchema] = {}
+
+            try:
+                item = await asyncio.wait_for(queue.get(), timeout=flush_timeout)
+                if isinstance(item, ScheduleEvent):
+                    queue_processed_item.labels("schedule").inc()
+                    # Only coalesce by trip when we have sufficient context
+                    if item.trip_id and item.stop:
+                        key = (item.trip_id, item.stop)
+                        if key in sched_trip_buf:
+                            coalesced_events_dropped.labels(
+                                item_type="schedule", coalesce_by="trip"
+                            ).inc()
+                        sched_trip_buf[key] = item
+                    else:
+                        if item.id in sched_buf:
+                            coalesced_events_dropped.labels(
+                                item_type="schedule", coalesce_by="id"
+                            ).inc()
+                        sched_buf[item.id] = item
+                else:
+                    queue_processed_item.labels("vehicle").inc()
+                    if item.id in veh_buf:
+                        coalesced_events_dropped.labels(
+                            item_type="vehicle", coalesce_by="id"
+                        ).inc()
+                    veh_buf[item.id] = item
+                processed += 1
+                queue.task_done()
+            except asyncio.TimeoutError:
+                # No items ready; small pause to yield
+                await asyncio.sleep(0.01)
+            except QueueEmpty:
+                pass
+
+            # Drain without blocking up to the adaptive limit
+            while processed < batch_limit:
                 try:
-                    key_counts = await export_schema_key_counts(tracker.redis)
-                    logger.debug(f"Schema key counts: {key_counts}")
-                except ResponseError as e:
-                    logger.error("Failed to export schema key counts", exc_info=e)
+                    item2 = queue.get_nowait()
+                except QueueEmpty:
+                    break
+                if isinstance(item2, ScheduleEvent):
+                    queue_processed_item.labels("schedule").inc()
+                    if item2.trip_id and item2.stop:
+                        key2 = (item2.trip_id, item2.stop)
+                        if key2 in sched_trip_buf:
+                            coalesced_events_dropped.labels(
+                                item_type="schedule", coalesce_by="trip"
+                            ).inc()
+                        sched_trip_buf[key2] = item2
+                    else:
+                        if item2.id in sched_buf:
+                            coalesced_events_dropped.labels(
+                                item_type="schedule", coalesce_by="id"
+                            ).inc()
+                        sched_buf[item2.id] = item2
+                else:
+                    queue_processed_item.labels("vehicle").inc()
+                    if item2.id in veh_buf:
+                        coalesced_events_dropped.labels(
+                            item_type="vehicle", coalesce_by="id"
+                        ).inc()
+                    veh_buf[item2.id] = item2
+                processed += 1
+                queue.task_done()
+
+                # Cooperative yield every 100 items to avoid starving producers
+                if (processed % 100) == 0:
+                    await asyncio.sleep(0)
+
+            if processed == 0:
+                # Nothing batched; continue loop
+                continue
+
+            # Apply coalesced items to the pipeline then flush
+            # First, schedule events that didn't have trip info (or removals)
+            for s_ev in sched_buf.values():
+                await tracker.process_queue_item(s_ev, pipeline)
+            # Then, the last-seen event per (trip_id, stop) key
+            for st_ev in sched_trip_buf.values():
+                await tracker.process_queue_item(st_ev, pipeline)
+            for v_ev in veh_buf.values():
+                await tracker.process_queue_item(v_ev, pipeline)
+
+            # Flush pipeline and perform maintenance
+            await flush(pipeline)
+
+            # Occasionally: distributed cleanup + MQTT publish
+            if random.randint(0, 10) < 3:
+                async with RedisLock(
+                    tracker.redis, "send_mqtt", blocking_timeout=15, expire_timeout=20
+                ):
+                    cleanup_pipeline = tracker.redis.pipeline(transaction=False)
+                    await tracker.cleanup(cleanup_pipeline)
+                    try:
+                        await cleanup_pipeline.execute()
+                        redis_commands.labels("execute").inc()
+                    except ResponseError as err:
+                        logger.error("Unable to execute cleanup pipeline", exc_info=err)
+
+                    await tracker.send_mqtt()
+                    try:
+                        key_counts = await export_schema_key_counts(tracker.redis)
+                        logger.debug(f"Schema key counts: {key_counts}")
+                    except ResponseError as e:
+                        logger.error("Failed to export schema key counts", exc_info=e)
+    except asyncio.CancelledError:
+        # Best-effort final flush: process any currently coalesced items if present
+        try:
+            # Attempt a small drain without blocking to clear immediate backlog
+            pipeline = tracker.redis.pipeline(transaction=False)
+            drained = 0
+            while drained < 1000:  # cap final drain to avoid long shutdowns
+                try:
+                    item = queue.get_nowait()
+                except QueueEmpty:
+                    break
+                if isinstance(item, ScheduleEvent):
+                    await tracker.process_queue_item(item, pipeline)
+                else:
+                    await tracker.process_queue_item(item, pipeline)
+                drained += 1
+                queue.task_done()
+            if drained > 0:
+                await pipeline.execute()
+                redis_commands.labels("execute").inc()
+        finally:
+            raise
