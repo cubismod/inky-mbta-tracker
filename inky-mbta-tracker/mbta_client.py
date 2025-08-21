@@ -1,9 +1,8 @@
 import logging
 import os
-from asyncio import CancelledError, sleep
+from asyncio import CancelledError, sleep, Queue
 from collections import Counter
 from datetime import UTC, datetime, timedelta
-from queue import Queue
 from random import randint
 from types import TracebackType
 from typing import TYPE_CHECKING, Optional
@@ -345,9 +344,9 @@ class MBTAApi:
                         self.watcher_type == TaskType.SCHEDULE_PREDICTIONS
                         or self.watcher_type == TaskType.SCHEDULES
                     ):
-                        queue.put(dummy_schedule_event(type_and_id.id))
+                        await queue.put(dummy_schedule_event(type_and_id.id))
                     else:
-                        queue.put(
+                        await queue.put(
                             VehicleRedisSchema(
                                 longitude=0,
                                 latitude=0,
@@ -608,7 +607,7 @@ class MBTAApi:
                         track_confidence=track_confidence,
                         show_on_display=self.show_on_display,
                     )
-                    queue.put(event)
+                    await queue.put(event)
         else:
             occupancy = item.attributes.occupancy_status
             carriage_ids = list[str]()
@@ -665,7 +664,7 @@ class MBTAApi:
                 event.stop = item.relationships.stop.data.id
             if len(carriage_ids) > 0 and isinstance(event, VehicleRedisSchema):
                 event.carriages = carriage_ids
-            queue.put(event)
+            await queue.put(event)
 
     @retry(
         wait=wait_exponential_jitter(initial=2, jitter=5),

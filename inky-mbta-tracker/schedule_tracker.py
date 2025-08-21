@@ -3,7 +3,10 @@ import os
 import random
 import threading
 import time
+import asyncio
 from asyncio import QueueEmpty, Runner
+from typing import Union, Deque
+from collections import deque
 from datetime import UTC, datetime, timedelta
 from queue import Queue
 from typing import Optional
@@ -394,7 +397,9 @@ class Tracker:
 
             if len(msgs) > 0:
                 try:
-                    publish.multiple(
+                    # Offload blocking MQTT publish to a thread to avoid blocking the event loop
+                    await asyncio.to_thread(
+                        publish.multiple,
                         msgs,  # type: ignore
                         hostname=os.getenv("IMT_MQTT_HOST", ""),
                         port=int(os.getenv("IMT_MQTT_PORT", "1883")),
@@ -502,3 +507,85 @@ def process_queue(queue: Queue[ScheduleEvent]) -> None:
                     f"Error in process_queue thread {threading.current_thread().name}: {e}"
                 )
                 time.sleep(min(60, base_sleep * 2))
+
+
+async def process_queue_async(
+    queue: "asyncio.Queue[Union[ScheduleEvent, VehicleRedisSchema]]",
+) -> None:
+    """Async consumer that batches events into Redis pipelines.
+
+    Processes up to a batch size or times out after a short interval
+    to keep latency low while maximizing pipeline efficiency.
+    """
+    tracker = Tracker()
+    BATCH_SIZE = int(os.getenv("IMT_PIPELINE_BATCH", "200"))
+    FLUSH_TIMEOUT_SEC = float(os.getenv("IMT_PIPELINE_TIMEOUT_SEC", "0.2"))
+
+    while True:
+        pipeline = tracker.redis.pipeline()
+        processed = 0
+        queue_size.set(queue.qsize())
+
+        # Ensure we process at least one item (blocking briefly)
+        try:
+            item = await asyncio.wait_for(queue.get(), timeout=FLUSH_TIMEOUT_SEC)
+            await tracker.process_queue_item(item, pipeline)
+            if isinstance(item, ScheduleEvent):
+                queue_processed_item.labels("schedule").inc()
+            if isinstance(item, VehicleRedisSchema):
+                queue_processed_item.labels("vehicle").inc()
+            processed += 1
+        except asyncio.TimeoutError:
+            # Nothing to process right now; small idle to yield
+            await asyncio.sleep(0.05)
+        except QueueEmpty:
+            pass
+
+        # Drain additional items without blocking, up to batch size
+        while processed < BATCH_SIZE:
+            try:
+                item2 = queue.get_nowait()
+            except QueueEmpty:
+                break
+            await tracker.process_queue_item(item2, pipeline)
+            if isinstance(item2, ScheduleEvent):
+                queue_processed_item.labels("schedule").inc()
+            if isinstance(item2, VehicleRedisSchema):
+                queue_processed_item.labels("vehicle").inc()
+            processed += 1
+
+        if processed == 0:
+            # Nothing batched; continue loop
+            continue
+
+        # Flush pipeline and perform maintenance
+        try:
+            await pipeline.execute()
+            redis_commands.labels("execute").inc()
+            await tracker.redis.zremrangebyscore(
+                "time", "-inf", str(datetime.now().timestamp())
+            )
+            redis_commands.labels("zremrangebyscore").inc()
+        except ResponseError as err:
+            logger.error("Unable to communicate with Redis", exc_info=err)
+
+        # Occasionally: distributed cleanup and MQTT publish
+        should_send_mqtt = random.randint(0, 10) < 3
+        if should_send_mqtt:
+            async with RedisLock(
+                tracker.redis, "send_mqtt", blocking_timeout=15, expire_timeout=20
+            ):
+                cleanup_pipeline = tracker.redis.pipeline()
+                await tracker.cleanup(cleanup_pipeline)
+                try:
+                    await cleanup_pipeline.execute()
+                    redis_commands.labels("execute").inc()
+                except ResponseError as err:
+                    logger.error("Unable to execute cleanup pipeline", exc_info=err)
+
+                await tracker.send_mqtt()
+                try:
+                    key_counts = await export_schema_key_counts(tracker.redis)
+                    logger.debug(f"Schema key counts: {key_counts}")
+                except ResponseError as e:
+                    logger.error("Failed to export schema key counts", exc_info=e)
