@@ -597,6 +597,12 @@ async def stream_vehicles(
             except Exception:
                 break
 
+            # Keep the background worker in TRAFFIC state while a client is connected
+            try:
+                VEHICLES_QUEUE.put_nowait(State.TRAFFIC)
+            except Exception:
+                pass
+
             try:
                 current = await REDIS_CLIENT.get(cache_key)
                 if current and current != last_payload:
