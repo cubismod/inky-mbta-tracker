@@ -3,13 +3,15 @@ import json
 import logging
 import os
 import threading
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from functools import wraps
 from queue import Full, Queue
-from typing import Any, Awaitable, Callable, List
+from typing import Any, AsyncGenerator, Awaitable, Callable, List
 
 import aiohttp
 import uvicorn
+from ai_summarizer import AISummarizer, SummarizationRequest, SummarizationResponse, JobPriority
 from config import load_config
 from consts import (
     ALERTS_CACHE_TTL,
@@ -52,6 +54,7 @@ VEHICLES_QUEUE = Queue[State]()
 REDIS_CLIENT = get_redis()
 CONFIG = load_config()
 TRACK_PREDICTOR = TrackPredictor()
+AI_SUMMARIZER = AISummarizer() if CONFIG.ollama.enabled else None
 
 # API timeout configurations
 API_REQUEST_TIMEOUT = int(os.environ.get("IMT_API_REQUEST_TIMEOUT", "30"))  # seconds
@@ -152,6 +155,94 @@ class TrafficMonitoringMiddleware(BaseHTTPMiddleware):
 
 
 # ============================================================================
+# LIFESPAN EVENT HANDLER
+# ============================================================================
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    """Lifespan event handler for startup and shutdown"""
+    # Startup
+    logger.info("Starting MBTA Transit Data API...")
+    
+    # Start AI summarizer if enabled
+    if AI_SUMMARIZER:
+        try:
+            await AI_SUMMARIZER.start()
+            logger.info("AI summarizer started successfully")
+            
+            # Start background task for periodic AI summary refresh
+            background_task = asyncio.create_task(periodic_ai_summary_refresh())
+            app.state.ai_summary_task = background_task
+            logger.info("Started periodic AI summary refresh task")
+        except Exception as e:
+            logger.error(f"Failed to start AI summarizer: {e}")
+            # Don't fail startup, just log the error
+    else:
+        logger.info("AI summarizer not enabled")
+    
+    yield
+    
+    # Shutdown
+    logger.info("Shutting down MBTA Transit Data API...")
+    
+    # Stop AI summarizer if enabled
+    if AI_SUMMARIZER:
+        try:
+            # Cancel background task if it exists
+            if hasattr(app.state, 'ai_summary_task'):
+                app.state.ai_summary_task.cancel()
+                try:
+                    await app.state.ai_summary_task
+                except asyncio.CancelledError:
+                    pass
+                logger.info("Cancelled periodic AI summary refresh task")
+            
+            await AI_SUMMARIZER.stop()
+            await AI_SUMMARIZER.close()
+            logger.info("AI summarizer stopped successfully")
+        except Exception as e:
+            logger.error(f"Failed to stop AI summarizer: {e}")
+
+
+async def periodic_ai_summary_refresh() -> None:
+    """Periodically refresh AI summaries for current alerts"""
+    while True:
+        try:
+            # Wait for the next refresh cycle (every 30 minutes)
+            await asyncio.sleep(30 * 60)  # 30 minutes
+            
+            if AI_SUMMARIZER:
+                try:
+                    # Collect current alerts
+                    async with aiohttp.ClientSession(base_url=MBTA_V3_ENDPOINT) as session:
+                        alerts = await collect_alerts(CONFIG, session)
+                    
+                    if alerts:
+                        # Queue AI summary job with low priority for background refresh
+                        job_id = await AI_SUMMARIZER.queue_summary_job(
+                            alerts,
+                            priority=JobPriority.LOW,
+                            config={"max_length": 300, "include_route_info": True, "include_severity": True}
+                        )
+                        logger.info(f"Periodic refresh: queued AI summary job {job_id} for {len(alerts)} alerts")
+                    else:
+                        logger.debug("Periodic refresh: no alerts to summarize")
+                        
+                except Exception as e:
+                    logger.warning(f"Periodic AI summary refresh failed: {e}")
+                    # Continue running even if this cycle fails
+                    
+        except asyncio.CancelledError:
+            logger.info("Periodic AI summary refresh task cancelled")
+            break
+        except Exception as e:
+            logger.error(f"Unexpected error in periodic AI summary refresh: {e}")
+            # Wait a bit before retrying
+            await asyncio.sleep(60)
+
+
+# ============================================================================
 # FASTAPI APP SETUP AND CONFIGURATION
 # ============================================================================
 
@@ -160,6 +251,7 @@ app = FastAPI(
     description="API for MBTA transit data including track predictions, vehicle positions, alerts, and route shapes",
     version="2.0.0",
     docs_url="/",
+    lifespan=lifespan,
     servers=[
         {"url": "https://imt.ryanwallace.cloud", "description": "Production"},
     ],
@@ -792,6 +884,20 @@ async def get_alerts(request: Request) -> Response:  # noqa: ARG001  # pyright: 
             alerts_json = alerts_data.model_dump_json(exclude_unset=True)
 
             await REDIS_CLIENT.setex(cache_key, ALERTS_CACHE_TTL, alerts_json)
+            
+            # Queue AI summary if enabled and there are alerts
+            if AI_SUMMARIZER and alerts:
+                try:
+                    # Queue summary job with normal priority for regular refresh
+                    job_id = await AI_SUMMARIZER.queue_summary_job(
+                        alerts, 
+                        priority=JobPriority.NORMAL,
+                        config={"max_length": 300, "include_route_info": True, "include_severity": True}
+                    )
+                    logger.info(f"Queued AI summary job {job_id} for {len(alerts)} alerts during refresh")
+                except Exception as e:
+                    logger.warning(f"Failed to queue AI summary during alerts refresh: {e}")
+                    # Don't fail the alerts request if AI summarization fails
 
             return Response(
                 content=alerts_json,
@@ -847,6 +953,20 @@ async def get_alerts_json(request: Request) -> Response:  # noqa: ARG001  # pyri
             alerts_json = alerts_data.model_dump_json(exclude_unset=True)
 
             await REDIS_CLIENT.setex(cache_key, ALERTS_CACHE_TTL, alerts_json)
+            
+            # Queue AI summary if enabled and there are alerts
+            if AI_SUMMARIZER and alerts:
+                try:
+                    # Queue summary job with normal priority for regular refresh
+                    job_id = await AI_SUMMARIZER.queue_summary_job(
+                        alerts, 
+                        priority=JobPriority.NORMAL,
+                        config={"max_length": 300, "include_route_info": True, "include_severity": True}
+                    )
+                    logger.info(f"Queued AI summary job {job_id} for {len(alerts)} alerts during JSON refresh")
+                except Exception as e:
+                    logger.warning(f"Failed to queue AI summary during alerts JSON refresh: {e}")
+                    # Don't fail the alerts request if AI summarization fails
 
             return Response(
                 content=alerts_json,
@@ -878,6 +998,82 @@ async def get_alerts_json(request: Request) -> Response:  # noqa: ARG001  # pyri
             f"Error getting alerts JSON due to validation error: {e}", exc_info=True
         )
         raise HTTPException(status_code=500, detail="Internal server error")
+
+
+# AI Summarizer Endpoints
+@app.post(
+    "/alerts/summarize",
+    summary="Summarize MBTA Alerts with AI",
+    description="Generate an AI-powered summary of current MBTA alerts using Ollama",
+    response_model=SummarizationResponse,
+)
+@limiter.limit("20/minute")
+async def summarize_alerts(
+    request: SummarizationRequest, http_request: Request
+) -> SummarizationResponse:
+    """
+    Generate an AI-powered summary of MBTA alerts.
+
+    This endpoint uses Ollama to create concise, human-readable summaries
+    of multiple alerts, identifying common themes and patterns.
+    """
+    if not AI_SUMMARIZER:
+        raise HTTPException(
+            status_code=503,
+            detail="AI summarizer is not enabled. Please configure Ollama settings.",
+        )
+
+    try:
+        # Get current alerts if none provided
+        if not request.alerts:
+            async with aiohttp.ClientSession(base_url=MBTA_V3_ENDPOINT) as session:
+                alerts = await collect_alerts(CONFIG, session)
+                request.alerts = alerts
+
+        # Generate summary
+        summary_response = await AI_SUMMARIZER.summarize_alerts(request)
+
+        # Cache the summary if we have alerts
+        if request.alerts:
+            cache_key = f"api:alerts:summary:{hash(str(request.alerts))}"
+            cache_data = summary_response.model_dump_json()
+            await REDIS_CLIENT.setex(cache_key, CONFIG.ollama.cache_ttl, cache_data)
+
+        return summary_response
+
+    except Exception as e:
+        logger.error(f"Failed to summarize alerts: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500, detail=f"Failed to generate summary: {str(e)}"
+        )
+
+
+@app.get(
+    "/alerts/summarize/health",
+    summary="AI Summarizer Health Check",
+    description="Check if the Ollama AI summarizer is healthy and available",
+)
+async def ai_summarizer_health() -> dict:
+    """
+    Check the health status of the AI summarizer.
+    """
+    if not AI_SUMMARIZER:
+        return {
+            "status": "disabled",
+            "message": "AI summarizer is not enabled in configuration",
+        }
+
+    try:
+        is_healthy = await AI_SUMMARIZER.health_check()
+        return {
+            "status": "healthy" if is_healthy else "unhealthy",
+            "model": AI_SUMMARIZER.config.model,
+            "endpoint": AI_SUMMARIZER.config.base_url,
+            "enabled": True,
+        }
+    except Exception as e:
+        logger.error(f"AI summarizer health check failed: {e}", exc_info=True)
+        return {"status": "error", "message": str(e), "enabled": True}
 
 
 # Shapes Endpoints
@@ -1065,6 +1261,21 @@ async def warm_all_caches_internal() -> dict[str, bool]:
                         "api:alerts:json", ALERTS_CACHE_TTL, geojson_str
                     ),
                 )
+                
+                # Queue AI summary if enabled and there are alerts
+                if AI_SUMMARIZER and alerts:
+                    try:
+                        # Queue summary job with low priority for background processing
+                        job_id = await AI_SUMMARIZER.queue_summary_job(
+                            alerts, 
+                            priority=JobPriority.LOW,
+                            config={"max_length": 300, "include_route_info": True, "include_severity": True}
+                        )
+                        logger.info(f"Queued AI summary job {job_id} for {len(alerts)} alerts during cache warming")
+                    except Exception as e:
+                        logger.warning(f"Failed to queue AI summary during cache warming: {e}")
+                        # Don't fail cache warming if AI summarization fails
+                
                 return True
         except (
             RedisError,
