@@ -66,80 +66,124 @@ OLLAMA_FLASH_ATTENTION=1 # Enable if supported by your hardware
 
 ### AI Alert Summarization
 
-The AI alert summarization feature uses Ollama to generate intelligent, human-readable summaries of MBTA alerts. This helps commuters quickly understand the impact of service disruptions.
+The MBTA tracker now includes AI-powered alert summarization using Ollama, a local large language model server. This feature automatically generates human-readable summaries of transit alerts, identifying common themes and patterns.
 
-#### Configuration
+### Features
 
-Add these environment variables to enable AI summarization:
+- **Automatic Summarization**: Generates summaries for all active alerts on startup and periodically
+- **Multiple Output Formats**: Support for plain text, Markdown, and JSON formatting
+- **Intelligent Caching**: Caches summaries to avoid regenerating for unchanged alerts
+- **Background Processing**: Non-blocking summarization using a job queue system
+- **Configurable**: Customizable model parameters and summarization settings
 
-```shell
-# Enable AI alert summarization
-OLLAMA_ENABLED=true
+### Configuration
 
-# Ollama server configuration (optional, defaults shown)
-OLLAMA_BASE_URL=http://localhost:11434
-OLLAMA_MODEL=llama3.2:1b
-OLLAMA_TIMEOUT=30
-OLLAMA_TEMPERATURE=0.1
-```
+#### Environment Variables (Recommended)
 
-Or configure via `config.json`:
+The following environment variables control the AI summarization feature. These take **highest priority** over `config.json` settings.
+
+| Variable | Description | Default | Example |
+|----------|-------------|---------|---------|
+| `OLLAMA_BASE_URL` | Ollama API endpoint URL | `http://localhost:11434` | `http://ollama:11434` |
+| `OLLAMA_MODEL` | AI model to use for summarization | `llama3.2:1b` | `gemma3:1b` |
+| `OLLAMA_TIMEOUT` | Request timeout in seconds | `30` | `60` |
+| `OLLAMA_TEMPERATURE` | Model temperature (0.0-1.0) | `0.1` | `0.2` |
+| `OLLAMA_MAX_RETRIES` | Maximum retry attempts for API calls | `3` | `5` |
+| `OLLAMA_CACHE_TTL` | Cache TTL in seconds | `3600` | `1800` |
+
+#### config.json
 
 ```json
 {
   "ollama": {
     "enabled": true,
     "base_url": "http://localhost:11434",
-    "model": "llama3.2:1b",
-    "timeout": 30,
-    "temperature": 0.1
+    "model": "gemma3:1b",
+    "timeout": 60,
+    "temperature": 0.2,
+    "max_retries": 5,
+    "cache_ttl": 1800
   }
 }
 ```
 
-#### API Endpoints
+### Output Formats
 
-Once enabled, the following endpoints become available:
+The AI summarizer supports three output formats:
 
-- `GET /ai/summaries` - Get AI-summarized alerts
-- `GET /ai/summaries/{alert_id}` - Get AI summary for a specific alert
-- `GET /ai/stats` - Get AI summarization statistics
+#### 1. Text (Default)
+Plain text summaries optimized for readability.
 
-#### Example Usage
+#### 2. Markdown
+Formatted summaries with headers, bold text, and proper spacing for documentation and display.
 
+#### 3. JSON
+Structured summaries with metadata, useful for programmatic consumption and analysis.
+
+### API Endpoints
+
+#### Generate Summary
 ```bash
-# Get all alerts with AI summaries
-curl http://localhost:8000/ai/summaries
-
-# Get summary for a specific alert
-curl http://localhost:8000/ai/summaries/alert_123
-
-# Get AI summarization statistics
-curl http://localhost:8000/ai/stats
+POST /alerts/summarize
 ```
 
-#### Requirements
+**Request Body:**
+```json
+{
+  "alerts": [...],
+  "include_route_info": true,
+  "include_severity": true,
+  "format": "markdown"
+}
+```
 
-- [Ollama](https://ollama.ai/) installed and running locally
-- A compatible model (e.g., `llama3.2:1b`, `mistral:7b`, `codellama:7b`)
-- Sufficient system resources for the chosen model
+**Format Options:**
+- `"text"` - Plain text (default)
+- `"markdown"` - Markdown formatted
+- `"json"` - Structured JSON
 
-#### How It Works
+#### Test Summarization
+```bash
+GET /ai/test?format=markdown
+```
 
-1. **Alert Collection**: The system collects alerts from the MBTA API
-2. **AI Processing**: Alerts are sent to Ollama with carefully crafted prompts
-3. **Summary Generation**: The AI generates concise, commuter-friendly summaries
-4. **Caching**: Summaries are cached to avoid redundant API calls
-5. **Integration**: Summaries are available through the API and can be integrated into displays
+#### Get Active Alert Summaries
+```bash
+GET /ai/summaries/active?format=json
+```
 
-#### Monitoring
+#### Get Specific Alert Summary
+```bash
+GET /ai/summaries/alert/{alert_id}?format=markdown
+```
 
-AI summarization metrics are available in Prometheus:
+#### Bulk Summary Generation
+```bash
+POST /ai/summaries/bulk?format=json
+```
 
-- `imt_ai_summarization_requests_total` - Total requests to Ollama
-- `imt_ai_summarization_errors_total` - Total errors encountered
-- `imt_ai_summarization_duration_seconds` - Time taken for summarization
-- `imt_ai_summarization_cache_hits_total` - Cache hit rate
+### Requirements
+
+1. **Ollama**: Install and run Ollama locally or in a container
+2. **Compatible Model**: Download a model like `gemma3:1b` or `llama3.2:1b`
+3. **Python Dependencies**: The `ollama` Python client is included
+
+### How It Works
+
+1. **Collection**: Gathers current alerts from MBTA API
+2. **AI Processing**: Sends alerts to Ollama for summarization
+3. **Formatting**: Applies requested format (text, markdown, or JSON)
+4. **Caching**: Stores results in Redis with configurable TTL
+5. **Integration**: Provides summaries through dedicated API endpoints
+
+### Monitoring
+
+Prometheus metrics are available for monitoring:
+
+- `ai_summarization_requests_total`: Total summarization requests
+- `ai_summarization_errors_total`: Total summarization errors
+- `ai_summarization_duration_seconds`: Summarization processing time
+- `ai_summarization_cache_hits_total`: Cache hit count
 
 ### Performance Tuning (Async Consumers)
 

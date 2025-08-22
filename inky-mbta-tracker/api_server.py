@@ -5,6 +5,7 @@ import os
 import threading
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
+from enum import Enum
 from functools import wraps
 from queue import Full, Queue
 from typing import Any, AsyncGenerator, Awaitable, Callable, Dict, List
@@ -213,7 +214,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                         alerts,
                         priority=JobPriority.HIGH,  # High priority for startup
                         config={
-                            "max_length": 300,
                             "include_route_info": True,
                             "include_severity": True,
                         },
@@ -313,7 +313,6 @@ async def periodic_ai_summary_refresh() -> None:
                             alerts,
                             priority=JobPriority.LOW,
                             config={
-                                "max_length": 300,
                                 "include_route_info": True,
                                 "include_severity": True,
                             },
@@ -399,6 +398,14 @@ instrumenter = Instrumentator().instrument(app).expose(app)
 # ============================================================================
 # PYDANTIC MODELS
 # ============================================================================
+
+
+class SummaryFormat(str, Enum):
+    """Format options for AI summaries"""
+
+    TEXT = "text"
+    MARKDOWN = "markdown"
+    JSON = "json"
 
 
 class TrackPredictionResponse(BaseModel):
@@ -674,6 +681,75 @@ async def get_historical_assignments(
 # ============================================================================
 # HELPER FUNCTIONS
 # ============================================================================
+
+
+def format_summary(summary: str, format_type: SummaryFormat) -> str:
+    """Format a summary according to the requested format type."""
+    if format_type == SummaryFormat.TEXT:
+        return summary
+    elif format_type == SummaryFormat.MARKDOWN:
+        # Convert plain text to markdown format
+        lines = summary.split("\n")
+        formatted_lines = []
+
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+
+            # Check if line looks like a header (starts with common alert patterns)
+            if any(
+                line.lower().startswith(prefix)
+                for prefix in [
+                    "alert",
+                    "route",
+                    "effect",
+                    "cause",
+                    "severity",
+                    "timeframe",
+                ]
+            ):
+                formatted_lines.append(f"## {line}")
+            elif line.endswith(":") and len(line) < 50:
+                formatted_lines.append(f"**{line}**")
+            else:
+                formatted_lines.append(line)
+
+        return "\n\n".join(formatted_lines)
+    elif format_type == SummaryFormat.JSON:
+        # Convert to structured JSON format
+        try:
+            # Try to parse as JSON first
+            import json
+
+            json.loads(summary)
+            return summary  # Already JSON
+        except (ValueError, TypeError):
+            # Convert plain text to structured JSON
+            lines = summary.split("\n")
+            structured_data = {
+                "summary": summary,
+                "formatted_summary": {
+                    "overview": lines[0] if lines else "",
+                    "details": [line.strip() for line in lines[1:] if line.strip()],
+                    "alert_count": len(
+                        [line for line in lines if "alert" in line.lower()]
+                    ),
+                    "routes_affected": [
+                        line for line in lines if "route" in line.lower()
+                    ],
+                    "effects": [
+                        line
+                        for line in lines
+                        if "effect" in line.lower()
+                        or "delay" in line.lower()
+                        or "detour" in line.lower()
+                    ],
+                },
+            }
+            return json.dumps(structured_data, indent=2)
+    else:
+        return summary
 
 
 # Vehicle Data Endpoints
@@ -994,7 +1070,6 @@ async def get_alerts(request: Request) -> Response:  # noqa: ARG001  # pyright: 
                         alerts,
                         priority=JobPriority.NORMAL,
                         config={
-                            "max_length": 300,
                             "include_route_info": True,
                             "include_severity": True,
                         },
@@ -1071,7 +1146,6 @@ async def get_alerts_json(request: Request) -> Response:  # noqa: ARG001  # pyri
                         alerts,
                         priority=JobPriority.NORMAL,
                         config={
-                            "max_length": 300,
                             "include_route_info": True,
                             "include_severity": True,
                         },
@@ -1149,6 +1223,12 @@ async def summarize_alerts(
 
         # Generate summary
         summary_response = await AI_SUMMARIZER.summarize_alerts(request)
+
+        # Apply formatting if requested
+        if request.format != "text":
+            summary_response.summary = format_summary(
+                summary_response.summary, SummaryFormat(request.format)
+            )
 
         # Cache the summary if we have alerts
         if request.alerts:
@@ -1338,6 +1418,9 @@ async def get_shapes_json(request: Request) -> Response:  # noqa: ARG001  # pyri
 @limiter.limit("10/minute")
 async def test_ai_summarization(
     request: Request,  # noqa: ARG001  # pyright: ignore[reportUnusedParameter]
+    format: SummaryFormat = Query(
+        SummaryFormat.TEXT, description="Output format for the summary"
+    ),
 ) -> dict:
     """Test AI summarization functionality."""
     if not AI_SUMMARIZER:
@@ -1359,17 +1442,21 @@ async def test_ai_summarization(
         summary = await AI_SUMMARIZER.force_generate_summary(
             alerts[:3],  # Just use first 3 alerts for testing
             config={
-                "max_length": 300,
                 "include_route_info": True,
                 "include_severity": True,
             },
         )
+
+        # Apply formatting if requested
+        if format != SummaryFormat.TEXT:
+            summary = format_summary(summary, format)
 
         return {
             "status": "success",
             "message": "AI summary generated successfully",
             "alert_count": len(alerts[:3]),
             "summary": summary,
+            "format": format,
             "model": AI_SUMMARIZER.config.model,
         }
 
@@ -1519,6 +1606,9 @@ async def get_ai_summaries(
 @limiter.limit("20/minute")
 async def get_active_alert_summaries(
     request: Request,  # noqa: ARG001  # pyright: ignore[reportUnusedParameter]
+    format: SummaryFormat = Query(
+        SummaryFormat.TEXT, description="Output format for the summaries"
+    ),
 ) -> dict:
     """Get AI summaries for all currently active alerts."""
     if not AI_SUMMARIZER:
@@ -1548,11 +1638,14 @@ async def get_active_alert_summaries(
                 summary = await AI_SUMMARIZER.force_generate_summary(
                     [alert],  # Single alert
                     config={
-                        "max_length": 300,
                         "include_route_info": True,
                         "include_severity": True,
                     },
                 )
+
+                # Apply formatting if requested
+                if format != SummaryFormat.TEXT:
+                    summary = format_summary(summary, format)
 
                 summaries.append(
                     {
@@ -1564,6 +1657,7 @@ async def get_active_alert_summaries(
                         "alert_cause": alert.attributes.cause,
                         "alert_timeframe": alert.attributes.timeframe,
                         "ai_summary": summary,
+                        "format": format,
                         "model_used": AI_SUMMARIZER.config.model,
                         "generated_at": datetime.now().isoformat(),
                     }
@@ -1684,6 +1778,9 @@ async def get_cached_alert_summaries(
 async def get_alert_summary_by_id(
     request: Request,  # noqa: ARG001  # pyright: ignore[reportUnusedParameter]
     alert_id: str,
+    format: SummaryFormat = Query(
+        SummaryFormat.TEXT, description="Output format for the summary"
+    ),
 ) -> dict:
     """Get AI summary for a specific alert by ID."""
     if not AI_SUMMARIZER:
@@ -1701,6 +1798,13 @@ async def get_alert_summary_by_id(
                 summaries_data = json.loads(cached_data)
                 for summary in summaries_data.get("summaries", []):
                     if summary.get("alert_id") == alert_id:
+                        # Apply formatting if requested
+                        if format != SummaryFormat.TEXT:
+                            summary["ai_summary"] = format_summary(
+                                summary["ai_summary"], format
+                            )
+                            summary["format"] = format
+
                         return {
                             "status": "success",
                             "message": "Retrieved cached summary",
@@ -1732,11 +1836,14 @@ async def get_alert_summary_by_id(
             summary = await AI_SUMMARIZER.force_generate_summary(
                 [target_alert],
                 config={
-                    "max_length": 300,
                     "include_route_info": True,
                     "include_severity": True,
                 },
             )
+
+            # Apply formatting if requested
+            if format != SummaryFormat.TEXT:
+                summary = format_summary(summary, format)
 
             summary_data = {
                 "alert_id": target_alert.id,
@@ -1747,6 +1854,7 @@ async def get_alert_summary_by_id(
                 "alert_cause": target_alert.attributes.cause,
                 "alert_timeframe": target_alert.attributes.timeframe,
                 "ai_summary": summary,
+                "format": format,
                 "model_used": AI_SUMMARIZER.config.model,
                 "generated_at": datetime.now().isoformat(),
                 "cache_source": "generated_on_demand",
@@ -1776,6 +1884,9 @@ async def get_alert_summary_by_id(
 async def generate_bulk_alert_summaries(
     request: Request,  # noqa: ARG001  # pyright: ignore[reportUnusedParameter]
     alert_ids: List[str],
+    format: SummaryFormat = Query(
+        SummaryFormat.TEXT, description="Output format for the summaries"
+    ),
 ) -> dict:
     """Generate AI summaries for multiple specific alerts."""
     if not AI_SUMMARIZER:
@@ -1822,11 +1933,14 @@ async def generate_bulk_alert_summaries(
                 summary = await AI_SUMMARIZER.force_generate_summary(
                     [alert],
                     config={
-                        "max_length": 300,
                         "include_route_info": True,
                         "include_severity": True,
                     },
                 )
+
+                # Apply formatting if requested
+                if format != SummaryFormat.TEXT:
+                    summary = format_summary(summary, format)
 
                 summaries.append(
                     {
@@ -1838,6 +1952,7 @@ async def generate_bulk_alert_summaries(
                         "alert_cause": alert.attributes.cause,
                         "alert_timeframe": alert.attributes.timeframe,
                         "ai_summary": summary,
+                        "format": format,
                         "model_used": AI_SUMMARIZER.config.model,
                         "generated_at": datetime.now().isoformat(),
                     }
@@ -1940,7 +2055,6 @@ async def warm_all_caches_internal() -> dict[str, bool]:
                             alerts,
                             priority=JobPriority.LOW,
                             config={
-                                "max_length": 300,
                                 "include_route_info": True,
                                 "include_severity": True,
                             },
