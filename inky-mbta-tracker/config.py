@@ -15,6 +15,26 @@ class StopSetup(BaseModel):
     route_substring_filter: Optional[str] = None
 
 
+class OllamaConfig(BaseModel):
+    """Configuration for Ollama AI summarizer"""
+
+    enabled: bool = Field(default=False, description="Enable AI summarizer feature")
+    base_url: str = Field(
+        default="http://localhost:11434", description="Ollama API base URL"
+    )
+    model: str = Field(
+        default="llama3.2:3b", description="Model to use for summarization"
+    )
+    timeout: int = Field(default=30, description="Request timeout in seconds")
+    max_retries: int = Field(default=3, description="Maximum retry attempts")
+    temperature: float = Field(
+        default=0.1, description="Model temperature for generation"
+    )
+    cache_ttl: int = Field(
+        default=300, description="Cache TTL for summaries in seconds"
+    )
+
+
 class Config(BaseModel):
     stops: list[StopSetup]
     # fetches real-time vehicle information with the numbers referring to
@@ -31,6 +51,8 @@ class Config(BaseModel):
     track_prediction_routes: Optional[list[str]] = None
     track_prediction_stations: Optional[list[str]] = None
     track_prediction_interval_hours: int = Field(default=2)
+    # AI summarizer settings
+    ollama: OllamaConfig = Field(default_factory=OllamaConfig)
 
 
 def load_config() -> Config:
