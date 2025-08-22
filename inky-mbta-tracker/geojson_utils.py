@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from datetime import datetime, timedelta
 from typing import Optional
@@ -35,6 +36,8 @@ async def light_get_alerts_batch(
 
     endpoint = f"/alerts?filter[route]={routes_str}&api_key={MBTA_AUTH}&filter[lifecycle]=NEW,ONGOING,ONGOING_UPCOMING&filter[datetime]=NOW&filter[severity]=3,4,5,6,7,8,9,10"
 
+    logger.debug(f"Fetching alerts from endpoint: {endpoint}")
+
     try:
         async with session.get(endpoint) as response:
             if response.status == 429:
@@ -46,7 +49,29 @@ async def light_get_alerts_batch(
                 return None
 
             data = await response.json()
+            logger.debug(
+                f"Raw response data keys: {list(data.keys()) if isinstance(data, dict) else 'Not a dict'}"
+            )
+
+            # Validate the response structure
+            if not isinstance(data, dict):
+                logger.error(f"MBTA API returned non-dict response: {type(data)}")
+                return None
+
+            if "data" not in data:
+                logger.error(
+                    f"MBTA API response missing 'data' key: {list(data.keys())}"
+                )
+                return None
+
+            if not isinstance(data["data"], list):
+                logger.error(f"MBTA API 'data' is not a list: {type(data['data'])}")
+                return None
+
             alerts_response = Alerts.model_validate(data)
+            alerts_count = len(alerts_response.data) if alerts_response.data else 0
+            logger.debug(f"Parsed {alerts_count} alerts from response")
+
             return alerts_response.data if alerts_response.data else []
     except ValidationError as err:
         logger.error("Unable to validate alerts response", exc_info=err)
@@ -89,17 +114,90 @@ def calculate_bearing(start: Point, end: Point) -> float:
 
 async def collect_alerts(config: Config, session: ClientSession) -> list[AlertResource]:
     """Collect alerts for the routes specified in the config"""
+    logger.debug(f"Collecting alerts for routes: {config.vehicles_by_route}")
+
     alerts = dict[str, AlertResource]()
     if config.vehicles_by_route:
-        routes_str = ",".join(config.vehicles_by_route)
-        al = await light_get_alerts_batch(routes_str, session)
-        if al:
-            for a in al:
-                alerts[a.id] = a
+        # Split routes into batches to avoid MBTA API limitations
+        # MBTA API might have limits on query string length or number of routes
+        batch_size = 10  # Process 10 routes at a time
+        route_batches = [
+            config.vehicles_by_route[i : i + batch_size]
+            for i in range(0, len(config.vehicles_by_route), batch_size)
+        ]
+
+        logger.debug(
+            f"Processing {len(config.vehicles_by_route)} routes in {len(route_batches)} batches"
+        )
+
+        for batch_num, route_batch in enumerate(route_batches, 1):
+            routes_str = ",".join(route_batch)
+            logger.debug(
+                f"Fetching alerts for batch {batch_num}/{len(route_batches)}: {routes_str}"
+            )
+
+            al = await light_get_alerts_batch(routes_str, session)
+            if al:
+                logger.debug(
+                    f"Batch {batch_num}: Received {len(al)} alerts from MBTA API"
+                )
+                for a in al:
+                    try:
+                        # Validate alert structure before adding
+                        if not hasattr(a, "id") or not a.id:
+                            logger.warning(
+                                f"Alert missing ID in batch {batch_num}: {a}"
+                            )
+                            continue
+
+                        if not hasattr(a, "attributes") or not a.attributes:
+                            logger.warning(
+                                f"Alert {a.id} missing attributes in batch {batch_num}: {a}"
+                            )
+                            continue
+
+                        if not hasattr(a.attributes, "header"):
+                            logger.warning(
+                                f"Alert {a.id} missing header in batch {batch_num}: {a}"
+                            )
+                            continue
+
+                        alerts[a.id] = a
+                        logger.debug(
+                            f"Alert: {a.attributes.header} (ID: {a.id}, Severity: {a.attributes.severity})"
+                        )
+
+                        # Log the full alert structure for debugging
+                        logger.debug(f"Alert {a.id} full structure: {a}")
+                        logger.debug(f"Alert {a.id} attributes: {a.attributes}")
+                        logger.debug(
+                            f"Alert {a.id} attributes dir: {dir(a.attributes)}"
+                        )
+
+                    except Exception as e:
+                        logger.error(
+                            f"Error processing alert in batch {batch_num}: {e}",
+                            exc_info=True,
+                        )
+                        logger.error(f"Problematic alert data: {a}")
+                        continue
+            else:
+                logger.debug(f"Batch {batch_num}: No alerts received from MBTA API")
+
+            # Small delay between batches to avoid rate limiting
+            if batch_num < len(route_batches):
+                await asyncio.sleep(0.1)
+    else:
+        logger.warning("No vehicles_by_route configured, cannot collect alerts")
+
     collected_alerts = list(alerts.values())
     collected_alerts.sort(
         key=lambda alert: alert.attributes.updated_at or alert.attributes.created_at,
         reverse=True,
+    )
+
+    logger.info(
+        f"Total alerts collected: {len(collected_alerts)} from all route batches"
     )
     return collected_alerts
 
