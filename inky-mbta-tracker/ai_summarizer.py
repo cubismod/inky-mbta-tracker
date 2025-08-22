@@ -588,7 +588,9 @@ class AISummarizer:
             prompt_parts.append("\n".join(parts))
 
         prompt_parts.append(
-            "\nPlease provide a clear, concise summary that captures the key information and any common themes or patterns."
+            "\nPlease provide a clear, structured summary that covers each alert individually."
+            "\nFor each alert, provide a brief summary of the key details, then provide an overall assessment."
+            "\nFocus on the most important details and provide a complete summary. Do not stop mid-sentence."
         )
 
         return "\n\n".join(prompt_parts)
@@ -712,12 +714,12 @@ class AISummarizer:
                     processing_time_ms=0.0,
                 )
 
-            # Format alerts into a prompt
+            # Format alerts into a prompt for group summary
             prompt = self._format_alerts_for_prompt(
                 request.alerts, request.include_route_info, request.include_severity
             )
 
-            # Generate summary using Ollama
+            # Generate group summary using Ollama
             summary = await self._call_ollama(prompt)
 
             # Truncate if necessary

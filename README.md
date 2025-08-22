@@ -64,6 +64,83 @@ OLLAMA_MAX_LOADED_MODELS=1 # Keep memory usage low
 OLLAMA_FLASH_ATTENTION=1 # Enable if supported by your hardware
 ```
 
+### AI Alert Summarization
+
+The AI alert summarization feature uses Ollama to generate intelligent, human-readable summaries of MBTA alerts. This helps commuters quickly understand the impact of service disruptions.
+
+#### Configuration
+
+Add these environment variables to enable AI summarization:
+
+```shell
+# Enable AI alert summarization
+OLLAMA_ENABLED=true
+
+# Ollama server configuration (optional, defaults shown)
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_MODEL=llama3.2:1b
+OLLAMA_TIMEOUT=30
+OLLAMA_TEMPERATURE=0.1
+```
+
+Or configure via `config.json`:
+
+```json
+{
+  "ollama": {
+    "enabled": true,
+    "base_url": "http://localhost:11434",
+    "model": "llama3.2:1b",
+    "timeout": 30,
+    "temperature": 0.1
+  }
+}
+```
+
+#### API Endpoints
+
+Once enabled, the following endpoints become available:
+
+- `GET /ai/summaries` - Get AI-summarized alerts
+- `GET /ai/summaries/{alert_id}` - Get AI summary for a specific alert
+- `GET /ai/stats` - Get AI summarization statistics
+
+#### Example Usage
+
+```bash
+# Get all alerts with AI summaries
+curl http://localhost:8000/ai/summaries
+
+# Get summary for a specific alert
+curl http://localhost:8000/ai/summaries/alert_123
+
+# Get AI summarization statistics
+curl http://localhost:8000/ai/stats
+```
+
+#### Requirements
+
+- [Ollama](https://ollama.ai/) installed and running locally
+- A compatible model (e.g., `llama3.2:1b`, `mistral:7b`, `codellama:7b`)
+- Sufficient system resources for the chosen model
+
+#### How It Works
+
+1. **Alert Collection**: The system collects alerts from the MBTA API
+2. **AI Processing**: Alerts are sent to Ollama with carefully crafted prompts
+3. **Summary Generation**: The AI generates concise, commuter-friendly summaries
+4. **Caching**: Summaries are cached to avoid redundant API calls
+5. **Integration**: Summaries are available through the API and can be integrated into displays
+
+#### Monitoring
+
+AI summarization metrics are available in Prometheus:
+
+- `imt_ai_summarization_requests_total` - Total requests to Ollama
+- `imt_ai_summarization_errors_total` - Total errors encountered
+- `imt_ai_summarization_duration_seconds` - Time taken for summarization
+- `imt_ai_summarization_cache_hits_total` - Cache hit rate
+
 ### Performance Tuning (Async Consumers)
 
 The app runs producers and consumers on a single asyncio event loop. You can tune throughput and latency with these environment variables:

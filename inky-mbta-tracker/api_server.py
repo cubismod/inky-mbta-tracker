@@ -7,12 +7,17 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from functools import wraps
 from queue import Full, Queue
-from typing import Any, AsyncGenerator, Awaitable, Callable, List
+from typing import Any, AsyncGenerator, Awaitable, Callable, Dict, List
 
 import aiohttp
 import uvicorn
-from ai_summarizer import AISummarizer, SummarizationRequest, SummarizationResponse, JobPriority
-from config import load_config
+from ai_summarizer import (
+    AISummarizer,
+    JobPriority,
+    SummarizationRequest,
+    SummarizationResponse,
+)
+from config import Config, load_config
 from consts import (
     ALERTS_CACHE_TTL,
     MBTA_V3_ENDPOINT,
@@ -24,7 +29,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from geojson import FeatureCollection, dumps
 from geojson_utils import collect_alerts, get_shapes_features, get_vehicle_features
 from mbta_client import determine_station_id
-from mbta_responses import Alerts
+from mbta_responses import AlertResource, Alerts
 from prometheus_fastapi_instrumentator import Instrumentator
 from pydantic import BaseModel, ValidationError
 from redis.exceptions import RedisError
@@ -34,6 +39,14 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import StreamingResponse
+from tenacity import (
+    before_log,
+    before_sleep_log,
+    retry,
+    retry_if_not_exception_type,
+    stop_after_attempt,
+    wait_exponential_jitter,
+)
 from track_predictor.track_predictor import TrackPredictionStats, TrackPredictor
 from utils import get_redis, get_vehicles_data, thread_runner
 from vehicles_background_worker import State
@@ -68,6 +81,20 @@ SSE_ENABLED = os.getenv("IMT_SSE_ENABLED", "true").lower() == "true"
 # ============================================================================
 # MIDDLEWARE AND UTILITIES
 # ============================================================================
+
+
+@retry(
+    wait=wait_exponential_jitter(initial=2, jitter=5),
+    stop=stop_after_attempt(3),
+    retry=retry_if_not_exception_type((ValueError, ValidationError)),
+    before_sleep=before_sleep_log(logger, logging.DEBUG),
+    before=before_log(logger, logging.DEBUG),
+)
+async def fetch_alerts_with_retry(
+    config: Config, session: aiohttp.ClientSession
+) -> List[AlertResource]:
+    """Fetch alerts with retry logic for rate limiting."""
+    return await collect_alerts(config, session)
 
 
 class HeaderLoggingMiddleware(BaseHTTPMiddleware):
@@ -164,40 +191,77 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Lifespan event handler for startup and shutdown"""
     # Startup
     logger.info("Starting MBTA Transit Data API...")
-    
+
     # Start AI summarizer if enabled
     if AI_SUMMARIZER:
         try:
             await AI_SUMMARIZER.start()
             logger.info("AI summarizer started successfully")
-            
+
+            # Immediately create a job for any existing alerts
+            try:
+                logger.info(
+                    "Creating initial AI summarization job for existing alerts..."
+                )
+
+                # Use retry logic for MBTA API call
+                async with aiohttp.ClientSession(base_url=MBTA_V3_ENDPOINT) as session:
+                    alerts = await fetch_alerts_with_retry(CONFIG, session)
+
+                if alerts:
+                    job_id = await AI_SUMMARIZER.queue_summary_job(
+                        alerts,
+                        priority=JobPriority.HIGH,  # High priority for startup
+                        config={
+                            "max_length": 300,
+                            "include_route_info": True,
+                            "include_severity": True,
+                        },
+                    )
+                    logger.info(
+                        f"Initial startup: queued AI summary job {job_id} for {len(alerts)} alerts"
+                    )
+                else:
+                    logger.info("No existing alerts to summarize on startup")
+            except Exception as e:
+                logger.warning(f"Failed to create initial AI summarization job: {e}")
+                # Don't fail startup, just log the warning
+
             # Start background task for periodic AI summary refresh
+            logger.info("Creating periodic AI summary refresh task...")
             background_task = asyncio.create_task(periodic_ai_summary_refresh())
             app.state.ai_summary_task = background_task
-            logger.info("Started periodic AI summary refresh task")
+            logger.info(f"Started periodic AI summary refresh task: {background_task}")
+
+            # Check if the task is actually running
+            if background_task.done():
+                logger.error("Periodic AI summary refresh task completed immediately!")
+            else:
+                logger.info("Periodic AI summary refresh task is running")
+
         except Exception as e:
-            logger.error(f"Failed to start AI summarizer: {e}")
+            logger.error(f"Failed to start AI summarizer: {e}", exc_info=True)
             # Don't fail startup, just log the error
     else:
         logger.info("AI summarizer not enabled")
-    
+
     yield
-    
+
     # Shutdown
     logger.info("Shutting down MBTA Transit Data API...")
-    
+
     # Stop AI summarizer if enabled
     if AI_SUMMARIZER:
         try:
             # Cancel background task if it exists
-            if hasattr(app.state, 'ai_summary_task'):
+            if hasattr(app.state, "ai_summary_task"):
                 app.state.ai_summary_task.cancel()
                 try:
                     await app.state.ai_summary_task
                 except asyncio.CancelledError:
                     pass
                 logger.info("Cancelled periodic AI summary refresh task")
-            
+
             await AI_SUMMARIZER.stop()
             await AI_SUMMARIZER.close()
             logger.info("AI summarizer stopped successfully")
@@ -207,37 +271,74 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
 async def periodic_ai_summary_refresh() -> None:
     """Periodically refresh AI summaries for current alerts"""
+    logger.info("Starting periodic AI summary refresh task")
+
+    # Add a heartbeat counter
+    heartbeat_count = 0
+
     while True:
         try:
+            # Log heartbeat every 5 minutes
+            heartbeat_count += 1
+            if heartbeat_count % 1 == 0:  # Every cycle = 5 minutes
+                logger.info(
+                    f"Periodic AI summary refresh task heartbeat: {heartbeat_count} cycles completed"
+                )
+
             # Wait for the next refresh cycle (every 30 minutes)
-            await asyncio.sleep(30 * 60)  # 30 minutes
-            
+            logger.debug(
+                "Waiting 5 minutes before next AI summary refresh cycle (reduced for testing)"
+            )
+            await asyncio.sleep(5 * 60)  # 5 minutes for testing (normally 30)
+
             if AI_SUMMARIZER:
                 try:
-                    # Collect current alerts
-                    async with aiohttp.ClientSession(base_url=MBTA_V3_ENDPOINT) as session:
-                        alerts = await collect_alerts(CONFIG, session)
-                    
+                    logger.info("Starting AI summary refresh cycle")
+
+                    # Collect current alerts with retry logic
+                    async with aiohttp.ClientSession(
+                        base_url=MBTA_V3_ENDPOINT
+                    ) as session:
+                        alerts = await fetch_alerts_with_retry(CONFIG, session)
+
                     if alerts:
+                        # Log some alert details for debugging
+                        for i, alert in enumerate(alerts[:3]):  # Log first 3 alerts
+                            logger.debug(
+                                f"Alert {i + 1}: {alert.attributes.header} (ID: {alert.id})"
+                            )
+
                         # Queue AI summary job with low priority for background refresh
                         job_id = await AI_SUMMARIZER.queue_summary_job(
                             alerts,
                             priority=JobPriority.LOW,
-                            config={"max_length": 300, "include_route_info": True, "include_severity": True}
+                            config={
+                                "max_length": 300,
+                                "include_route_info": True,
+                                "include_severity": True,
+                            },
                         )
-                        logger.info(f"Periodic refresh: queued AI summary job {job_id} for {len(alerts)} alerts")
+                        logger.info(
+                            f"Periodic refresh: queued AI summary job {job_id} for {len(alerts)} alerts"
+                        )
                     else:
-                        logger.debug("Periodic refresh: no alerts to summarize")
-                        
+                        logger.info(
+                            "Periodic refresh: no alerts to summarize (this is normal if there are no active alerts)"
+                        )
+
                 except Exception as e:
-                    logger.warning(f"Periodic AI summary refresh failed: {e}")
+                    logger.error(
+                        f"Periodic AI summary refresh failed: {e}", exc_info=True
+                    )
                     # Continue running even if this cycle fails
-                    
+
         except asyncio.CancelledError:
             logger.info("Periodic AI summary refresh task cancelled")
             break
         except Exception as e:
-            logger.error(f"Unexpected error in periodic AI summary refresh: {e}")
+            logger.error(
+                f"Unexpected error in periodic AI summary refresh: {e}", exc_info=True
+            )
             # Wait a bit before retrying
             await asyncio.sleep(60)
 
@@ -878,25 +979,33 @@ async def get_alerts(request: Request) -> Response:  # noqa: ARG001  # pyright: 
                 )
 
             async with aiohttp.ClientSession(base_url=MBTA_V3_ENDPOINT) as session:
-                alerts = await collect_alerts(CONFIG, session)
+                alerts = await fetch_alerts_with_retry(CONFIG, session)
 
             alerts_data = Alerts(data=alerts)
             alerts_json = alerts_data.model_dump_json(exclude_unset=True)
 
             await REDIS_CLIENT.setex(cache_key, ALERTS_CACHE_TTL, alerts_json)
-            
+
             # Queue AI summary if enabled and there are alerts
             if AI_SUMMARIZER and alerts:
                 try:
                     # Queue summary job with normal priority for regular refresh
                     job_id = await AI_SUMMARIZER.queue_summary_job(
-                        alerts, 
+                        alerts,
                         priority=JobPriority.NORMAL,
-                        config={"max_length": 300, "include_route_info": True, "include_severity": True}
+                        config={
+                            "max_length": 300,
+                            "include_route_info": True,
+                            "include_severity": True,
+                        },
                     )
-                    logger.info(f"Queued AI summary job {job_id} for {len(alerts)} alerts during refresh")
+                    logger.info(
+                        f"Queued AI summary job {job_id} for {len(alerts)} alerts during refresh"
+                    )
                 except Exception as e:
-                    logger.warning(f"Failed to queue AI summary during alerts refresh: {e}")
+                    logger.warning(
+                        f"Failed to queue AI summary during alerts refresh: {e}"
+                    )
                     # Don't fail the alerts request if AI summarization fails
 
             return Response(
@@ -948,24 +1057,32 @@ async def get_alerts_json(request: Request) -> Response:  # noqa: ARG001  # pyri
                 )
 
             async with aiohttp.ClientSession(base_url=MBTA_V3_ENDPOINT) as session:
-                alerts = await collect_alerts(CONFIG, session)
+                alerts = await fetch_alerts_with_retry(CONFIG, session)
             alerts_data = Alerts(data=alerts)
             alerts_json = alerts_data.model_dump_json(exclude_unset=True)
 
             await REDIS_CLIENT.setex(cache_key, ALERTS_CACHE_TTL, alerts_json)
-            
+
             # Queue AI summary if enabled and there are alerts
             if AI_SUMMARIZER and alerts:
                 try:
                     # Queue summary job with normal priority for regular refresh
                     job_id = await AI_SUMMARIZER.queue_summary_job(
-                        alerts, 
+                        alerts,
                         priority=JobPriority.NORMAL,
-                        config={"max_length": 300, "include_route_info": True, "include_severity": True}
+                        config={
+                            "max_length": 300,
+                            "include_route_info": True,
+                            "include_severity": True,
+                        },
                     )
-                    logger.info(f"Queued AI summary job {job_id} for {len(alerts)} alerts during JSON refresh")
+                    logger.info(
+                        f"Queued AI summary job {job_id} for {len(alerts)} alerts during JSON refresh"
+                    )
                 except Exception as e:
-                    logger.warning(f"Failed to queue AI summary during alerts JSON refresh: {e}")
+                    logger.warning(
+                        f"Failed to queue AI summary during alerts JSON refresh: {e}"
+                    )
                     # Don't fail the alerts request if AI summarization fails
 
             return Response(
@@ -1027,7 +1144,7 @@ async def summarize_alerts(
         # Get current alerts if none provided
         if not request.alerts:
             async with aiohttp.ClientSession(base_url=MBTA_V3_ENDPOINT) as session:
-                alerts = await collect_alerts(CONFIG, session)
+                alerts = await fetch_alerts_with_retry(CONFIG, session)
                 request.alerts = alerts
 
         # Generate summary
@@ -1209,6 +1326,559 @@ async def get_shapes_json(request: Request) -> Response:  # noqa: ARG001  # pyri
 
 
 # ============================================================================
+# AI SUMMARIZATION ENDPOINTS
+# ============================================================================
+
+
+@app.get(
+    "/ai/test",
+    summary="Test AI Summarization",
+    description="Test endpoint to manually trigger AI summarization for debugging",
+)
+@limiter.limit("10/minute")
+async def test_ai_summarization(
+    request: Request,  # noqa: ARG001  # pyright: ignore[reportUnusedParameter]
+) -> dict:
+    """Test AI summarization functionality."""
+    if not AI_SUMMARIZER:
+        raise HTTPException(status_code=503, detail="AI summarizer not enabled")
+
+    try:
+        # Collect current alerts with retry logic
+        async with aiohttp.ClientSession(base_url=MBTA_V3_ENDPOINT) as session:
+            alerts = await fetch_alerts_with_retry(CONFIG, session)
+
+        if not alerts:
+            return {
+                "status": "no_alerts",
+                "message": "No active alerts to summarize",
+                "alert_count": 0,
+            }
+
+        # Force generate a summary
+        summary = await AI_SUMMARIZER.force_generate_summary(
+            alerts[:3],  # Just use first 3 alerts for testing
+            config={
+                "max_length": 300,
+                "include_route_info": True,
+                "include_severity": True,
+            },
+        )
+
+        return {
+            "status": "success",
+            "message": "AI summary generated successfully",
+            "alert_count": len(alerts[:3]),
+            "summary": summary,
+            "model": AI_SUMMARIZER.config.model,
+        }
+
+    except Exception as e:
+        logger.error(f"AI summarization test failed: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500, detail=f"AI summarization failed: {str(e)}"
+        )
+
+
+@app.get(
+    "/ai/status",
+    summary="AI Summarizer Status",
+    description="Get the current status of the AI summarizer",
+)
+@limiter.limit("30/minute")
+async def get_ai_status(
+    request: Request,  # noqa: ARG001  # pyright: ignore[reportUnusedParameter]
+) -> dict:
+    """Get AI summarizer status."""
+    if not AI_SUMMARIZER:
+        return {"enabled": False, "message": "AI summarizer not enabled"}
+
+    try:
+        # Get basic status
+        status = {
+            "enabled": True,
+            "model": AI_SUMMARIZER.config.model,
+            "base_url": AI_SUMMARIZER.config.base_url,
+            "timeout": AI_SUMMARIZER.config.timeout,
+            "temperature": AI_SUMMARIZER.config.temperature,
+        }
+
+        # Get job queue status if available
+        if hasattr(AI_SUMMARIZER, "job_queue"):
+            queue = AI_SUMMARIZER.job_queue
+            status.update(
+                {
+                    "queue_status": {
+                        "pending_jobs": len(queue.pending_jobs),
+                        "running_jobs": len(queue.running_jobs),
+                        "completed_jobs": len(queue.completed_jobs),
+                        "max_queue_size": queue.max_queue_size,
+                        "max_concurrent_jobs": queue.max_concurrent_jobs,
+                    }
+                }
+            )
+
+        return status
+
+    except Exception as e:
+        logger.error(f"Failed to get AI status: {e}", exc_info=True)
+        return {"enabled": True, "error": str(e)}
+
+
+@app.get(
+    "/ai/summaries",
+    summary="Get AI Summarized Alerts",
+    description="Get current alerts with AI-generated summaries",
+)
+@limiter.limit("30/minute")
+async def get_ai_summaries(
+    request: Request,  # noqa: ARG001  # pyright: ignore[reportUnusedParameter]
+) -> Response:
+    """
+    Get current alerts with AI-generated summaries.
+    """
+    try:
+        # Get alerts from cache
+        cache_key = "api:alerts"
+        cached_data = await REDIS_CLIENT.get(cache_key)
+        if not cached_data:
+            raise HTTPException(status_code=504, detail="Alerts cache not warmed up")
+
+        alerts_data = Alerts.model_validate_json(cached_data)
+        alerts = alerts_data.data
+
+        # Get summaries from cache
+        summaries_cache_key = "api:alerts:summaries"
+        cached_summaries = await REDIS_CLIENT.get(summaries_cache_key)
+        if not cached_summaries:
+            raise HTTPException(status_code=504, detail="Summaries cache not warmed up")
+
+        # Parse summaries as JSON data, not as Alerts objects
+        summaries_data = json.loads(cached_summaries)
+        summaries = summaries_data.get("data", [])
+
+        # Combine alerts and summaries
+        combined_data = []
+        for alert in alerts:
+            alert_data: Dict[str, Any] = {
+                "id": alert.id,
+                "type": alert.type,
+                "attributes": {
+                    "header": alert.attributes.header,
+                    "short_header": alert.attributes.short_header,
+                    "effect": alert.attributes.effect,
+                    "severity": alert.attributes.severity,
+                    "cause": alert.attributes.cause,
+                    "timeframe": alert.attributes.timeframe,
+                    "created_at": alert.attributes.created_at,
+                    "updated_at": alert.attributes.updated_at,
+                },
+            }
+
+            # Add summary if available
+            for summary in summaries:
+                if summary.get("id") == alert.id:
+                    # Create a new dict with the summary added
+                    attributes = dict(alert_data["attributes"])
+                    attributes["summary"] = summary.get("summary", "")
+                    alert_data["attributes"] = attributes
+                    break
+
+            combined_data.append(alert_data)
+
+        # Return combined data
+        return Response(
+            content=json.dumps({"data": combined_data}),
+            media_type="application/json",
+        )
+
+    except HTTPException as e:
+        raise e
+    except (ConnectionError, TimeoutError) as e:
+        logging.error(
+            f"Error getting AI summaries due to connection issue: {e}", exc_info=True
+        )
+        raise HTTPException(status_code=500, detail="Internal server error")
+    except RedisError as e:
+        logging.error(
+            f"Error getting AI summaries due to Redis error: {e}", exc_info=True
+        )
+        raise HTTPException(status_code=500, detail="Internal server error")
+    except ValidationError as e:
+        logging.error(
+            f"Error getting AI summaries due to validation error: {e}", exc_info=True
+        )
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.get(
+    "/ai/summaries/active",
+    summary="Get AI Summaries for Active Alerts",
+    description="Fetch current alerts and generate AI summaries for them on-demand",
+)
+@limiter.limit("20/minute")
+async def get_active_alert_summaries(
+    request: Request,  # noqa: ARG001  # pyright: ignore[reportUnusedParameter]
+) -> dict:
+    """Get AI summaries for all currently active alerts."""
+    if not AI_SUMMARIZER:
+        raise HTTPException(status_code=503, detail="AI summarizer not enabled")
+
+    try:
+        # Collect current alerts from MBTA API with retry logic
+        logger.info("Fetching active alerts for AI summarization...")
+        async with aiohttp.ClientSession(base_url=MBTA_V3_ENDPOINT) as session:
+            alerts = await fetch_alerts_with_retry(CONFIG, session)
+
+        if not alerts:
+            return {
+                "status": "no_alerts",
+                "message": "No active alerts to summarize",
+                "alert_count": 0,
+                "summaries": [],
+            }
+
+        logger.info(f"Found {len(alerts)} active alerts, generating AI summaries...")
+
+        # Generate AI summaries for all alerts
+        summaries = []
+        for alert in alerts:
+            try:
+                # Generate summary for this alert
+                summary = await AI_SUMMARIZER.force_generate_summary(
+                    [alert],  # Single alert
+                    config={
+                        "max_length": 300,
+                        "include_route_info": True,
+                        "include_severity": True,
+                    },
+                )
+
+                summaries.append(
+                    {
+                        "alert_id": alert.id,
+                        "alert_header": alert.attributes.header,
+                        "alert_short_header": alert.attributes.short_header,
+                        "alert_effect": alert.attributes.effect,
+                        "alert_severity": alert.attributes.severity,
+                        "alert_cause": alert.attributes.cause,
+                        "alert_timeframe": alert.attributes.timeframe,
+                        "ai_summary": summary,
+                        "model_used": AI_SUMMARIZER.config.model,
+                        "generated_at": datetime.now().isoformat(),
+                    }
+                )
+
+            except Exception as e:
+                logger.warning(f"Failed to generate summary for alert {alert.id}: {e}")
+                summaries.append(
+                    {
+                        "alert_id": alert.id,
+                        "alert_header": alert.attributes.header,
+                        "alert_short_header": alert.attributes.short_header,
+                        "alert_effect": alert.attributes.effect,
+                        "alert_severity": alert.attributes.severity,
+                        "alert_cause": alert.attributes.cause,
+                        "alert_timeframe": alert.attributes.timeframe,
+                        "ai_summary": f"Error generating summary: {str(e)}",
+                        "model_used": AI_SUMMARIZER.config.model,
+                        "generated_at": datetime.now().isoformat(),
+                        "error": True,
+                    }
+                )
+
+        # Cache the summaries for future use
+        try:
+            cache_key = f"ai:summaries:active:{int(datetime.now().timestamp() / 300)}"  # 5-minute cache
+            cache_data = {
+                "alerts": summaries,
+                "generated_at": datetime.now().isoformat(),
+                "alert_count": len(alerts),
+                "model_used": AI_SUMMARIZER.config.model,
+            }
+            await REDIS_CLIENT.setex(
+                cache_key, 300, json.dumps(cache_data)
+            )  # 5-minute TTL
+            logger.info(f"Cached active alert summaries with key: {cache_key}")
+        except Exception as e:
+            logger.warning(f"Failed to cache summaries: {e}")
+            # Don't fail the request if caching fails
+
+        return {
+            "status": "success",
+            "message": f"Generated AI summaries for {len(alerts)} active alerts",
+            "alert_count": len(alerts),
+            "model_used": AI_SUMMARIZER.config.model,
+            "generated_at": datetime.now().isoformat(),
+            "summaries": summaries,
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to get active alert summaries: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500, detail=f"Failed to generate summaries: {str(e)}"
+        )
+
+
+@app.get(
+    "/ai/summaries/cached",
+    summary="Get Cached AI Summaries",
+    description="Get the most recently cached AI summaries for alerts",
+)
+@limiter.limit("30/minute")
+async def get_cached_alert_summaries(
+    request: Request,  # noqa: ARG001  # pyright: ignore[reportUnusedParameter]
+) -> dict:
+    """Get the most recently cached AI summaries for alerts."""
+    if not AI_SUMMARIZER:
+        raise HTTPException(status_code=503, detail="AI summarizer not enabled")
+
+    try:
+        # Look for the most recent cached summaries
+        cache_pattern = "ai:summaries:active:*"
+        cache_keys = await REDIS_CLIENT.keys(cache_pattern)
+
+        if not cache_keys:
+            return {
+                "status": "no_cache",
+                "message": "No cached summaries found",
+                "cached_summaries": None,
+            }
+
+        # Sort keys by timestamp (newest first)
+        cache_keys.sort(reverse=True)
+        latest_key = cache_keys[0]
+
+        # Get the cached data
+        cached_data = await REDIS_CLIENT.get(latest_key)
+        if not cached_data:
+            return {
+                "status": "cache_expired",
+                "message": "Cached summaries have expired",
+                "cached_summaries": None,
+            }
+
+        # Parse the cached data
+        summaries_data = json.loads(cached_data)
+
+        return {
+            "status": "success",
+            "message": "Retrieved cached summaries",
+            "cache_key": latest_key,
+            "cached_summaries": summaries_data,
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to get cached summaries: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500, detail=f"Failed to retrieve cached summaries: {str(e)}"
+        )
+
+
+@app.get(
+    "/ai/summaries/alert/{alert_id}",
+    summary="Get AI Summary for Specific Alert",
+    description="Generate or retrieve AI summary for a specific alert by ID",
+)
+@limiter.limit("30/minute")
+async def get_alert_summary_by_id(
+    request: Request,  # noqa: ARG001  # pyright: ignore[reportUnusedParameter]
+    alert_id: str,
+) -> dict:
+    """Get AI summary for a specific alert by ID."""
+    if not AI_SUMMARIZER:
+        raise HTTPException(status_code=503, detail="AI summarizer not enabled")
+
+    try:
+        # First check if we have a cached summary for this alert
+        cache_pattern = "ai:summaries:active:*"
+        cache_keys = await REDIS_CLIENT.keys(cache_pattern)
+
+        # Look through cached summaries for this specific alert
+        for cache_key in sorted(cache_keys, reverse=True):
+            cached_data = await REDIS_CLIENT.get(cache_key)
+            if cached_data:
+                summaries_data = json.loads(cached_data)
+                for summary in summaries_data.get("summaries", []):
+                    if summary.get("alert_id") == alert_id:
+                        return {
+                            "status": "success",
+                            "message": "Retrieved cached summary",
+                            "cache_source": cache_key,
+                            "summary": summary,
+                        }
+
+        # If no cached summary found, try to fetch the alert and generate a summary
+        logger.info(
+            f"No cached summary found for alert {alert_id}, fetching from MBTA API..."
+        )
+
+        async with aiohttp.ClientSession(base_url=MBTA_V3_ENDPOINT) as session:
+            # Try to get alerts and find the specific one with retry logic
+            alerts = await fetch_alerts_with_retry(CONFIG, session)
+
+            target_alert = None
+            for alert in alerts:
+                if alert.id == alert_id:
+                    target_alert = alert
+                    break
+
+            if not target_alert:
+                raise HTTPException(
+                    status_code=404, detail=f"Alert {alert_id} not found"
+                )
+
+            # Generate summary for this specific alert
+            summary = await AI_SUMMARIZER.force_generate_summary(
+                [target_alert],
+                config={
+                    "max_length": 300,
+                    "include_route_info": True,
+                    "include_severity": True,
+                },
+            )
+
+            summary_data = {
+                "alert_id": target_alert.id,
+                "alert_header": target_alert.attributes.header,
+                "alert_short_header": target_alert.attributes.short_header,
+                "alert_effect": target_alert.attributes.effect,
+                "alert_severity": target_alert.attributes.severity,
+                "alert_cause": target_alert.attributes.cause,
+                "alert_timeframe": target_alert.attributes.timeframe,
+                "ai_summary": summary,
+                "model_used": AI_SUMMARIZER.config.model,
+                "generated_at": datetime.now().isoformat(),
+                "cache_source": "generated_on_demand",
+            }
+
+            return {
+                "status": "success",
+                "message": "Generated summary on-demand",
+                "summary": summary_data,
+            }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get summary for alert {alert_id}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500, detail=f"Failed to generate summary: {str(e)}"
+        )
+
+
+@app.post(
+    "/ai/summaries/bulk",
+    summary="Generate AI Summaries for Multiple Alerts",
+    description="Generate AI summaries for a list of specific alerts",
+)
+@limiter.limit("10/minute")
+async def generate_bulk_alert_summaries(
+    request: Request,  # noqa: ARG001  # pyright: ignore[reportUnusedParameter]
+    alert_ids: List[str],
+) -> dict:
+    """Generate AI summaries for multiple specific alerts."""
+    if not AI_SUMMARIZER:
+        raise HTTPException(status_code=503, detail="AI summarizer not enabled")
+
+    if not alert_ids:
+        raise HTTPException(status_code=400, detail="No alert IDs provided")
+
+    if len(alert_ids) > 20:
+        raise HTTPException(
+            status_code=400, detail="Maximum 20 alerts allowed per request"
+        )
+
+    try:
+        logger.info(f"Generating bulk summaries for {len(alert_ids)} alerts...")
+
+        # Fetch all alerts from MBTA API with retry logic
+        async with aiohttp.ClientSession(base_url=MBTA_V3_ENDPOINT) as session:
+            all_alerts = await fetch_alerts_with_retry(CONFIG, session)
+
+        # Find the requested alerts
+        target_alerts = []
+        for alert_id in alert_ids:
+            for alert in all_alerts:
+                if alert.id == alert_id:
+                    target_alerts.append(alert)
+                    break
+
+        if not target_alerts:
+            return {
+                "status": "no_alerts",
+                "message": "None of the requested alerts were found",
+                "requested_count": len(alert_ids),
+                "found_count": 0,
+                "summaries": [],
+            }
+
+        logger.info(f"Found {len(target_alerts)} of {len(alert_ids)} requested alerts")
+
+        # Generate summaries for each alert
+        summaries = []
+        for alert in target_alerts:
+            try:
+                summary = await AI_SUMMARIZER.force_generate_summary(
+                    [alert],
+                    config={
+                        "max_length": 300,
+                        "include_route_info": True,
+                        "include_severity": True,
+                    },
+                )
+
+                summaries.append(
+                    {
+                        "alert_id": alert.id,
+                        "alert_header": alert.attributes.header,
+                        "alert_short_header": alert.attributes.short_header,
+                        "alert_effect": alert.attributes.effect,
+                        "alert_severity": alert.attributes.severity,
+                        "alert_cause": alert.attributes.cause,
+                        "alert_timeframe": alert.attributes.timeframe,
+                        "ai_summary": summary,
+                        "model_used": AI_SUMMARIZER.config.model,
+                        "generated_at": datetime.now().isoformat(),
+                    }
+                )
+
+            except Exception as e:
+                logger.warning(f"Failed to generate summary for alert {alert.id}: {e}")
+                summaries.append(
+                    {
+                        "alert_id": alert.id,
+                        "alert_header": alert.attributes.header,
+                        "alert_short_header": alert.attributes.short_header,
+                        "alert_effect": alert.attributes.effect,
+                        "alert_severity": alert.attributes.severity,
+                        "alert_cause": alert.attributes.cause,
+                        "alert_timeframe": alert.attributes.timeframe,
+                        "ai_summary": f"Error generating summary: {str(e)}",
+                        "model_used": AI_SUMMARIZER.config.model,
+                        "generated_at": datetime.now().isoformat(),
+                        "error": True,
+                    }
+                )
+
+        return {
+            "status": "success",
+            "message": f"Generated summaries for {len(target_alerts)} alerts",
+            "requested_count": len(alert_ids),
+            "found_count": len(target_alerts),
+            "model_used": AI_SUMMARIZER.config.model,
+            "generated_at": datetime.now().isoformat(),
+            "summaries": summaries,
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to generate bulk summaries: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500, detail=f"Failed to generate summaries: {str(e)}"
+        )
+
+
+# ============================================================================
 # CACHE WARMING UTILITIES
 # ============================================================================
 
@@ -1250,7 +1920,7 @@ async def warm_all_caches_internal() -> dict[str, bool]:
     async def warm_alerts_cache() -> bool:
         try:
             async with aiohttp.ClientSession() as session:
-                alerts = await collect_alerts(CONFIG, session)
+                alerts = await fetch_alerts_with_retry(CONFIG, session)
                 feature_collection = FeatureCollection(alerts)
                 geojson_str = dumps(feature_collection, sort_keys=True)
 
@@ -1261,21 +1931,29 @@ async def warm_all_caches_internal() -> dict[str, bool]:
                         "api:alerts:json", ALERTS_CACHE_TTL, geojson_str
                     ),
                 )
-                
+
                 # Queue AI summary if enabled and there are alerts
                 if AI_SUMMARIZER and alerts:
                     try:
                         # Queue summary job with low priority for background processing
                         job_id = await AI_SUMMARIZER.queue_summary_job(
-                            alerts, 
+                            alerts,
                             priority=JobPriority.LOW,
-                            config={"max_length": 300, "include_route_info": True, "include_severity": True}
+                            config={
+                                "max_length": 300,
+                                "include_route_info": True,
+                                "include_severity": True,
+                            },
                         )
-                        logger.info(f"Queued AI summary job {job_id} for {len(alerts)} alerts during cache warming")
+                        logger.info(
+                            f"Queued AI summary job {job_id} for {len(alerts)} alerts during cache warming"
+                        )
                     except Exception as e:
-                        logger.warning(f"Failed to queue AI summary during cache warming: {e}")
+                        logger.warning(
+                            f"Failed to queue AI summary during cache warming: {e}"
+                        )
                         # Don't fail cache warming if AI summarization fails
-                
+
                 return True
         except (
             RedisError,
