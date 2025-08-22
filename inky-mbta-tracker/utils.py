@@ -3,12 +3,11 @@ import os
 from asyncio import Runner
 from datetime import datetime
 from queue import Queue
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from redis.asyncio import Redis
 
 if TYPE_CHECKING:
-    from schedule_tracker import ScheduleEvent, VehicleRedisSchema
     from shared_types.shared_types import TaskType
     from vehicles_background_worker import State
 
@@ -41,7 +40,7 @@ async def get_vehicles_data(r_client: Redis) -> dict:
 
 def thread_runner(
     target: "TaskType",
-    queue: "Queue[ScheduleEvent | VehicleRedisSchema] | None",
+    queue: Any,
     transit_time_min: int = 0,
     stop_id: Optional[str] = None,
     route: Optional[str] = None,

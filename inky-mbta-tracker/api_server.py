@@ -5,7 +5,7 @@ import os
 import threading
 from datetime import datetime, timedelta
 from functools import wraps
-from queue import Queue
+from queue import Full, Queue
 from typing import Any, Awaitable, Callable, List
 
 import aiohttp
@@ -25,11 +25,13 @@ from mbta_client import determine_station_id
 from mbta_responses import Alerts
 from prometheus_fastapi_instrumentator import Instrumentator
 from pydantic import BaseModel, ValidationError
+from redis.exceptions import RedisError
 from shared_types.shared_types import TaskType, TrackAssignment, TrackPrediction
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import StreamingResponse
 from track_predictor.track_predictor import TrackPredictionStats, TrackPredictor
 from utils import get_redis, get_vehicles_data, thread_runner
 from vehicles_background_worker import State
@@ -57,6 +59,7 @@ TRACK_PREDICTION_TIMEOUT = int(
     os.environ.get("IMT_TRACK_PREDICTION_TIMEOUT", "15")
 )  # seconds
 RATE_LIMITING_ENABLED = os.getenv("IMT_RATE_LIMITING_ENABLED", "true").lower() == "true"
+SSE_ENABLED = os.getenv("IMT_SSE_ENABLED", "true").lower() == "true"
 
 
 # ============================================================================
@@ -140,9 +143,9 @@ class TrafficMonitoringMiddleware(BaseHTTPMiddleware):
             try:
                 VEHICLES_QUEUE.put_nowait(State.TRAFFIC)
                 logger.debug("Queued TRAFFIC state for background worker")
-            except Exception as e:
+            except Full:
                 # Queue might be full, log but don't fail the request
-                logger.warning(f"Failed to queue TRAFFIC state: {e}")
+                logger.debug("Vehicles queue full; skipping TRAFFIC enqueue")
 
         response = await call_next(request)
         return response
@@ -370,7 +373,13 @@ async def generate_chained_track_predictions(
                 success=False,
                 prediction="Validation error occurred",
             )
-        except Exception as e:
+        except (
+            aiohttp.ClientError,
+            RedisError,
+            RuntimeError,
+            ValueError,
+            TypeError,
+        ) as e:
             logging.error("Unexpected error generating chained prediction", exc_info=e)
             return TrackPredictionResponse(
                 success=False,
@@ -532,11 +541,138 @@ async def get_vehicles(request: Request) -> dict:  # noqa: ARG001  # pyright: ig
             f"Error getting vehicles due to connection issue: {e}", exc_info=True
         )
         raise HTTPException(status_code=500, detail="Internal server error")
+    except RedisError as e:
+        logging.error(f"Error getting vehicles due to Redis error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error")
     except ValidationError as e:
         logging.error(
             f"Error getting vehicles due to validation error: {e}", exc_info=True
         )
         raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.get(
+    "/vehicles/stream",
+    summary="Stream Vehicle Positions (SSE)",
+    description=(
+        "Server-Sent Events stream of vehicle positions. Emits a new event whenever the"
+        " vehicles cache updates. Disable via IMT_SSE_ENABLED=false."
+    ),
+    response_class=StreamingResponse,
+)
+@limiter.limit("20/minute")
+async def stream_vehicles(
+    request: Request,  # noqa: ARG001  # pyright: ignore[reportUnusedParameter]
+    poll_interval: float = Query(
+        1.0, ge=0.1, le=10.0, description="Poll interval seconds"
+    ),
+    heartbeat_interval: float = Query(
+        15.0, ge=1.0, le=120.0, description="Heartbeat interval seconds"
+    ),
+    route: List[str] | None = Query(
+        None, description="Filter by one or more routes (repeat param)"
+    ),
+) -> StreamingResponse:
+    """
+    Stream vehicle updates as SSE. Sends the full FeatureCollection whenever the
+    cached payload changes. Also sends periodic heartbeats to keep the connection alive.
+    """
+    if not SSE_ENABLED:
+        raise HTTPException(status_code=404, detail="SSE is disabled")
+
+    cache_key = "api:vehicles"
+
+    def filter_payload_bytes(payload: bytes) -> bytes:
+        if not route:
+            return payload
+        try:
+            obj = json.loads(payload)
+            routes_set = {r.strip() for r in route if r and r.strip()}
+            features = obj.get("features", [])
+
+            def matches(r: str) -> bool:
+                for wanted in routes_set:
+                    if r == wanted or r.startswith(wanted):
+                        return True
+                return False
+
+            obj["features"] = [
+                f
+                for f in features
+                if matches(str(f.get("properties", {}).get("route", "")))
+            ]
+            return json.dumps(obj, separators=(",", ":")).encode("utf-8")
+        except (ValueError, TypeError):
+            return payload
+
+    async def event_generator() -> Any:
+        last_emitted: bytes | None = None
+        last_heartbeat = datetime.now()
+
+        # Send initial payload if available (or force-populate)
+        try:
+            data = await REDIS_CLIENT.get(cache_key)
+            if not data:
+                try:
+                    # Populate cache if empty
+                    initial = await get_vehicles_data(REDIS_CLIENT)
+                    data = json.dumps(initial).encode("utf-8")
+                except (
+                    RedisError,
+                    aiohttp.ClientError,
+                    ValidationError,
+                    ValueError,
+                    TypeError,
+                ):
+                    data = None
+            if data:
+                filtered = filter_payload_bytes(data)
+                last_emitted = filtered
+                yield f"event: vehicles\ndata: {filtered.decode('utf-8')}\n\n"
+        except RedisError as e:
+            logger.error("Failed to send initial SSE payload (redis)", exc_info=e)
+
+        while True:
+            # Client disconnect check
+            try:
+                if await request.is_disconnected():
+                    break
+            except (RuntimeError, asyncio.CancelledError):
+                break
+
+            # Keep the background worker in TRAFFIC state while a client is connected
+            try:
+                VEHICLES_QUEUE.put_nowait(State.TRAFFIC)
+            except Full:
+                # Non-fatal; queue has pending work already
+                pass
+
+            try:
+                current = await REDIS_CLIENT.get(cache_key)
+                if current:
+                    filtered = filter_payload_bytes(current)
+                    if filtered != last_emitted:
+                        last_emitted = filtered
+                        yield f"event: vehicles\ndata: {filtered.decode('utf-8')}\n\n"
+            except RedisError as e:
+                logger.error("SSE loop error while reading cache", exc_info=e)
+
+            # Heartbeat
+            now = datetime.now()
+            if (now - last_heartbeat).total_seconds() >= heartbeat_interval:
+                last_heartbeat = now
+                yield f": keep-alive {now.isoformat()}\n\n"
+
+            await asyncio.sleep(poll_interval)
+
+    headers = {
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+        "X-Accel-Buffering": "no",
+    }
+    return StreamingResponse(
+        event_generator(), media_type="text/event-stream", headers=headers
+    )
 
 
 @app.get(
@@ -588,6 +724,11 @@ async def get_vehicles_json(request: Request) -> Response:  # noqa: ARG001  # py
     except (ConnectionError, TimeoutError) as e:
         logging.error(
             f"Error getting vehicles JSON due to connection issue: {e}", exc_info=True
+        )
+        raise HTTPException(status_code=500, detail="Internal server error")
+    except RedisError as e:
+        logging.error(
+            f"Error getting vehicles JSON due to Redis error: {e}", exc_info=True
         )
         raise HTTPException(status_code=500, detail="Internal server error")
     except ValidationError as e:
@@ -667,6 +808,9 @@ async def get_alerts(request: Request) -> Response:  # noqa: ARG001  # pyright: 
             f"Error getting alerts due to connection issue: {e}", exc_info=True
         )
         raise HTTPException(status_code=500, detail="Internal server error")
+    except RedisError as e:
+        logging.error(f"Error getting alerts due to Redis error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error")
     except ValidationError as e:
         logging.error(
             f"Error getting alerts due to validation error: {e}", exc_info=True
@@ -722,6 +866,11 @@ async def get_alerts_json(request: Request) -> Response:  # noqa: ARG001  # pyri
     except (ConnectionError, TimeoutError) as e:
         logging.error(
             f"Error getting alerts JSON due to connection issue: {e}", exc_info=True
+        )
+        raise HTTPException(status_code=500, detail="Internal server error")
+    except RedisError as e:
+        logging.error(
+            f"Error getting alerts JSON due to Redis error: {e}", exc_info=True
         )
         raise HTTPException(status_code=500, detail="Internal server error")
     except ValidationError as e:
@@ -796,6 +945,9 @@ async def get_shapes(request: Request) -> Response:  # noqa: ARG001  # pyright: 
         logging.error(
             f"Error getting shapes due to connection issue: {e}", exc_info=True
         )
+        raise HTTPException(status_code=500, detail="Internal server error")
+    except RedisError as e:
+        logging.error(f"Error getting shapes due to Redis error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Internal server error")
     except ValidationError as e:
         logging.error(
@@ -889,7 +1041,13 @@ async def warm_all_caches_internal() -> dict[str, bool]:
                 ),
             )
             return True
-        except Exception as e:
+        except (
+            RedisError,
+            aiohttp.ClientError,
+            ValidationError,
+            ValueError,
+            TypeError,
+        ) as e:
             logging.error("Failed to warm vehicles cache", exc_info=e)
             return False
 
@@ -908,7 +1066,13 @@ async def warm_all_caches_internal() -> dict[str, bool]:
                     ),
                 )
                 return True
-        except Exception as e:
+        except (
+            RedisError,
+            aiohttp.ClientError,
+            ValidationError,
+            ValueError,
+            TypeError,
+        ) as e:
             logging.error("Failed to warm alerts cache", exc_info=e)
             return False
 
@@ -924,7 +1088,13 @@ async def warm_all_caches_internal() -> dict[str, bool]:
                 REDIS_CLIENT.setex("api:shapes:json", SHAPES_CACHE_TTL, geojson_str),
             )
             return True
-        except Exception as e:
+        except (
+            RedisError,
+            aiohttp.ClientError,
+            ValidationError,
+            ValueError,
+            TypeError,
+        ) as e:
             logging.error("Failed to warm shapes cache", exc_info=e)
             return False
 

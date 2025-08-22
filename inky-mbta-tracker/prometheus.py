@@ -24,6 +24,11 @@ redis_commands = Gauge("imt_redis_cmds", "Redis commands made", ["name"])
 
 queue_size = Gauge("imt_queue_size", "Schedule/vehicle queue size")
 
+# Ratio of queue depth to queue capacity (0..1). Useful for spotting backpressure.
+queue_backpressure_ratio = Gauge(
+    "imt_queue_backpressure_ratio", "Queue depth ratio (0..1) indicating backpressure"
+)
+
 queue_processed_item = Gauge(
     "imt_queue_processed_item", "Queue processed item", ["item_type"]
 )
@@ -74,4 +79,11 @@ track_negative_cache_hits = Counter(
     "imt_track_negative_cache_hits",
     "Track prediction negative cache hits to avoid redundant calculations",
     ["station_id", "route_id", "cache_reason", "instance"],
+)
+
+# Events eliminated by in-batch coalescing in the consumer
+coalesced_events_dropped = Counter(
+    "imt_coalesced_events_dropped",
+    "Events dropped due to in-batch coalescing",
+    ["item_type", "coalesce_by"],
 )

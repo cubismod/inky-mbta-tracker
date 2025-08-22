@@ -30,6 +30,25 @@ IMT_MQTT_PASS=mqtt_pass # change this!
 IMT_PROFILE_FILE=./profile.txt # optional to enable Yappi profiling around every hour
 ```
 
+### Performance Tuning (Async Consumers)
+
+The app runs producers and consumers on a single asyncio event loop. You can tune throughput and latency with these environment variables:
+
+- `IMT_PROCESS_QUEUE_THREADS`: Number of async consumer tasks that flush events to Redis (default: `1`). Increase to `2–4` if you observe backpressure warnings.
+- `IMT_PIPELINE_BATCH`: Base batch size per consumer flush (default: `200`). The effective batch automatically scales up to 5x when the queue is full.
+- `IMT_PIPELINE_TIMEOUT_SEC`: Base flush timeout in seconds (default: `0.2`). Timeout adapts down as the queue fills to keep latency reasonable.
+- `IMT_QUEUE_BACKPRESSURE_RATIO`: Fraction of the queue capacity considered “high” (default: `0.8`).
+- `IMT_QUEUE_BACKPRESSURE_SUSTAIN_SEC`: Seconds that queue depth must remain above the high-water mark before logging a warning (default: `5`).
+- `IMT_QUEUE_BACKPRESSURE_RELOG_SEC`: Minimum seconds between repeated backpressure warnings (default: `60`).
+
+Consumers batch and coalesce events before writing to Redis to reduce load:
+
+- Vehicles are coalesced by `vehicle id` to the last update within the batch.
+- Schedule events are coalesced by “trip key” `(trip_id, stop)` to the last update within the batch. Events that lack trip context (including most removals) are coalesced by `event id`.
+- MQTT publishing is offloaded to a background thread to avoid blocking the event loop.
+
+If backpressure warnings persist, consider raising `IMT_PROCESS_QUEUE_THREADS`, increasing `IMT_PIPELINE_BATCH`, or reviewing Redis/network capacity.
+
 From there, create a `config.json` like so to the following schema:
 
 ```json5
@@ -74,6 +93,8 @@ the Prom metrics & a Loki datasource for logs.
 Spin up the local Redis server using the provided docker compose file.
 
 Then run `task run` to start up the tracker.
+
+Note: On Linux/macOS, `uvloop` is enabled automatically when available for faster asyncio performance. If not present, the default loop is used.
 
 ## Track Prediction Feature
 
