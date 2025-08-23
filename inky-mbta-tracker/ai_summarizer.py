@@ -70,6 +70,10 @@ class SummarizationRequest(BaseModel):
         default="text",
         description="Output format for the summary (text, markdown, json)",
     )
+    style: str = Field(
+        default="comprehensive",
+        description="Summary style - 'comprehensive' (detailed) or 'concise' (brief, 1-2 sentences per alert)",
+    )
 
 
 class SummarizationResponse(BaseModel):
@@ -122,8 +126,10 @@ class SummaryJobQueue:
             max_queue_size: Maximum jobs in queue to prevent memory issues
             summarizer: Reference to the parent AISummarizer for API calls
         """
-        self.max_concurrent_jobs = max_concurrent_jobs
-        self.max_queue_size = max_queue_size
+        self.max_queue_size = 100
+        self.max_concurrent_jobs = (
+            1  # Disable concurrent processing - queue Ollama requests
+        )
         self.summarizer = summarizer  # Reference to parent summarizer
         self.jobs: Dict[str, SummaryJob] = {}
         self.pending_jobs: List[str] = []
@@ -323,17 +329,48 @@ class SummaryJobQueue:
         combined = "|".join(alert_strings)
         return hashlib.sha256(combined.encode()).hexdigest()[:16]
 
+    def _is_error_message(self, summary: str) -> bool:
+        """
+        Check if a summary is an error message that shouldn't be cached.
+
+        Args:
+            summary: The summary text to check
+
+        Returns:
+            True if it's an error message, False if it's a valid summary
+        """
+        error_indicators = [
+            "AI service temporarily unavailable",
+            "Please try again later",
+            "Connection error",
+            "Data error",
+            "Runtime error",
+            "Unexpected error",
+            "Unable to reach AI service",
+            "Invalid alert format",
+            "AI summarizer not available",
+            "No alerts to summarize",
+            "Error generating summary",
+            "Failed to generate summary",
+        ]
+
+        summary_lower = summary.lower()
+        return any(indicator.lower() in summary_lower for indicator in error_indicators)
+
     async def _worker_loop(self) -> None:
         """Main worker loop that processes jobs."""
         while self._running:
             try:
-                # Check if we can process more jobs
+                # Check if we can process more jobs (only one at a time to queue Ollama requests)
                 if (
                     len(self.running_jobs) < self.max_concurrent_jobs
                     and self.pending_jobs
                 ):
                     job_id = self.pending_jobs.pop(0)
                     asyncio.create_task(self._process_job(job_id))
+                    logger.debug(
+                        f"Queued job {job_id} for sequential Ollama processing"
+                    )
 
                 # Clean up completed jobs (keep last 100)
                 if len(self.completed_jobs) > 100:
@@ -392,14 +429,22 @@ class SummaryJobQueue:
                 logger.info(f"Job {job_id} delayed for {remaining:.1f}s due to backoff")
                 await asyncio.sleep(remaining)
 
-            # Process the job
-            logger.info(f"Processing summary job {job_id}")
+            # Process the job (sequential - only one Ollama request at a time)
+            logger.info(
+                f"Processing summary job {job_id} (sequential Ollama processing)"
+            )
 
             # Generate the actual AI summary
             summary = await self._generate_summary(job.alerts, job.config)
 
-            # Store the summary in Redis
-            await self._store_summary_in_redis(job.alerts, summary, job.config)
+            # Only store successful summaries in Redis (not error messages)
+            if not self._is_error_message(summary):
+                await self._store_summary_in_redis(job.alerts, summary, job.config)
+                logger.info(f"Stored successful summary in Redis for job {job_id}")
+            else:
+                logger.warning(
+                    f"Not storing error message in Redis for job {job_id}: {summary}"
+                )
 
             job.result = summary
             job.status = JobStatus.COMPLETED
@@ -456,12 +501,24 @@ class SummaryJobQueue:
         try:
             # Use the parent summarizer to generate the actual summary
             if self.summarizer:
+                # Determine if this is an individual alert summary (single alert)
+                # Individual summaries should use concise style, group summaries use comprehensive
+                style = "concise" if len(alerts) == 1 else "comprehensive"
+
                 # Create a summarization request
                 request = SummarizationRequest(
                     alerts=alerts,
                     include_route_info=config.get("include_route_info", True),
                     include_severity=config.get("include_severity", True),
+                    style=style,
                 )
+
+                # For individual alerts, use sentence_limit if specified in config
+                if len(alerts) == 1 and "sentence_limit" in config:
+                    # Call the individual alert method with sentence_limit
+                    return await self.summarizer.summarize_individual_alert(
+                        alerts[0], style=style, sentence_limit=config["sentence_limit"]
+                    )
 
                 # Use the parent summarizer's method
                 response = await self.summarizer.summarize_alerts(request)
@@ -661,27 +718,150 @@ class AISummarizer:
             if attrs.timeframe:
                 parts.append(f"   Timeframe: {attrs.timeframe}")
 
-            if attrs.cause:
+            if attrs.cause and attrs.cause != "UNKNOWN_CAUSE":
                 parts.append(f"   Cause: {attrs.cause}")
 
             prompt_parts.append("\n".join(parts))
 
         prompt_parts.append(
-            "\nPlease provide a clear, structured summary that covers each alert individually."
-            "\nDo not directly respond to this prompt with 'Okay', 'Got it', or 'I understand'. or anything else."
+            "\nPlease provide a comprehensive, structured summary that covers each alert individually with detailed analysis."
+            "\nDo not directly respond to this prompt with 'Okay', 'Got it', 'I understand', or anything else."
             "\nConvert IDs like 'UNKNOWN_CAUSE' to 'Unknown Cause'."
             "\nUse proper grammar and punctuation."
-            "\nFor each alert, provide a brief summary of the key details, then provide an overall assessment."
-            "\nFocus on the most important details and provide a complete summary. Do not stop mid-sentence."
-            "\n\nIMPORTANT: Generate a complete summary covering all alerts. Do not truncate or stop early."
-            "\nInclude specific details for each alert and provide a comprehensive overview."
+            "\n\nFor each alert, provide a detailed summary including:"
+            "\n- What the issue is and its scope"
+            "\n- Impact on transit service and commuters"
+            "\n- Affected routes, stations, or areas"
+            "\n- Severity level and expected duration"
+            "\n- Any specific instructions or alternatives for passengers"
+            "\n\nAfter covering all individual alerts, provide:"
+            "\n- Overall assessment of the transit system status"
+            "\n- Common themes or patterns across alerts"
+            "\n- Recommendations for commuters"
+            "\n- Priority areas requiring attention"
+            "\n\nIMPORTANT: Generate a complete, comprehensive summary covering all alerts thoroughly."
+            "\nDo not truncate or stop early. Provide detailed analysis for each alert."
             "\n\nExpected format:"
-            "\n1. Brief overview of the situation"
-            "\n2. Individual alert summaries (one paragraph per alert)"
-            "\n3. Overall assessment and common themes"
-            "\n4. Recommendations or key points for commuters"
-            "\n\nMake sure to cover ALL alerts completely. Do not stop until you have provided a full summary."
+            "\n1. Executive summary of the overall situation"
+            "\n2. Detailed individual alert analysis (comprehensive coverage per alert)"
+            "\n3. Systemic analysis and patterns"
+            "\n4. Commuter impact assessment"
+            "\n5. Recommendations and key points for travelers"
+            "\n\nMake sure to cover ALL alerts completely with full details. Do not stop until you have provided a comprehensive summary."
         )
+
+        return "\n\n".join(prompt_parts)
+
+    def _format_alerts_for_prompt_adaptive(
+        self, alerts: List[AlertResource], style: str = "comprehensive"
+    ) -> str:
+        """
+        Format alerts for AI prompt with adaptive style selection.
+
+        Args:
+            alerts: List of alerts to format
+            style: Prompt style - "comprehensive" (detailed) or "concise" (brief)
+
+        Returns:
+            Formatted prompt text
+        """
+        if not alerts:
+            return "No alerts to summarize."
+
+        # Start with alert data
+        prompt_parts = [
+            f"Please analyze {len(alerts)} MBTA transit alerts and provide a summary."
+        ]
+
+        # Add alert details
+        for i, alert in enumerate(alerts, 1):
+            if not self._validate_alert_structure(alert):
+                continue
+
+            attrs = alert.attributes
+            parts = [f"\nAlert {i}:"]
+
+            if attrs.header:
+                parts.append(f"   Header: {attrs.header}")
+
+            if hasattr(attrs, "short_header") and attrs.short_header:
+                parts.append(f"   Short Header: {attrs.short_header}")
+
+            if hasattr(attrs, "effect") and attrs.effect:
+                parts.append(f"   Effect: {attrs.effect}")
+
+            if hasattr(attrs, "severity") and attrs.severity is not None:
+                severity_map = {
+                    1: "Minor",
+                    2: "Minor",
+                    3: "Minor",
+                    4: "Moderate",
+                    5: "Moderate",
+                    6: "Moderate",
+                    7: "Major",
+                    8: "Major",
+                    9: "Major",
+                    10: "Severe",
+                }
+                severity_text = severity_map.get(
+                    attrs.severity, f"Level {attrs.severity}"
+                )
+                parts.append(f"   Severity: {severity_text}")
+
+            if attrs.timeframe:
+                parts.append(f"   Timeframe: {attrs.timeframe}")
+
+            if attrs.cause and attrs.cause != "UNKNOWN_CAUSE":
+                parts.append(f"   Cause: {attrs.cause}")
+
+            prompt_parts.append("\n".join(parts))
+
+        # Add style-specific instructions
+        if style == "comprehensive":
+            prompt_parts.append(
+                "\nPlease provide a comprehensive, structured summary that covers each alert individually with detailed analysis."
+                "\nDo not directly respond to this prompt with 'Okay', 'Got it', 'I understand', or anything else."
+                "\nConvert IDs like 'UNKNOWN_CAUSE' to 'Unknown Cause'."
+                "\nUse proper grammar and punctuation."
+                "\n\nFor each alert, provide a detailed summary including:"
+                "\n- What the issue is and its scope"
+                "\n- Impact on transit service and commuters"
+                "\n- Affected routes, stations, or areas"
+                "\n- Severity level and expected duration"
+                "\n- Any specific instructions or alternatives for passengers"
+                "\n\nAfter covering all individual alerts, provide:"
+                "\n- Overall assessment of the transit system status"
+                "\n- Common themes or patterns across alerts"
+                "\n- Recommendations for commuters"
+                "\n- Priority areas requiring attention"
+                "\n\nIMPORTANT: Generate a complete, comprehensive summary covering all alerts thoroughly."
+                "\nDo not truncate or stop early. Provide detailed analysis for each alert."
+                "\n\nExpected format:"
+                "\n1. Executive summary of the overall situation"
+                "\n2. Detailed individual alert analysis (comprehensive coverage per alert)"
+                "\n3. Systemic analysis and patterns"
+                "\n4. Commuter impact assessment"
+                "\n5. Recommendations and key points for travelers"
+                "\n\nMake sure to cover ALL alerts completely with full details. Do not stop until you have provided a comprehensive summary."
+            )
+        else:  # concise style
+            prompt_parts.append(
+                "\nPlease provide a concise, focused summary that covers each alert in 1-2 sentences maximum."
+                "\nDo not directly respond to this prompt with 'Okay', 'Got it', 'I understand', or anything else."
+                "\nConvert IDs like 'UNKNOWN_CAUSE' to 'Unknown Cause'."
+                "\nUse proper grammar and punctuation."
+                "\n\nFor each alert, provide a brief summary that:"
+                "\n- Clearly explains what the issue is"
+                "\n- Describes the impact on transit service"
+                "\n- Mentions affected routes/areas if relevant"
+                "\n- Uses professional, informative language"
+                "\n- Avoids conversational phrases or unnecessary details"
+                "\n\nIMPORTANT: Keep summaries brief and focused. Each alert should be summarized in 1-2 sentences maximum."
+                "\n\nExpected format:"
+                "\n1. Brief overview (1 sentence)"
+                "\n2. Individual alert summaries (1-2 sentences each)"
+                "\n\nKeep it concise and to the point. Be specific about locations, routes, vehicle numbers, and times."
+            )
 
         return "\n\n".join(prompt_parts)
 
@@ -938,12 +1118,11 @@ class AISummarizer:
                 # Clean up conversational starters
                 cleaned_content = self._clean_model_response(cleaned_content)
                 # Check for truncation
-                final_content = self._detect_truncation(cleaned_content, prompt)
-                logger.debug(
-                    f"Generated summary content (length: {len(final_content)}):\n{final_content}"
-                )
-                logger.debug(f"Raw Ollama response: {response}")
-                return final_content
+                # logger.debug(
+                #     f"Generated summary content (length: {len(final_content)}):\n{final_content}"
+                # )
+                # logger.debug(f"Raw Ollama response: {response}")
+                return cleaned_content
             elif hasattr(response, "content"):
                 content = response.content
                 if content is None:
@@ -952,24 +1131,20 @@ class AISummarizer:
                 # Clean up conversational starters
                 cleaned_content = self._clean_model_response(cleaned_content)
                 # Check for truncation
-                final_content = self._detect_truncation(cleaned_content, prompt)
-                logger.debug(
-                    f"Generated summary content (length: {len(final_content)}):\n{final_content}"
-                )
-                logger.debug(f"Raw Ollama response: {response}")
-                return final_content
+
+                return cleaned_content
             else:
                 # Fallback: try to get content from response directly
                 fallback_content = str(response).strip()
                 # Clean up conversational starters
                 fallback_content = self._clean_model_response(fallback_content)
                 # Check for truncation
-                final_content = self._detect_truncation(fallback_content, prompt)
-                logger.debug(
-                    f"Generated summary content (fallback, length: {len(final_content)}):\n{final_content}"
-                )
-                logger.debug(f"Raw Ollama response: {response}")
-                return final_content
+                # final_content = self._detect_truncation(fallback_content, prompt)
+                # logger.debug(
+                #     f"Generated summary content (fallback, length: {len(final_content)}):\n{final_content}"
+                # )
+                # logger.debug(f"Raw Ollama response: {response}")
+                return fallback_content
 
         except (ConnectionError, TimeoutError) as e:
             raise ConnectionError(f"Failed to connect to Ollama API: {e}")
@@ -977,41 +1152,6 @@ class AISummarizer:
             raise ValueError(f"Invalid response from Ollama API: {e}")
         except Exception as e:
             raise RuntimeError(f"Unexpected error calling Ollama API: {e}")
-
-    def _detect_truncation(self, summary: str, prompt: str) -> str:
-        """Detect if a summary appears to be truncated and add a note."""
-        # Check for common truncation indicators
-        truncation_indicators = [
-            "Do not stop mid-sentence",
-            "Do not truncate",
-            "complete summary",
-            "full summary",
-            "all alerts completely",
-        ]
-
-        # If the summary ends with any of these phrases, it's likely truncated
-        summary_lower = summary.lower()
-        for indicator in truncation_indicators:
-            if summary_lower.endswith(indicator.lower()):
-                logger.warning(
-                    f"Summary appears to be truncated, ending with: {indicator}"
-                )
-                return (
-                    summary
-                    + "\n\n[Note: This summary appears to have been truncated. Please regenerate for complete coverage.]"
-                )
-
-        # Check if summary is suspiciously short for the number of alerts
-        if len(summary) < 200:  # Very short summary
-            logger.warning(
-                f"Summary is very short ({len(summary)} chars), may be truncated"
-            )
-            return (
-                summary
-                + "\n\n[Note: This summary appears to be incomplete. Please regenerate for complete coverage.]"
-            )
-
-        return summary
 
     async def queue_summary_job(
         self,
@@ -1081,10 +1221,15 @@ class AISummarizer:
                     processing_time_ms=0.0,
                 )
 
-            # Format alerts into a prompt for group summary
-            prompt = self._format_alerts_for_prompt(
-                request.alerts, request.include_route_info, request.include_severity
-            )
+            # Format alerts for the AI prompt
+            if request.style == "concise":
+                prompt = self._format_alerts_for_prompt_adaptive(
+                    request.alerts, "concise"
+                )
+            else:
+                prompt = self._format_alerts_for_prompt_adaptive(
+                    request.alerts, "comprehensive"
+                )
 
             # Generate group summary using Ollama
             summary = await self._call_ollama(prompt)
@@ -1138,87 +1283,156 @@ class AISummarizer:
             processing_time_ms=round(processing_time, 2),
         )
 
-    async def summarize_individual_alert(self, alert: AlertResource, priority: JobPriority = JobPriority.NORMAL) -> str:
+    def _validate_alert_structure(self, alert: AlertResource) -> bool:
+        """
+        Validate that an alert has the required structure for summarization.
+
+        Args:
+            alert: The alert to validate
+
+        Returns:
+            True if the alert is valid, False otherwise
+        """
+        try:
+            # Check if alert has required attributes
+            if not hasattr(alert, "id") or not alert.id:
+                return False
+
+            if not hasattr(alert, "attributes") or not alert.attributes:
+                return False
+
+            if not hasattr(alert.attributes, "header") or not alert.attributes.header:
+                return False
+
+            return True
+
+        except Exception as e:
+            logger.error(f"Error validating alert structure: {e}")
+            return False
+
+    async def summarize_individual_alert(
+        self,
+        alert: AlertResource,
+        priority: JobPriority = JobPriority.NORMAL,
+        style: str = "concise",
+        sentence_limit: int = 2,
+    ) -> str:
         """
         Generate an AI summary for a single alert.
-        
+
         Args:
             alert: The alert to summarize
             priority: Job priority for processing
-            
+            style: Summary style - 'concise' (default, 1-2 sentences) or 'comprehensive' (detailed)
+            sentence_limit: Maximum number of sentences for the summary (1 for ultra-concise, 2+ for standard)
+
         Returns:
             The generated summary text
         """
         try:
             # Validate the alert structure
             if not self._validate_alert_structure(alert):
-                logger.warning(f"Skipping invalid alert {alert.id}: missing required attributes")
+                logger.warning(
+                    f"Skipping invalid alert {alert.id}: missing required attributes"
+                )
                 return f"Unable to process alert {alert.id}. Please check alert format."
-            
+
             # Format the single alert for the prompt
-            alert_text = self._format_single_alert_for_prompt(alert)
-            
+            if style == "concise":
+                alert_text = self._format_single_alert_for_prompt(alert, sentence_limit)
+            else:
+                # Use the adaptive method for comprehensive individual summaries
+                alert_text = self._format_alerts_for_prompt_adaptive(
+                    [alert], "comprehensive"
+                )
+
             # Generate the summary using Ollama
             summary = await self._call_ollama(alert_text)
-            
+
             if not summary:
                 return f"Unable to generate summary for alert {alert.id}."
-            
+
             # Clean the model response
             cleaned_summary = self._clean_model_response(summary)
-            
-            logger.info(f"Generated individual summary for alert {alert.id}")
+
+            logger.info(f"Generated {style} individual summary for alert {alert.id}")
             return cleaned_summary
-            
+
         except Exception as e:
-            logger.error(f"Error generating individual summary for alert {alert.id}: {e}")
+            logger.error(
+                f"Error generating individual summary for alert {alert.id}: {e}"
+            )
             return f"Error generating summary for alert {alert.id}: {str(e)}"
-    
-    def _format_single_alert_for_prompt(self, alert: AlertResource) -> str:
+
+    def _format_single_alert_for_prompt(
+        self, alert: AlertResource, sentence_limit: int = 2
+    ) -> str:
         """
         Format a single alert for the AI prompt.
-        
+
         Args:
             alert: The alert to format
-            
+            sentence_limit: Maximum number of sentences for the summary
+
         Returns:
             Formatted alert text for the prompt
         """
         try:
             # Extract alert information
-            alert_id = getattr(alert, 'id', 'Unknown ID')
-            header = getattr(alert.attributes, 'header', 'No header available')
-            description = getattr(alert.attributes, 'description', 'No description available')
-            severity = getattr(alert.attributes, 'severity', 'Unknown severity')
-            
+            alert_id = getattr(alert, "id", "Unknown ID")
+            header = getattr(alert.attributes, "header", "No header available")
+            short_header = getattr(
+                alert.attributes, "short_header", "No short header available"
+            )
+            effect = getattr(
+                alert.attributes, "effect", "No effect information available"
+            )
+            severity = getattr(alert.attributes, "severity", "Unknown severity")
+            cause = getattr(alert.attributes, "cause", None)
+
             # Get route information if available
             route_info = ""
-            if hasattr(alert, 'relationships') and alert.relationships:
-                routes = alert.relationships.get('route', {}).get('data', [])
+            if hasattr(alert, "relationships") and alert.relationships:
+                routes = alert.relationships.get("route", {}).get("data", [])
                 if routes:
-                    route_names = [route.get('id', 'Unknown route') for route in routes]
+                    route_names = [route.get("id", "Unknown route") for route in routes]
                     route_info = f"Affected routes: {', '.join(route_names)}"
-            
-            # Format the prompt for a single alert
-            prompt = f"""Please provide a clear, concise summary of this MBTA transit alert:
+
+                    # Format the prompt for a single alert
+            sentence_text = (
+                "1 sentence"
+                if sentence_limit == 1
+                else f"{sentence_limit} sentences maximum"
+            )
+            prompt = f"""Please provide a concise, focused summary of this MBTA transit alert in {sentence_text}. Include the locations affected, cause of the delay, and vehicle numbers or IDs if available.
 
 Alert ID: {alert_id}
 Header: {header}
-Description: {description}
-Severity: {severity}
+Short Header: {short_header}
+Effect: {effect}
+Severity: {severity}"""
+
+            # Only add cause if it's not UNKNOWN_CAUSE
+            if cause and cause != "UNKNOWN_CAUSE":
+                prompt += f"\nCause: {cause}"
+
+            prompt += f"""
 {route_info}
 
-Please provide a summary that:
-1. Explains what the issue is in simple terms
+IMPORTANT: Provide a single, concise summary in {sentence_text} that:
+1. Clearly explains what the issue is
 2. Describes the impact on transit service
-3. Mentions any affected routes or areas
-4. Is written in a professional, informative tone
-5. Avoids conversational language or unnecessary phrases
+3. Mentions affected routes/areas if relevant
+4. Uses professional, informative language
+5. Avoids conversational phrases or unnecessary details
+6. If this is a commuter rail alert, include the specific train number.
+7. Don't repeat the same information in multiple locations.
+8. For multi-day alerts do not mention individual train numbers or departures.
 
-Summary:"""
+Keep it brief and focused."""
 
             return prompt
-            
+
         except Exception as e:
             logger.error(f"Error formatting single alert for prompt: {e}")
             return f"Error formatting alert {getattr(alert, 'id', 'Unknown')}: {str(e)}"
@@ -1246,61 +1460,69 @@ Summary:"""
             logger.warning(f"Ollama health check failed due to unexpected error: {e}")
             return False
 
-    def queue_individual_alert_summary_job(self, alert: AlertResource, priority: JobPriority = JobPriority.NORMAL) -> str:
+    def queue_individual_alert_summary_job(
+        self,
+        alert: AlertResource,
+        priority: JobPriority = JobPriority.HIGH,
+        sentence_limit: int = 2,
+    ) -> str:
         """
         Queue a job to generate an individual alert summary.
-        
+
         Args:
             alert: The alert to summarize
             priority: Job priority for processing
-            
+            sentence_limit: Maximum number of sentences for the summary (1 for ultra-concise, 2+ for standard)
+
         Returns:
             Job ID for tracking
         """
         try:
-            # Create a unique job ID for this individual alert
-            job_id = f"individual_{alert.id}_{int(time.time())}"
-            
-            # Create the job
-            job = SummaryJob(
-                id=job_id,
-                alerts=[alert], # Changed to a single alert
-                priority=priority,
-                created_at=datetime.utcnow(),
-                status=JobStatus.PENDING,
-                job_type="individual_alert"
+            # Use the existing job queue mechanism for individual alerts
+            # The job queue will handle creating the SummaryJob internally
+            job_id = asyncio.create_task(self.job_queue.add_job([alert], priority))
+
+            logger.info(
+                f"Queued individual alert summary job for alert {alert.id}, job_id: {job_id}"
             )
-            
-            # Add to the queue
-            self.job_queue._add_job_to_queue(job) # Assuming _add_job_to_queue is a method of SummaryJobQueue
-            logger.info(f"Queued individual alert summary job {job_id} for alert {alert.id}")
-            
-            return job_id
-            
+            return f"individual_{alert.id}_{int(time.time())}"
+
         except Exception as e:
             logger.error(f"Error queuing individual alert summary job: {e}")
             return ""
-    
-    def queue_bulk_individual_summaries(self, alerts: List[AlertResource], priority: JobPriority = JobPriority.NORMAL) -> List[str]:
+
+    def queue_bulk_individual_summaries(
+        self,
+        alerts: List[AlertResource],
+        priority: JobPriority = JobPriority.LOW,
+        sentence_limit: int = 2,
+    ) -> List[str]:
         """
-        Queue jobs to generate individual summaries for multiple alerts.
-        
+        Queue multiple individual alert summary jobs.
+
         Args:
-            alerts: List of alerts to summarize
+            alerts: List of alerts to summarize individually
             priority: Job priority for processing
-            
+            sentence_limit: Maximum number of sentences for each summary (1 for ultra-concise, 2+ for standard)
+
         Returns:
-            List of job IDs for tracking
+            List of job IDs that were queued
         """
         job_ids = []
-        
+
         for alert in alerts:
             if self._validate_alert_structure(alert):
-                job_id = self.queue_individual_alert_summary_job(alert, priority)
+                # Create config with sentence_limit for individual alerts
+                config = {"sentence_limit": sentence_limit}
+                job_id = asyncio.create_task(
+                    self.job_queue.add_job([alert], priority, config)
+                )
                 if job_id:
-                    job_ids.append(job_id)
+                    job_ids.append(f"individual_{alert.id}_{int(time.time())}")
             else:
-                logger.warning(f"Skipping invalid alert {alert.id} for individual summary")
-        
+                logger.warning(
+                    f"Skipping invalid alert {alert.id} for individual summary"
+                )
+
         logger.info(f"Queued {len(job_ids)} individual alert summary jobs")
         return job_ids
