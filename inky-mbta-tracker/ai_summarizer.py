@@ -110,6 +110,14 @@ class OllamaConfig(BaseModel):
         default=True,
         description="Only apply similarity validation to responses with 1 sentence or less",
     )
+    enable_summary_rewriting: bool = Field(
+        default=True,
+        description="Enable automatic summary rewriting for clarity and readability",
+    )
+    rewrite_sentence_tolerance: int = Field(
+        default=1,
+        description="Maximum allowed sentence count difference between original and rewritten summaries (0 = exact match)",
+    )
 
 
 class SummaryJobQueue:
@@ -580,6 +588,8 @@ class AISummarizer:
         env_cache_ttl = os.getenv("OLLAMA_CACHE_TTL")
         env_min_similarity = os.getenv("OLLAMA_MIN_SIMILARITY")
         env_validate_only_short = os.getenv("OLLAMA_VALIDATE_ONLY_SHORT_RESPONSES")
+        env_enable_rewriting = os.getenv("OLLAMA_ENABLE_SUMMARY_REWRITING")
+        env_sentence_tolerance = os.getenv("OLLAMA_REWRITE_SENTENCE_TOLERANCE")
 
         # If all required environment variables are set, use them
         if env_base_url and env_model:
@@ -595,6 +605,8 @@ class AISummarizer:
                 validate_only_short_responses=self._safe_bool(
                     env_validate_only_short, True
                 ),
+                enable_summary_rewriting=self._safe_bool(env_enable_rewriting, True),
+                rewrite_sentence_tolerance=self._safe_int(env_sentence_tolerance, 1),
             )
 
         # Fallback to config.json if environment variables are not complete
@@ -624,6 +636,12 @@ class AISummarizer:
                         validate_only_short_responses=ollama_config.get(
                             "validate_only_short_responses", True
                         ),
+                        enable_summary_rewriting=ollama_config.get(
+                            "enable_summary_rewriting", True
+                        ),
+                        rewrite_sentence_tolerance=ollama_config.get(
+                            "rewrite_sentence_tolerance", 1
+                        ),
                     )
         except Exception as e:
             logger.warning(f"Failed to load config from {config_path}: {e}")
@@ -639,6 +657,8 @@ class AISummarizer:
             cache_ttl=3600,
             min_similarity_threshold=0.105,
             validate_only_short_responses=True,
+            enable_summary_rewriting=True,
+            rewrite_sentence_tolerance=1,
         )
 
     def _safe_int(self, value: Optional[str], default: int) -> int:
@@ -888,6 +908,7 @@ class AISummarizer:
                 "\nDo not directly respond to this prompt with 'Okay', 'Got it', 'I understand', or anything else."
                 "\nConvert IDs like 'UNKNOWN_CAUSE' to 'Unknown Cause'."
                 "\nUse proper grammar and punctuation."
+                "\nDo not include [Train Number] in your response if the information is not available."
                 "\n\nFor each alert, provide a brief summary that:"
                 "\n- Clearly explains what the issue is"
                 "\n- Describes the impact on transit service"
@@ -1202,6 +1223,173 @@ class AISummarizer:
 
         return cleaned_summary
 
+    async def _analyze_and_rewrite_summary(
+        self,
+        summary: str,
+        original_alerts: Optional[List[AlertResource]] = None,
+        style: str = "comprehensive",
+    ) -> str:
+        """
+        Analyze the generated summary and rewrite it for clarity and readability.
+
+        Args:
+            summary: The initial AI-generated summary to analyze
+            original_alerts: Original alerts for context (optional)
+            style: Summary style for rewriting guidance
+
+        Returns:
+            Rewritten summary with improved clarity and readability
+        """
+        if not summary or len(summary.strip()) < 20:
+            logger.debug("Summary too short for rewriting, returning original")
+            return summary
+
+        try:
+            # Create a prompt for analyzing and rewriting the summary
+            rewrite_prompt = self._create_rewrite_prompt(
+                summary, original_alerts, style
+            )
+
+            # Call Ollama for the rewrite
+            client = self._get_client()
+            response = await client.chat(
+                model=self.config.model,
+                messages=[{"role": "user", "content": rewrite_prompt}],
+                options={
+                    "temperature": 0.05,  # Lower temperature for more focused rewriting
+                    "top_p": 0.9,
+                    "top_k": 40,
+                    "num_predict": 1500,
+                    "stop": ["###", "---"],
+                    "repeat_penalty": 1.1,
+                    "num_ctx": 4096,
+                },
+            )
+
+            # Extract the rewritten content
+            if hasattr(response, "message") and hasattr(response.message, "content"):
+                rewritten_content = response.message.content
+            elif hasattr(response, "content"):
+                rewritten_content = response.content
+            else:
+                rewritten_content = str(response)
+
+            if rewritten_content and rewritten_content.strip():
+                cleaned_rewrite = self._clean_model_response(
+                    rewritten_content.strip(),
+                    summary,  # Use original summary as input for validation
+                    use_config_threshold=False,  # Skip similarity validation for rewrites
+                )
+
+                # Check sentence length similarity and content difference
+                original_sentences = self._count_sentences(summary)
+                rewritten_sentences = self._count_sentences(cleaned_rewrite)
+
+                # Only use rewrite if sentence count is within tolerance and content is different
+                sentence_diff = abs(original_sentences - rewritten_sentences)
+                tolerance = self.config.rewrite_sentence_tolerance
+                rewritten_lower = cleaned_rewrite.lower()
+                if (
+                    "revise" in rewritten_lower
+                    or "rewrite" in rewritten_lower
+                    or "rewritten" in rewritten_lower
+                    or "[train number]" in rewritten_lower
+                ):
+                    logger.warning(
+                        "Rewrite rejected for containing illegal phrases, returning original summary"
+                    )
+                    return summary
+                if (
+                    sentence_diff <= tolerance  # Allow configurable sentence difference
+                    and cleaned_rewrite != summary
+                    and len(cleaned_rewrite.strip()) > 10  # Ensure minimum content
+                ):
+                    logger.info(
+                        f"Summary successfully rewritten for clarity (sentences: {original_sentences} → {rewritten_sentences})"
+                    )
+                    return cleaned_rewrite
+                else:
+                    if sentence_diff > tolerance:
+                        logger.debug(
+                            f"Rewrite rejected - sentence count too different ({original_sentences} vs {rewritten_sentences}, tolerance: {tolerance})"
+                        )
+                    elif cleaned_rewrite == summary:
+                        logger.debug("Rewrite rejected - content identical to original")
+                    else:
+                        logger.debug("Rewrite rejected - insufficient content length")
+                    return summary
+            else:
+                logger.warning("Failed to get rewritten content, keeping original")
+                return summary
+
+        except Exception as e:
+            logger.error(f"Error during summary rewriting: {e}", exc_info=True)
+            # Return original summary if rewriting fails
+            return summary
+
+    def _create_rewrite_prompt(
+        self,
+        summary: str,
+        original_alerts: Optional[List[AlertResource]] = None,
+        style: str = "comprehensive",
+    ) -> str:
+        """
+        Create a prompt for analyzing and rewriting the summary.
+
+        Args:
+            summary: The summary to rewrite
+            original_alerts: Original alerts for context
+            style: Summary style for guidance
+
+        Returns:
+            Prompt for the rewrite process
+        """
+        prompt_parts = [
+            "Please analyze and rewrite the following MBTA transit alert summary to improve clarity, readability, and professional tone.",
+            "",
+            "ORIGINAL SUMMARY:",
+            summary,
+            "",
+        ]
+
+        if original_alerts:
+            prompt_parts.extend(
+                [
+                    "ORIGINAL ALERT CONTEXT:",
+                    self._extract_alert_text_for_validation(original_alerts),
+                    "",
+                ]
+            )
+
+        prompt_parts.extend(
+            [
+                "REWRITING REQUIREMENTS:",
+                "1. Maintain all factual information from the original summary",
+                "2. Improve sentence structure and flow",
+                "3. Use clear, professional language appropriate for transit communications",
+                "4. Ensure logical organization of information",
+                "5. Remove any conversational or informal language",
+                "6. Make the summary more accessible to commuters",
+                "7. Maintain the same level of detail and scope",
+                "8. Use consistent terminology throughout",
+                "9. VERY IMPORTANT: Do not say that this is a rewrite, a revised summary, or any other similar phrase in your response!!!!",
+                "10. Do not include [Train Number] in your response if the information is not available.",
+                "",
+                "SENTENCE LENGTH REQUIREMENT:",
+                f"- Maintain exactly {self._count_sentences(summary)} sentences",
+                "- Do not add or remove sentences",
+                "- Focus on improving clarity within the same sentence structure",
+                "",
+                "STYLE GUIDANCE:",
+                f"- Target style: {style}",
+                "- Focus on readability and professional communication",
+                "",
+                "Please provide the rewritten summary that addresses these requirements.",
+            ]
+        )
+
+        return "\n".join(prompt_parts)
+
     async def _call_ollama(
         self, prompt: str, alerts: Optional[List[AlertResource]] = None
     ) -> str:
@@ -1261,6 +1449,17 @@ class AISummarizer:
                 cleaned_content = self._clean_model_response(
                     cleaned_content, alert_text
                 )
+
+                # Apply summary rewriting if enabled
+                if self.config.enable_summary_rewriting:
+                    logger.debug("Applying summary rewriting for clarity")
+                    rewritten_content = await self._analyze_and_rewrite_summary(
+                        cleaned_content, alerts, "comprehensive"
+                    )
+                    if rewritten_content != cleaned_content:
+                        logger.info("Summary rewritten for improved clarity")
+                        cleaned_content = rewritten_content
+
                 # Check for truncation
                 # logger.debug(
                 #     f"Generated summary content (length: {len(final_content)}):\n{final_content}"
@@ -1281,6 +1480,17 @@ class AISummarizer:
                 cleaned_content = self._clean_model_response(
                     cleaned_content, alert_text
                 )
+
+                # Apply summary rewriting if enabled
+                if self.config.enable_summary_rewriting:
+                    logger.debug("Applying summary rewriting for clarity")
+                    rewritten_content = await self._analyze_and_rewrite_summary(
+                        cleaned_content, alerts, "comprehensive"
+                    )
+                    if rewritten_content != cleaned_content:
+                        logger.info("Summary rewritten for improved clarity")
+                        cleaned_content = rewritten_content
+
                 # Check for truncation
 
                 return cleaned_content
@@ -1296,6 +1506,17 @@ class AISummarizer:
                 fallback_content = self._clean_model_response(
                     fallback_content, alert_text
                 )
+
+                # Apply summary rewriting if enabled
+                if self.config.enable_summary_rewriting:
+                    logger.debug("Applying summary rewriting for clarity")
+                    rewritten_content = await self._analyze_and_rewrite_summary(
+                        fallback_content, alerts, "comprehensive"
+                    )
+                    if rewritten_content != fallback_content:
+                        logger.info("Summary rewritten for improved clarity")
+                        fallback_content = rewritten_content
+
                 # Check for truncation
                 # final_content = self._detect_truncation(fallback_content, prompt)
                 # logger.debug(
@@ -1569,6 +1790,18 @@ class AISummarizer:
             # Clean the model response and validate similarity
             cleaned_summary = self._clean_model_response(summary, alert_text)
 
+            # Apply summary rewriting if enabled
+            if self.config.enable_summary_rewriting:
+                logger.debug("Applying summary rewriting for individual alert clarity")
+                rewritten_summary = await self._analyze_and_rewrite_summary(
+                    cleaned_summary, [alert], style
+                )
+                if rewritten_summary != cleaned_summary:
+                    logger.info(
+                        "Individual alert summary rewritten for improved clarity"
+                    )
+                    cleaned_summary = rewritten_summary
+
             logger.info(f"Generated {style} individual summary for alert {alert.id}")
             return cleaned_summary
 
@@ -1676,6 +1909,31 @@ Keep it brief and focused."""
         self.config.validate_only_short_responses = enabled
         status = "enabled" if enabled else "disabled"
         logger.info(f"Short response validation {status}")
+
+    def set_summary_rewriting(self, enabled: bool) -> None:
+        """
+        Enable or disable automatic summary rewriting for clarity and readability.
+
+        Args:
+            enabled: If True, automatically rewrite summaries for improved clarity.
+                    If False, skip the rewriting step and return summaries as-is.
+        """
+        self.config.enable_summary_rewriting = enabled
+        status = "enabled" if enabled else "disabled"
+        logger.info(f"Summary rewriting {status}")
+
+    def set_sentence_tolerance(self, tolerance: int) -> None:
+        """
+        Set the maximum allowed sentence count difference for summary rewriting.
+
+        Args:
+            tolerance: Maximum allowed sentence count difference (0 = exact match, 1 = ±1 sentence, etc.)
+        """
+        if tolerance < 0:
+            raise ValueError("Sentence tolerance must be non-negative")
+
+        self.config.rewrite_sentence_tolerance = tolerance
+        logger.info(f"Updated sentence tolerance to {tolerance}")
 
     async def health_check(self) -> bool:
         """
