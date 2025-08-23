@@ -48,6 +48,43 @@ class OllamaConfig(BaseModel):
     max_concurrent_jobs: int = Field(
         default=1, description="Maximum concurrent jobs per worker"
     )
+    # Reasoning model configuration
+    enable_reasoning: bool = Field(
+        default=False,
+        description="Enable reasoning mode for models like Qwen that support <think> sections",
+    )
+    max_conversation_turns: int = Field(
+        default=3,
+        description="Maximum number of conversation turns for reasoning models",
+    )
+    enable_streaming: bool = Field(
+        default=False, description="Enable streaming responses for real-time output"
+    )
+    reasoning_prompt_template: str = Field(
+        default="<think>Let me analyze this step by step:</think>",
+        description="Template for reasoning prompts",
+    )
+    extract_thinking_only: bool = Field(
+        default=False,
+        description="Extract only the thinking/reasoning part from responses",
+    )
+    # Advanced AI configuration
+    min_similarity_threshold: float = Field(
+        default=0.105,
+        description="Minimum similarity threshold for response validation (0.0 to 1.0)",
+    )
+    validate_only_short_responses: bool = Field(
+        default=True,
+        description="Only apply similarity validation to responses with 1 sentence or less",
+    )
+    enable_summary_rewriting: bool = Field(
+        default=True,
+        description="Enable automatic summary rewriting for clarity and readability",
+    )
+    rewrite_sentence_tolerance: int = Field(
+        default=1,
+        description="Maximum allowed sentence count difference between original and rewritten summaries (0 = exact match)",
+    )
 
 
 class FileOutputConfig(BaseModel):
@@ -152,6 +189,83 @@ def load_config() -> Config:
         if ttl_str:
             config.ollama.cache_ttl = int(ttl_str)
             logger.debug(f"Overriding OLLAMA_CACHE_TTL with: {ttl_str}")
+
+    # Override with environment variables for reasoning configuration
+    if os.getenv("OLLAMA_ENABLE_REASONING"):
+        reasoning_str = os.getenv("OLLAMA_ENABLE_REASONING")
+        if reasoning_str:
+            config.ollama.enable_reasoning = reasoning_str.lower() == "true"
+            logger.debug(
+                f"Overriding OLLAMA_ENABLE_REASONING with: {reasoning_str} -> {config.ollama.enable_reasoning}"
+            )
+
+    if os.getenv("OLLAMA_MAX_CONVERSATION_TURNS"):
+        turns_str = os.getenv("OLLAMA_MAX_CONVERSATION_TURNS")
+        if turns_str:
+            config.ollama.max_conversation_turns = int(turns_str)
+            logger.debug(f"Overriding OLLAMA_MAX_CONVERSATION_TURNS with: {turns_str}")
+
+    if os.getenv("OLLAMA_ENABLE_STREAMING"):
+        streaming_str = os.getenv("OLLAMA_ENABLE_STREAMING")
+        if streaming_str:
+            config.ollama.enable_streaming = streaming_str.lower() == "true"
+            logger.debug(
+                f"Overriding OLLAMA_ENABLE_STREAMING with: {streaming_str} -> {config.ollama.enable_streaming}"
+            )
+
+    if os.getenv("OLLAMA_REASONING_PROMPT_TEMPLATE"):
+        template = os.getenv("OLLAMA_REASONING_PROMPT_TEMPLATE")
+        if template:
+            config.ollama.reasoning_prompt_template = template
+            logger.debug(
+                f"Overriding OLLAMA_REASONING_PROMPT_TEMPLATE with: {template}"
+            )
+
+    if os.getenv("OLLAMA_EXTRACT_THINKING_ONLY"):
+        thinking_str = os.getenv("OLLAMA_EXTRACT_THINKING_ONLY")
+        if thinking_str:
+            config.ollama.extract_thinking_only = thinking_str.lower() == "true"
+            logger.debug(
+                f"Overriding OLLAMA_EXTRACT_THINKING_ONLY with: {thinking_str} -> {config.ollama.extract_thinking_only}"
+            )
+
+    # Override with environment variables for advanced AI configuration
+    if os.getenv("OLLAMA_MIN_SIMILARITY_THRESHOLD"):
+        similarity_str = os.getenv("OLLAMA_MIN_SIMILARITY_THRESHOLD")
+        if similarity_str:
+            try:
+                config.ollama.min_similarity_threshold = float(similarity_str)
+                logger.debug(
+                    f"Overriding OLLAMA_MIN_SIMILARITY_THRESHOLD with: {similarity_str} -> {config.ollama.min_similarity_threshold}"
+                )
+            except ValueError:
+                logger.warning(
+                    f"Invalid similarity threshold value: {similarity_str}, using default"
+                )
+
+    if os.getenv("OLLAMA_VALIDATE_ONLY_SHORT_RESPONSES"):
+        validate_str = os.getenv("OLLAMA_VALIDATE_ONLY_SHORT_RESPONSES")
+        if validate_str:
+            config.ollama.validate_only_short_responses = validate_str.lower() == "true"
+            logger.debug(
+                f"Overriding OLLAMA_VALIDATE_ONLY_SHORT_RESPONSES with: {validate_str} -> {config.ollama.validate_only_short_responses}"
+            )
+
+    if os.getenv("OLLAMA_ENABLE_SUMMARY_REWRITING"):
+        rewrite_str = os.getenv("OLLAMA_ENABLE_SUMMARY_REWRITING")
+        if rewrite_str:
+            config.ollama.enable_summary_rewriting = rewrite_str.lower() == "true"
+            logger.debug(
+                f"Overriding OLLAMA_ENABLE_SUMMARY_REWRITING with: {rewrite_str} -> {config.ollama.enable_summary_rewriting}"
+            )
+
+    if os.getenv("OLLAMA_REWRITE_SENTENCE_TOLERANCE"):
+        tolerance_str = os.getenv("OLLAMA_REWRITE_SENTENCE_TOLERANCE")
+        if tolerance_str:
+            config.ollama.rewrite_sentence_tolerance = int(tolerance_str)
+            logger.debug(
+                f"Overriding OLLAMA_REWRITE_SENTENCE_TOLERANCE with: {tolerance_str}"
+            )
 
     # Override with environment variables for file output config
     if os.getenv("IMT_FILE_OUTPUT_ENABLED"):

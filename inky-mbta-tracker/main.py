@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import re
+import signal
 from asyncio import Queue as AsyncQueue
 from asyncio import Runner, sleep
 from datetime import UTC, datetime, timedelta
@@ -9,7 +10,7 @@ from random import randint
 from typing import Optional
 
 import click
-from backup_scheduler import run_backup_scheduler
+from backup_scheduler import BackupScheduler
 from config import StopSetup, load_config
 from dotenv import load_dotenv
 from mbta_client import (
@@ -185,6 +186,20 @@ def start_task(  # type: ignore
 
 
 async def __main__() -> None:
+    # Create shutdown event and register signal handlers for graceful exit
+    shutdown_event = asyncio.Event()
+    try:
+        loop = asyncio.get_running_loop()
+        for sig in (getattr(signal, "SIGINT", None), getattr(signal, "SIGTERM", None)):
+            if sig is not None:
+                try:
+                    loop.add_signal_handler(sig, shutdown_event.set)
+                except NotImplementedError:
+                    # Signal handlers may not be available (e.g., on Windows)
+                    pass
+    except RuntimeError:
+        # Fallback if no running loop; Runner below provides one
+        pass
     config = load_config()
 
     # Use asyncio queue to feed async consumers
@@ -214,9 +229,26 @@ async def __main__() -> None:
             if tk:
                 tasks.append(tk)
 
-    # Run backup scheduler via threadpool; no manual thread management
+    # Run backup scheduler as native asyncio task for proper cancellation
+    # Parse backup time from env (default 03:00, America/New_York)
+    from datetime import time as dt_time
+
+    backup_time_str = os.getenv("IMT_REDIS_BACKUP_TIME", "03:00")
+    if isinstance(backup_time_str, str):
+        try:
+            hour, minute = map(int, backup_time_str.split(":"))
+            backup_time = dt_time(hour=hour, minute=minute)
+        except Exception:
+            logger.error(
+                f"Invalid IMT_REDIS_BACKUP_TIME format: {backup_time_str}, using default 03:00"
+            )
+            backup_time = dt_time(hour=3, minute=0)
+    else:
+        backup_time = dt_time(hour=3, minute=0)
+
+    backup_scheduler = BackupScheduler(backup_time=backup_time)
     backup_task = asyncio.create_task(
-        asyncio.to_thread(run_backup_scheduler), name="redis_backup_scheduler"
+        backup_scheduler.run_scheduler(), name="redis_backup_scheduler"
     )
     tasks.append(TaskTracker(backup_task, stop=None, event_type=TaskType.REDIS_BACKUP))
 
@@ -245,7 +277,7 @@ async def __main__() -> None:
         try:
             from ai_summarizer import AISummarizer
 
-            ai_summarizer = AISummarizer()
+            ai_summarizer = AISummarizer(config.ollama)
             await ai_summarizer.start()
 
             # The AI summarizer will start its own Redis queue workers
@@ -278,9 +310,13 @@ async def __main__() -> None:
     for t in process_tasks:
         tasks.append(TaskTracker(t, stop=None, event_type=TaskType.PROCESSOR))
 
-    while True:
+    # Main supervision loop with shutdown awareness
+    while not shutdown_event.is_set():
         running_threads.set(len(tasks))
-        await sleep(30)
+        try:
+            await asyncio.wait_for(shutdown_event.wait(), timeout=30)
+        except asyncio.TimeoutError:
+            pass
         # Iterate over a snapshot since we may remove/restart tasks during iteration
         for task in list(tasks):
             if (
@@ -327,6 +363,40 @@ async def __main__() -> None:
                                     event_type=TaskType.TRACK_PREDICTIONS,
                                 )
                             )
+
+    # Begin graceful shutdown
+    logger.info("Shutdown signal received; cancelling tasks...")
+    # Stop backup scheduler first to avoid new work
+    try:
+        backup_scheduler.stop()
+    except Exception:
+        pass
+
+    # Stop AI summarizer if it was started
+    try:
+        if "ai_summarizer" in locals() and ai_summarizer:
+            await ai_summarizer.stop()
+            await ai_summarizer.close()
+    except Exception as e:
+        logger.error(f"Error stopping AI summarizer: {e}")
+
+    # Cancel all running asyncio tasks we created
+    for tt in tasks:
+        if not tt.task.done():
+            tt.task.cancel()
+    # Ensure processor tasks are also cancelled
+    for t in process_tasks:
+        if not t.done():
+            t.cancel()
+    # Await task cancellation with a timeout
+    try:
+        await asyncio.wait(
+            [tt.task for tt in tasks] + process_tasks,
+            timeout=10,
+        )
+    except Exception:
+        pass
+    logger.info("Shutdown complete")
 
 
 @click.command()

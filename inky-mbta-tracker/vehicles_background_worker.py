@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import random
 from asyncio import sleep
@@ -30,20 +31,32 @@ class BackgroundWorker:
         self.redis = get_redis()
 
     async def run(self) -> None:
-        while True:
-            if datetime.now() > self.state_expiration and self.state == State.TRAFFIC:
-                self.state = State.IDLE
-                self.state_expiration = datetime.now() + timedelta(seconds=60)
-                logger.info("Vehicle background worker is now idle")
-            while self.queue.qsize() > 0:
-                item = self.queue.get()
-                await self.process(item)
-                self.queue.task_done()
-            if self.state == State.TRAFFIC:
-                _ = await get_vehicles_data(self.redis)
-                await sleep(random.randint(1, 4))
-            else:
-                await sleep(random.randint(5, 60))
+        try:
+            while True:
+                if (
+                    datetime.now() > self.state_expiration
+                    and self.state == State.TRAFFIC
+                ):
+                    self.state = State.IDLE
+                    self.state_expiration = datetime.now() + timedelta(seconds=60)
+                    logger.info("Vehicle background worker is now idle")
+                while self.queue.qsize() > 0:
+                    item = self.queue.get()
+                    await self.process(item)
+                    self.queue.task_done()
+                if self.state == State.TRAFFIC:
+                    _ = await get_vehicles_data(self.redis)
+                    await sleep(random.randint(1, 4))
+                else:
+                    await sleep(random.randint(5, 60))
+        except asyncio.CancelledError:
+            # Exit gracefully on cancellation
+            pass
+        finally:
+            try:
+                await self.redis.aclose()
+            except Exception:
+                pass
 
     async def process(self, item: State) -> None:
         prev_state = self.state
