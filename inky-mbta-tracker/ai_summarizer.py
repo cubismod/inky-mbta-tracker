@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
 from typing import Any, Dict, List, Optional
+from zoneinfo import ZoneInfo
 
 from config import OllamaConfig
 from mbta_responses import AlertResource
@@ -677,6 +678,9 @@ class AISummarizer:
             logger.error(f"Failed to enqueue Redis job: {e}")
             return None
 
+    def _time_prompt(self) -> str:
+        return f"The current time is {datetime.now().astimezone(tz=ZoneInfo('America/New_York')).strftime('%Y-%m-%d %H:%M:%S')}"
+
     def _format_alerts_for_prompt(
         self,
         alerts: List[AlertResource],
@@ -732,6 +736,7 @@ class AISummarizer:
             "\nDo not directly respond to this prompt with 'Okay', 'Got it', 'I understand', or anything else."
             "\nConvert IDs like 'UNKNOWN_CAUSE' to 'Unknown Cause'."
             "\nUse proper grammar and punctuation."
+            "\n" + self._time_prompt() + "\n"
             "\n\nFor each alert, provide a detailed summary including:"
             "\n- What the issue is and its scope"
             "\n- Impact on transit service and commuters"
@@ -842,6 +847,7 @@ class AISummarizer:
                 "\n3. Systemic analysis and patterns"
                 "\n4. Commuter impact assessment"
                 "\n5. Recommendations and key points for travelers"
+                "\n\n" + self._time_prompt() + "\n"
                 "\n\nMake sure to cover ALL alerts completely with full details. Do not stop until you have provided a comprehensive summary."
             )
         else:  # concise style
@@ -861,6 +867,7 @@ class AISummarizer:
                 "\n\nExpected format:"
                 "\n1. Brief overview (1 sentence)"
                 "\n2. Individual alert summaries (1-2 sentences each)"
+                "\n\n" + self._time_prompt() + "\n"
                 "\n\nKeep it concise and to the point. Be specific about locations, routes, vehicle numbers, and times."
             )
 
@@ -1176,6 +1183,20 @@ class AISummarizer:
             )
         return client
 
+    def _create_questioning_prompt(
+        self, rewritten_content: str, summary: str, api_summary: str
+    ) -> list[str]:
+        """
+        Create a prompt for questioning the rewritten content.
+        """
+        return [
+            "Review the following rewritten summary compared to the headers returned by the api and provide a single answer for which summary to return: rewritten or api.",
+            "Focus on picking the most accurate answer. Hallucinations are not allowed.",
+            "The original API headers should be considered the source of truth. If information is missing from the summarized versions then the original API headers should be returned.",
+            f"Rewritten Summary:\n{rewritten_content}\n\n",
+            f"API Headers:\n{api_summary}\n\n",
+        ]
+
     async def _analyze_and_rewrite_summary(
         self,
         summary: str,
@@ -1235,58 +1256,115 @@ class AISummarizer:
                 else:
                     rewritten_content = str(response)
 
-            if rewritten_content and rewritten_content.strip():
-                cleaned_rewrite = self._clean_model_response(
-                    rewritten_content.strip(),
-                    summary,  # Use original summary as input for validation
-                    use_config_threshold=False,  # Skip similarity validation for rewrites
-                )
-
-                # Check sentence length similarity and content difference
-                original_sentences = self._count_sentences(summary)
-                rewritten_sentences = self._count_sentences(cleaned_rewrite)
-
-                # Only use rewrite if sentence count is within tolerance and content is different
-                sentence_diff = abs(original_sentences - rewritten_sentences)
-                tolerance = self.config.rewrite_sentence_tolerance
-                rewritten_lower = cleaned_rewrite.lower()
-                if (
-                    "revise" in rewritten_lower
-                    or "rewrite" in rewritten_lower
-                    or "rewritten" in rewritten_lower
-                    or "[train number]" in rewritten_lower
-                ):
-                    logger.warning(
-                        "Rewrite rejected for containing illegal phrases, returning original summary"
+            # another step selects whether the rewritten summary is better than the original
+            if original_alerts:
+                try:
+                    original_alerts_headers = str.join(
+                        ",", [f"{alert.attributes.header}" for alert in original_alerts]
                     )
-                    return summary
-                if (
-                    sentence_diff <= tolerance  # Allow configurable sentence difference
-                    and cleaned_rewrite != summary
-                    and len(cleaned_rewrite.strip()) > 10  # Ensure minimum content
-                ):
-                    logger.info(
-                        f"Summary successfully rewritten for clarity (sentences: {original_sentences} → {rewritten_sentences})"
+
+                    questioning_prompt = str.join(
+                        "\n",
+                        self._create_questioning_prompt(
+                            rewritten_content,
+                            summary,
+                            original_alerts_headers,
+                        ),
                     )
-                    return cleaned_rewrite
-                else:
-                    if sentence_diff > tolerance:
-                        logger.debug(
-                            f"Rewrite rejected - sentence count too different ({original_sentences} vs {rewritten_sentences}, tolerance: {tolerance})"
+                    logger.debug(f"Calling Ollama with model: {self.config.model}")
+                    logger.debug(f"Prompt length: {len(questioning_prompt)} characters")
+                    logger.debug(
+                        f"Model config: temperature={self.config.temperature}, timeout={self.config.timeout}"
+                    )
+                    logger.debug(f"Full prompt:\n{questioning_prompt}")
+                    client = self._get_client()
+                    response = await client.chat(
+                        model=self.config.model,
+                        messages=[{"role": "user", "content": questioning_prompt}],
+                        options={
+                            "temperature": 0.2,
+                            "top_p": 0.9,
+                            "top_k": 40,
+                            "num_predict": 1500,
+                            "stop": ["###", "---"],
+                            "repeat_penalty": 1.1,
+                            "num_ctx": 4096,
+                            "think": False,
+                        },
+                    )
+                    logger.debug(f"Response: {response.message.content}")
+                    if (
+                        "api" in response.message.content.lower()
+                        if response.message.content
+                        else ""
+                    ):
+                        return original_alerts_headers
+                    if (
+                        "rewritten" in response.message.content.lower()
+                        if response.message.content
+                        else ""
+                    ):
+                        cleaned_rewrite = self._clean_model_response(
+                            rewritten_content.strip(),
+                            summary,  # Use original summary as input for validation
+                            use_config_threshold=False,  # Skip similarity validation for rewrites
                         )
-                    elif cleaned_rewrite == summary:
-                        logger.debug("Rewrite rejected - content identical to original")
-                    else:
-                        logger.debug("Rewrite rejected - insufficient content length")
-                    return summary
+
+                        # Check sentence length similarity and content difference
+                        original_sentences = self._count_sentences(summary)
+                        rewritten_sentences = self._count_sentences(cleaned_rewrite)
+
+                        # Only use rewrite if sentence count is within tolerance and content is different
+                        sentence_diff = abs(original_sentences - rewritten_sentences)
+                        tolerance = self.config.rewrite_sentence_tolerance
+                        rewritten_lower = cleaned_rewrite.lower()
+                        if (
+                            "revise" in rewritten_lower
+                            or "rewrite" in rewritten_lower
+                            or "rewritten" in rewritten_lower
+                            or "[train number]" in rewritten_lower
+                        ):
+                            logger.warning(
+                                "Rewrite rejected for containing illegal phrases, returning original summary"
+                            )
+                            return summary
+                        if (
+                            sentence_diff
+                            <= tolerance  # Allow configurable sentence difference
+                            and cleaned_rewrite != summary
+                            and len(cleaned_rewrite.strip())
+                            > 10  # Ensure minimum content
+                        ):
+                            logger.info(
+                                f"Summary successfully rewritten for clarity (sentences: {original_sentences} → {rewritten_sentences})"
+                            )
+                            return cleaned_rewrite
+                        else:
+                            if sentence_diff > tolerance:
+                                logger.debug(
+                                    f"Rewrite rejected - sentence count too different ({original_sentences} vs {rewritten_sentences}, tolerance: {tolerance})"
+                                )
+                            elif cleaned_rewrite == summary:
+                                logger.debug(
+                                    "Rewrite rejected - content identical to original"
+                                )
+                            else:
+                                logger.debug(
+                                    "Rewrite rejected - insufficient content length"
+                                )
+                            return summary
+                except Exception as e:
+                    logger.error(
+                        f"Error creating questioning prompt: {e}", exc_info=True
+                    )
             else:
                 logger.warning("Failed to get rewritten content, keeping original")
                 return summary
 
         except Exception as e:
             logger.error(f"Error during summary rewriting: {e}", exc_info=True)
-            # Return original summary if rewriting fails
-            return summary
+
+        return summary
 
     def _create_rewrite_prompt(
         self,
@@ -2131,6 +2209,8 @@ IMPORTANT: Provide a single, concise summary in {sentence_text} that:
 6. If this is a commuter rail alert, include the specific train number.
 7. Don't repeat the same information in multiple locations.
 8. For multi-day alerts do not mention individual train numbers or departures.
+
+{self._time_prompt()}
 
 Keep it brief and focused."""
 
