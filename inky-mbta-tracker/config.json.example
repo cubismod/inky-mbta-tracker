@@ -33,6 +33,10 @@
     "filename": "mbta_alerts_summary.md",
     "include_timestamp": true,
     "include_alert_count": true,
-    "include_model_info": true
+    "include_model_info": true,
+    "validate_summaries": true,
+    "min_similarity_threshold": 0.105
+    # validate_summaries: Enable Levenshtein similarity validation to reject summaries that are too different from input
+    # min_similarity_threshold: Minimum similarity score (0.0-1.0) - higher values require more similar summaries
   }
 }
