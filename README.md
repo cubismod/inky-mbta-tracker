@@ -64,117 +64,182 @@ OLLAMA_MAX_LOADED_MODELS=1 # Keep memory usage low
 OLLAMA_FLASH_ATTENTION=1 # Enable if supported by your hardware
 ```
 
-### AI Alert Summarization
+## AI Alert Summarization
 
-The MBTA tracker now includes AI-powered alert summarization using Ollama, a local large language model server. This feature automatically generates human-readable summaries of transit alerts, identifying common themes and patterns.
+The MBTA Tracker now includes AI-powered alert summarization using Ollama, a local LLM server. This feature provides intelligent, human-readable summaries of transit alerts.
 
-### Features
+### AI Features
 
-- **Automatic Summarization**: Generates summaries for all active alerts on startup and periodically
-- **Multiple Output Formats**: Support for plain text, Markdown, and JSON formatting
-- **Intelligent Caching**: Caches summaries to avoid regenerating for unchanged alerts
-- **Background Processing**: Non-blocking summarization using a job queue system
-- **Configurable**: Customizable model parameters and summarization settings
+- **Group Summaries**: Generate comprehensive summaries of all active alerts together
+- **Individual Alert Summaries**: Generate detailed summaries for each individual alert
+- **Adaptive Prompting**: Choose between comprehensive (detailed) and concise (1-2 sentences per alert) summary styles
+- **Multiple Output Formats**: Support for Text, Markdown, and JSON output
+- **Intelligent Caching**: Redis-based caching with configurable TTL
+- **Background Processing**: Asynchronous job queue with priority-based processing
+- **Conversational Cleanup**: Automatic removal of conversational phrases from LLM responses
+- **Periodic Refresh**: Automatic generation of summaries every 30 minutes
+- **Startup Summaries**: Immediate summary generation on application startup
 
 ### Configuration
 
-#### Environment Variables (Recommended)
+#### Environment Variables (Highest Priority)
 
-The following environment variables control the AI summarization feature. These take **highest priority** over `config.json` settings.
+```bash
+# Required
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_MODEL=llama3.2:3b
 
-| Variable | Description | Default | Example |
-|----------|-------------|---------|---------|
-| `OLLAMA_BASE_URL` | Ollama API endpoint URL | `http://localhost:11434` | `http://ollama:11434` |
-| `OLLAMA_MODEL` | AI model to use for summarization | `llama3.2:1b` | `gemma3:1b` |
-| `OLLAMA_TIMEOUT` | Request timeout in seconds | `30` | `60` |
-| `OLLAMA_TEMPERATURE` | Model temperature (0.0-1.0) | `0.1` | `0.2` |
-| `OLLAMA_MAX_RETRIES` | Maximum retry attempts for API calls | `3` | `5` |
-| `OLLAMA_CACHE_TTL` | Cache TTL in seconds | `3600` | `1800` |
+# Optional
+OLLAMA_TIMEOUT=60
+OLLAMA_TEMPERATURE=0.2
+OLLAMA_MAX_RETRIES=3
+OLLAMA_CACHE_TTL=1800
+```
 
-#### config.json
+#### config.json (Fallback)
 
 ```json
 {
   "ollama": {
     "enabled": true,
     "base_url": "http://localhost:11434",
-    "model": "gemma3:1b",
+    "model": "llama3.2:3b",
     "timeout": 60,
     "temperature": 0.2,
-    "max_retries": 5,
+    "max_retries": 3,
     "cache_ttl": 1800
   }
 }
 ```
 
-### Output Formats
+#### Configuration Priority
 
-The AI summarizer supports three output formats:
-
-#### 1. Text (Default)
-Plain text summaries optimized for readability.
-
-#### 2. Markdown
-Formatted summaries with headers, bold text, and proper spacing for documentation and display.
-
-#### 3. JSON
-Structured summaries with metadata, useful for programmatic consumption and analysis.
-
-### API Endpoints
-
-#### Generate Summary
-```bash
-POST /alerts/summarize
-```
-
-**Request Body:**
-```json
-{
-  "alerts": [...],
-  "include_route_info": true,
-  "include_severity": true,
-  "format": "markdown"
-}
-```
-
-**Format Options:**
-- `"text"` - Plain text (default)
-- `"markdown"` - Markdown formatted
-- `"json"` - Structured JSON
-
-#### Test Summarization
-```bash
-GET /ai/test?format=markdown
-```
-
-#### Get Active Alert Summaries
-```bash
-GET /ai/summaries/active?format=json
-```
-
-#### Get Specific Alert Summary
-```bash
-GET /ai/summaries/alert/{alert_id}?format=markdown
-```
-
-#### Bulk Summary Generation
-```bash
-POST /ai/summaries/bulk?format=json
-```
+1. **Environment Variables** (highest priority)
+2. **config.json** (fallback)
+3. **Hardcoded Defaults** (lowest priority)
 
 ### Requirements
 
-1. **Ollama**: Install and run Ollama locally or in a container
-2. **Compatible Model**: Download a model like `gemma3:1b` or `llama3.2:1b`
-3. **Python Dependencies**: The `ollama` Python client is included
+- **Ollama**: Local LLM server running with a compatible model
+- **Compatible Model**: Models like `llama3.2:3b`, `gemma3:1b`, or similar
+- **Memory**: Sufficient RAM for the chosen model (typically 4-8GB for 3B models)
 
 ### How It Works
 
-1. **Collection**: Gathers current alerts from MBTA API
-2. **AI Processing**: Sends alerts to Ollama for summarization
-3. **Formatting**: Applies requested format (text, markdown, or JSON)
-4. **Caching**: Stores results in Redis with configurable TTL
-5. **Integration**: Provides summaries through dedicated API endpoints
+1. **Collection**: Fetches current MBTA alerts via the MBTA API
+2. **AI Processing**: Sends formatted alert data to Ollama for summarization
+3. **Response Cleaning**: Removes conversational phrases and unnecessary text
+4. **Caching**: Stores summaries in Redis with configurable TTL
+5. **Integration**: Provides both group and individual alert summaries
+6. **Periodic Updates**: Automatically refreshes summaries every 30 minutes
+
+### API Endpoints
+
+#### Group Summaries
+
+- `GET /ai/summaries/active` - Get summary of all active alerts
+- `POST /ai/summaries/bulk` - Force generation of group summaries with style selection
+- `POST /ai/summaries/generate` - Generate summaries with custom style and format
+- `POST /alerts/summarize` - Manual group summarization
+
+#### Individual Alert Summaries
+
+- `GET /ai/summaries/individual/{alert_id}` - Get individual alert summary with configurable sentence limit
+- `POST /ai/summaries/individual/generate` - Force individual summary generation with style and sentence limit options
+
+#### Utility Endpoints
+
+- `GET /ai/test` - Test AI summarizer functionality
+- `GET /ai/status` - Check summarizer health and status
+- `GET /ai/summaries/cached` - View all cached summaries
+
+#### Output Formats
+
+All summary endpoints support three output formats:
+
+- `text` (default): Plain text summaries
+- `markdown`: Formatted markdown with headers and structure
+- `json`: Structured JSON output
+
+#### Summary Styles
+
+Choose between two summary styles:
+
+- `comprehensive` (default): Detailed analysis with full coverage of each alert, including impact analysis, recommendations, and systemic patterns
+- `concise`: Brief summaries with 1-2 sentences per alert, focusing on essential information for quick understanding
+
+#### Sentence Limits
+
+For individual alert summaries, control the maximum number of sentences:
+
+- `1`: Ultra-concise single sentence summaries
+- `2+`: Standard concise summaries with multiple sentences
+- Range: 1-5 sentences maximum
+
+### Example Usage
+
+#### Generate Group Summary
+
+```bash
+curl "http://localhost:8000/ai/summaries/active?format=markdown"
+```
+
+#### Generate Concise Summary
+
+```bash
+curl -X POST "http://localhost:8000/ai/summaries/bulk?style=concise&format=markdown"
+```
+
+#### Generate Comprehensive Summary
+
+```bash
+curl -X POST "http://localhost:8000/ai/summaries/bulk?style=comprehensive&format=json"
+```
+
+#### Generate Individual Summary
+
+```bash
+# Standard 2-sentence summary
+curl -X POST "http://localhost:8000/ai/summaries/individual/generate?alert_id=12345&format=json"
+
+# Ultra-concise 1-sentence summary
+curl -X POST "http://localhost:8000/ai/summaries/individual/generate?alert_id=12345&sentence_limit=1&format=markdown"
+```
+
+#### Manual Summarization
+
+```bash
+curl -X POST "http://localhost:8000/alerts/summarize" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "alerts": [...],
+    "format": "markdown"
+  }'
+```
+
+### Monitoring
+
+The system includes Prometheus metrics for monitoring:
+
+- `ai_summarization_requests_total`: Total summarization requests
+- `ai_summarization_errors_total`: Total summarization errors
+- `ai_summarization_duration_seconds`: Summarization processing time
+- `ai_summarization_cache_hits_total`: Cache hit count
+
+### Background Tasks
+
+- **Group Summary Refresh**: Every 30 minutes, generates new summaries for all active alerts
+- **Individual Summary Generation**: Every 30 minutes, generates individual summaries for each alert (1-sentence ultra-concise format)
+- **Startup Summaries**: Immediately generates summaries on application startup
+- **Sequential Processing**: All Ollama requests are processed one at a time to prevent overwhelming the AI service
+- **Intelligent Backoff**: CPU-aware job processing with adaptive delays
+
+### Troubleshooting
+
+- **Model Not Found**: Ensure the specified model is available in Ollama
+- **Memory Issues**: Use smaller models (1B instead of 3B) for limited RAM
+- **Connection Errors**: Verify Ollama is running and accessible
+- **Truncated Responses**: Check model configuration and increase context length if needed
 
 ### Monitoring
 
@@ -353,6 +418,7 @@ The AI Alert Summarizer uses local AI models via Ollama to generate intelligent,
 #### 1. Install Ollama on Your Server
 
 **For Linux (Ubuntu/Debian):**
+
 ```bash
 # Download and install Ollama
 curl -fsSL https://ollama.ai/install.sh | sh
@@ -362,12 +428,14 @@ ollama --version
 ```
 
 **For other systems:**
+
 - macOS: Download from [ollama.ai](https://ollama.ai/download)
 - Windows: Download from [ollama.ai](https://ollama.ai/download)
 
 #### 2. Configure Ollama as a Service
 
 **Enable Ollama to start automatically:**
+
 ```bash
 # Enable Ollama service (Linux with systemd)
 sudo systemctl enable ollama
@@ -378,6 +446,7 @@ sudo systemctl status ollama
 ```
 
 **Configure Ollama for external access (if needed):**
+
 ```bash
 # Edit Ollama service configuration
 sudo systemctl edit ollama
@@ -393,6 +462,7 @@ sudo systemctl restart ollama
 #### 3. Pull and Test the Model
 
 **For CPU-only systems (like your Intel i5-9400):**
+
 ```bash
 # Pull the recommended lightweight model
 ollama pull llama3.2:1b
@@ -404,6 +474,7 @@ ollama run llama3.2:1b "Summarize this: The sky is blue"
 ```
 
 **For systems with more resources:**
+
 ```bash
 # Alternative models (choose one)
 ollama pull llama3.2:3b    # Better quality, slower
@@ -424,6 +495,7 @@ curl http://localhost:11434/api/tags
 #### 5. Performance Optimization
 
 **For Intel i5-9400 (6 cores, 4.1GHz):**
+
 ```bash
 # Set environment variables for optimal performance
 export OLLAMA_NUM_PARALLEL=2        # Limit concurrent requests
@@ -447,6 +519,7 @@ sudo ufw allow 11434/tcp
 #### 7. Troubleshooting Common Issues
 
 **Ollama service won't start:**
+
 ```bash
 # Check service logs
 sudo journalctl -u ollama -f
@@ -457,6 +530,7 @@ sudo systemctl restart ollama
 ```
 
 **Model download fails:**
+
 ```bash
 # Check disk space
 df -h
@@ -467,6 +541,7 @@ ollama pull llama3.2:1b
 ```
 
 **API not accessible:**
+
 ```bash
 # Check if Ollama is listening
 netstat -tlnp | grep 11434
@@ -476,6 +551,7 @@ curl -v http://localhost:11434/api/version
 ```
 
 **High CPU usage:**
+
 ```bash
 # Monitor Ollama process
 top -p $(pgrep ollama)
@@ -495,6 +571,7 @@ top -p $(pgrep ollama)
 #### 8. Production Deployment Considerations
 
 **Resource Monitoring:**
+
 ```bash
 # Monitor Ollama resource usage
 watch -n 5 'ps aux | grep ollama && free -h && df -h'
@@ -514,6 +591,7 @@ EOF
 ```
 
 **Systemd Service Configuration:**
+
 ```bash
 # Create custom Ollama service configuration
 sudo tee /etc/systemd/system/ollama.service.d/custom.conf << EOF
@@ -544,6 +622,7 @@ sudo systemctl restart ollama
 ```
 
 **Health Monitoring Script:**
+
 ```bash
 # Create Ollama health check script
 sudo tee /usr/local/bin/ollama-health.sh << 'EOF'
@@ -571,6 +650,7 @@ echo "*/5 * * * * /usr/local/bin/ollama-health.sh >> /var/log/ollama-health.log 
 #### 9. Quick Start (TL;DR)
 
 **For impatient users who just want it working:**
+
 ```bash
 # Install and start Ollama
 curl -fsSL https://ollama.ai/install.sh | sh
@@ -595,6 +675,7 @@ curl http://localhost:11434/api/tags
 ```
 
 **Verification that everything works:**
+
 ```bash
 # Test the summarizer endpoint
 curl -X POST http://localhost:8080/alerts/summarize \
@@ -659,6 +740,7 @@ Add Ollama configuration to your `config.json`:
 ```
 
 **Configuration Priority**: Environment variables (like `OLLAMA_MODEL`) take precedence over `config.json` settings. This allows you to:
+
 - Use `config.json` for default values
 - Override specific settings via environment variables
 - Deploy the same config file across different environments
@@ -775,6 +857,7 @@ Content-Type: application/json
 ```
 
 **Response:**
+
 ```json
 {
   "job_id": "summary_1642123456789_001",
@@ -791,6 +874,7 @@ GET /alerts/summarize/job/{job_id}
 ```
 
 **Response:**
+
 ```json
 {
   "job_id": "summary_1642123456789_001",

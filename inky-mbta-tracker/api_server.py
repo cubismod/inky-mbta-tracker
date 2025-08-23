@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+import random
 import threading
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
@@ -22,6 +23,7 @@ from config import Config, load_config
 from consts import (
     ALERTS_CACHE_TTL,
     MBTA_V3_ENDPOINT,
+    MINUTE,
     SHAPES_CACHE_TTL,
     VEHICLES_CACHE_TTL,
 )
@@ -193,14 +195,38 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Startup
     logger.info("Starting MBTA Transit Data API...")
 
+    # Log file output configuration
+    logger.debug(f"File output configuration - enabled: {CONFIG.file_output.enabled}")
+    if CONFIG.file_output.enabled:
+        logger.debug(f"File output directory: {CONFIG.file_output.output_directory}")
+        logger.debug(f"File output filename: {CONFIG.file_output.filename}")
+        logger.debug(
+            f"File output include_timestamp: {CONFIG.file_output.include_timestamp}"
+        )
+        logger.debug(
+            f"File output include_alert_count: {CONFIG.file_output.include_alert_count}"
+        )
+        logger.debug(
+            f"File output include_model_info: {CONFIG.file_output.include_model_info}"
+        )
+    else:
+        logger.debug("File output is disabled")
+
     # Start AI summarizer if enabled
     if AI_SUMMARIZER:
         try:
             await AI_SUMMARIZER.start()
             logger.info("AI summarizer started successfully")
+            sleep_max = os.getenv("IMT_SUMMARY_SLEEP_MAX", "30")
+            sleep_time = random.randint(0, int(sleep_max))
 
             # Immediately create a job for any existing alerts
             try:
+                await asyncio.sleep(sleep_time)
+                logger.info(
+                    f"Sleeping for {sleep_time} seconds before creating initial AI summarization job"
+                )
+
                 logger.info(
                     "Creating initial AI summarization job for existing alerts..."
                 )
@@ -233,11 +259,28 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             app.state.ai_summary_task = background_task
             logger.info(f"Started periodic AI summary refresh task: {background_task}")
 
-            # Check if the task is actually running
+            # Start background task for periodic individual alert summaries
+            logger.info("Creating periodic individual alert summary task...")
+            individual_task = asyncio.create_task(
+                _periodic_individual_alert_summaries()
+            )
+            app.state.individual_summary_task = individual_task
+            logger.info(
+                f"Started periodic individual alert summary task: {individual_task}"
+            )
+
+            # Check if the tasks are actually running
             if background_task.done():
                 logger.error("Periodic AI summary refresh task completed immediately!")
             else:
                 logger.info("Periodic AI summary refresh task is running")
+
+            if individual_task.done():
+                logger.error(
+                    "Periodic individual alert summary task completed immediately!"
+                )
+            else:
+                logger.info("Periodic individual alert summary task is running")
 
         except Exception as e:
             logger.error(f"Failed to start AI summarizer: {e}", exc_info=True)
@@ -262,6 +305,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                     pass
                 logger.info("Cancelled periodic AI summary refresh task")
 
+            # Cancel individual alert summary task if it exists
+            if hasattr(app.state, "individual_summary_task"):
+                app.state.individual_summary_task.cancel()
+                try:
+                    await app.state.individual_summary_task
+                except asyncio.CancelledError:
+                    pass
+                logger.info("Cancelled periodic individual alert summary task")
+
             await AI_SUMMARIZER.stop()
             await AI_SUMMARIZER.close()
             logger.info("AI summarizer stopped successfully")
@@ -272,24 +324,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 async def periodic_ai_summary_refresh() -> None:
     """Periodically refresh AI summaries for current alerts"""
     logger.info("Starting periodic AI summary refresh task")
-
-    # Add a heartbeat counter
-    heartbeat_count = 0
-
     while True:
         try:
-            # Log heartbeat every 5 minutes
-            heartbeat_count += 1
-            if heartbeat_count % 1 == 0:  # Every cycle = 5 minutes
-                logger.info(
-                    f"Periodic AI summary refresh task heartbeat: {heartbeat_count} cycles completed"
-                )
-
-            # Wait for the next refresh cycle (every 30 minutes)
-            logger.debug(
-                "Waiting 5 minutes before next AI summary refresh cycle (reduced for testing)"
-            )
-            await asyncio.sleep(5 * 60)  # 5 minutes for testing (normally 30)
+            sleep_time = random.randint(4 * MINUTE, 45 * MINUTE)
+            await asyncio.sleep(sleep_time)
 
             if AI_SUMMARIZER:
                 try:
@@ -340,6 +378,38 @@ async def periodic_ai_summary_refresh() -> None:
             )
             # Wait a bit before retrying
             await asyncio.sleep(60)
+
+
+async def _periodic_individual_alert_summaries() -> None:
+    """Periodically generate individual alert summaries."""
+    while True:
+        try:
+            logger.debug("Starting periodic individual alert summaries")
+
+            # Fetch current alerts
+            async with aiohttp.ClientSession(base_url=MBTA_V3_ENDPOINT) as session:
+                alerts = await fetch_alerts_with_retry(CONFIG, session)
+
+            if not alerts:
+                logger.warning("No alerts found for individual summaries")
+                await asyncio.sleep(300)  # Wait 5 minutes before retrying
+                continue
+
+            # Queue individual summary jobs for each alert with 1-sentence limit
+            if AI_SUMMARIZER:
+                job_ids = AI_SUMMARIZER.queue_bulk_individual_summaries(
+                    alerts, sentence_limit=1
+                )
+                logger.info(
+                    f"Queued {len(job_ids)} individual alert summary jobs (1-sentence limit)"
+                )
+
+            sleep_time = random.randint(4 * MINUTE, 45 * MINUTE)
+            await asyncio.sleep(sleep_time)
+
+        except Exception as e:
+            logger.error(f"Error in periodic individual alert summaries: {e}")
+            await asyncio.sleep(300)  # Wait 5 minutes before retrying
 
 
 # ============================================================================
@@ -752,6 +822,149 @@ def format_summary(summary: str, format_type: SummaryFormat) -> str:
         return summary
 
 
+async def save_summary_to_file(
+    summary: str, alerts: List[AlertResource], model_info: str, config: Config
+) -> None:
+    """Save AI summary to a local markdown file."""
+    logger.debug(
+        f"save_summary_to_file called - enabled: {config.file_output.enabled}, alerts: {len(alerts) if alerts else 0}"
+    )
+
+    if not config.file_output.enabled:
+        logger.debug("File output is disabled, skipping file save")
+        return
+
+    try:
+        import pathlib
+
+        # Create output directory if it doesn't exist
+        output_dir = pathlib.Path(config.file_output.output_directory)
+        logger.debug(f"Creating output directory: {output_dir}")
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Create the full file path
+        file_path = output_dir / config.file_output.filename
+        logger.debug(f"Will save to file: {file_path}")
+
+        # Check if directory exists and is writable
+        if not output_dir.exists():
+            logger.error(f"Output directory {output_dir} does not exist after mkdir")
+            return
+
+        if not output_dir.is_dir():
+            logger.error(f"Output path {output_dir} is not a directory")
+            return
+
+        # Build markdown content
+        markdown_content = []
+
+        # Add header
+        markdown_content.append("# MBTA Alerts Summary")
+        markdown_content.append("")
+
+        # Add metadata if configured
+        if config.file_output.include_timestamp:
+            markdown_content.append(
+                f"**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            )
+            markdown_content.append("")
+
+        if config.file_output.include_alert_count:
+            markdown_content.append(f"**Active Alerts:** {len(alerts)}")
+            markdown_content.append("")
+
+        if config.file_output.include_model_info:
+            markdown_content.append(f"**AI Model:** {model_info}")
+            markdown_content.append("")
+
+        # Add summary content
+        markdown_content.append("## Summary")
+        markdown_content.append("")
+
+        # Split summary into lines and format each line
+        summary_lines = summary.split("\n")
+        for line in summary_lines:
+            line = line.strip()
+            if not line:
+                continue
+
+            # Format headers and key information
+            if any(
+                line.lower().startswith(prefix)
+                for prefix in [
+                    "alert",
+                    "route",
+                    "effect",
+                    "cause",
+                    "severity",
+                    "timeframe",
+                    "overview",
+                    "summary",
+                ]
+            ):
+                markdown_content.append(f"### {line}")
+            elif line.endswith(":") and len(line) < 50:
+                markdown_content.append(f"**{line}**")
+            else:
+                markdown_content.append(line)
+
+        markdown_content.append("")
+
+        # Add alert details if available
+        if alerts:
+            markdown_content.append("## Alert Details")
+            markdown_content.append("")
+
+            for i, alert in enumerate(alerts, 1):
+                markdown_content.append(f"### Alert {i}: {alert.attributes.header}")
+                markdown_content.append("")
+
+                if (
+                    alert.attributes.short_header
+                    and alert.attributes.short_header != alert.attributes.header
+                ):
+                    markdown_content.append(
+                        f"**Short Header:** {alert.attributes.short_header}"
+                    )
+                    markdown_content.append("")
+
+                if alert.attributes.effect:
+                    markdown_content.append(f"**Effect:** {alert.attributes.effect}")
+
+                if alert.attributes.severity:
+                    markdown_content.append(
+                        f"**Severity:** {alert.attributes.severity}"
+                    )
+
+                if alert.attributes.cause:
+                    markdown_content.append(f"**Cause:** {alert.attributes.cause}")
+
+                if alert.attributes.timeframe:
+                    markdown_content.append(
+                        f"**Timeframe:** {alert.attributes.timeframe}"
+                    )
+
+                markdown_content.append("")
+
+        # Write to file
+        logger.debug(f"Writing {len(markdown_content)} lines to {file_path}")
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write("\n".join(markdown_content))
+
+        logger.info(f"AI summary successfully saved to {file_path}")
+
+        # Verify file was created
+        if file_path.exists():
+            file_size = file_path.stat().st_size
+            logger.debug(f"File created successfully - size: {file_size} bytes")
+        else:
+            logger.error(f"File was not created at {file_path}")
+
+    except Exception as e:
+        logger.error(f"Failed to save summary to file: {e}", exc_info=True)
+        # Don't fail the main operation if file saving fails
+
+
 # Vehicle Data Endpoints
 @app.get(
     "/vehicles",
@@ -1077,6 +1290,13 @@ async def get_alerts(request: Request) -> Response:  # noqa: ARG001  # pyright: 
                     logger.info(
                         f"Queued AI summary job {job_id} for {len(alerts)} alerts during refresh"
                     )
+
+                    # Save to local file if enabled (this will be updated when the summary job completes)
+                    if CONFIG.file_output.enabled:
+                        logger.debug(
+                            "File output enabled - summary will be saved when AI job completes"
+                        )
+
                 except Exception as e:
                     logger.warning(
                         f"Failed to queue AI summary during alerts refresh: {e}"
@@ -1153,6 +1373,13 @@ async def get_alerts_json(request: Request) -> Response:  # noqa: ARG001  # pyri
                     logger.info(
                         f"Queued AI summary job {job_id} for {len(alerts)} alerts during JSON refresh"
                     )
+
+                    # Save to local file if enabled (this will be updated when the summary job completes)
+                    if CONFIG.file_output.enabled:
+                        logger.debug(
+                            "File output enabled - summary will be saved when AI job completes"
+                        )
+
                 except Exception as e:
                     logger.warning(
                         f"Failed to queue AI summary during alerts JSON refresh: {e}"
@@ -1235,6 +1462,22 @@ async def summarize_alerts(
             cache_key = f"api:alerts:summary:{hash(str(request.alerts))}"
             cache_data = summary_response.model_dump_json()
             await REDIS_CLIENT.setex(cache_key, CONFIG.ollama.cache_ttl, cache_data)
+
+        # Save to local file if enabled
+        if CONFIG.file_output.enabled and request.alerts:
+            logger.debug(
+                f"File output enabled, saving summary for {len(request.alerts)} alerts"
+            )
+            await save_summary_to_file(
+                summary_response.summary,
+                request.alerts,
+                AI_SUMMARIZER.config.model,
+                CONFIG,
+            )
+        else:
+            logger.debug(
+                f"File output check - enabled: {CONFIG.file_output.enabled}, alerts: {len(request.alerts) if request.alerts else 0}"
+            )
 
         return summary_response
 
@@ -1698,6 +1941,32 @@ async def get_active_alert_summaries(
             logger.warning(f"Failed to cache summaries: {e}")
             # Don't fail the request if caching fails
 
+        # Save to local file if enabled
+        if CONFIG.file_output.enabled and alerts:
+            # Create a combined summary for the file
+            combined_summary = "Active Alerts Summary\n\n"
+            for summary_data in summaries:
+                if not summary_data.get("error"):
+                    combined_summary += f"## {summary_data['alert_header']}\n\n"
+                    combined_summary += f"{summary_data['ai_summary']}\n\n"
+                    if summary_data.get("alert_effect"):
+                        combined_summary += (
+                            f"**Effect:** {summary_data['alert_effect']}\n"
+                        )
+                    if summary_data.get("alert_severity"):
+                        combined_summary += (
+                            f"**Severity:** {summary_data['alert_severity']}\n"
+                        )
+                    if summary_data.get("alert_cause"):
+                        combined_summary += (
+                            f"**Cause:** {summary_data['alert_cause']}\n"
+                        )
+                    combined_summary += "\n"
+
+            await save_summary_to_file(
+                combined_summary, alerts, AI_SUMMARIZER.config.model, CONFIG
+            )
+
         return {
             "status": "success",
             "message": f"Generated AI summaries for {len(alerts)} active alerts",
@@ -1875,17 +2144,17 @@ async def get_alert_summary_by_id(
         )
 
 
-@app.post(
-    "/ai/summaries/bulk",
-    summary="Generate AI Summaries for Multiple Alerts",
-    description="Generate AI summaries for a list of specific alerts",
-)
+@app.post("/ai/summaries/bulk")
 @limiter.limit("10/minute")
 async def generate_bulk_alert_summaries(
-    request: Request,  # noqa: ARG001  # pyright: ignore[reportUnusedParameter]
+    request: Request,  # Required for rate limiting
     alert_ids: List[str],
+    style: str = Query(
+        default="comprehensive",
+        description="Summary style - 'comprehensive' (detailed) or 'concise' (brief, 1-2 sentences per alert)",
+    ),
     format: SummaryFormat = Query(
-        SummaryFormat.TEXT, description="Output format for the summaries"
+        default=SummaryFormat.TEXT, description="Output format for the summaries"
     ),
 ) -> dict:
     """Generate AI summaries for multiple specific alerts."""
@@ -1935,6 +2204,7 @@ async def generate_bulk_alert_summaries(
                     config={
                         "include_route_info": True,
                         "include_severity": True,
+                        "style": style,
                     },
                 )
 
@@ -1976,6 +2246,32 @@ async def generate_bulk_alert_summaries(
                     }
                 )
 
+        # Save to local file if enabled
+        if CONFIG.file_output.enabled and target_alerts:
+            # Create a combined summary for the file
+            combined_summary = f"Bulk Alerts Summary ({style} style)\n\n"
+            for summary_data in summaries:
+                if not summary_data.get("error"):
+                    combined_summary += f"## {summary_data['alert_header']}\n\n"
+                    combined_summary += f"{summary_data['ai_summary']}\n\n"
+                    if summary_data.get("alert_effect"):
+                        combined_summary += (
+                            f"**Effect:** {summary_data['alert_effect']}\n"
+                        )
+                    if summary_data.get("alert_severity"):
+                        combined_summary += (
+                            f"**Severity:** {summary_data['alert_severity']}\n"
+                        )
+                    if summary_data.get("alert_cause"):
+                        combined_summary += (
+                            f"**Cause:** {summary_data['alert_cause']}\n"
+                        )
+                    combined_summary += "\n"
+
+            await save_summary_to_file(
+                combined_summary, target_alerts, AI_SUMMARIZER.config.model, CONFIG
+            )
+
         return {
             "status": "success",
             "message": f"Generated summaries for {len(target_alerts)} alerts",
@@ -1990,6 +2286,219 @@ async def generate_bulk_alert_summaries(
         logger.error(f"Failed to generate bulk summaries: {e}", exc_info=True)
         raise HTTPException(
             status_code=500, detail=f"Failed to generate summaries: {str(e)}"
+        )
+
+
+@app.get("/ai/summaries/individual/{alert_id}")
+async def get_individual_alert_summary(
+    alert_id: str,
+    sentence_limit: int = Query(
+        default=2,
+        ge=1,
+        le=5,
+        description="Maximum number of sentences for the summary (1 for ultra-concise, 2+ for standard concise)",
+    ),
+    format: SummaryFormat = Query(
+        default=SummaryFormat.TEXT, description="Output format"
+    ),
+) -> Dict[str, Any]:
+    """Get AI summary for a specific individual alert."""
+    if not AI_SUMMARIZER:
+        raise HTTPException(status_code=503, detail="AI summarizer not available")
+
+    try:
+        # Check if we have a cached individual summary
+        cache_key = f"ai_summary_individual:{alert_id}"
+        cached_summary = await REDIS_CLIENT.get(cache_key)
+
+        if cached_summary:
+            summary_data = json.loads(cached_summary)
+            logger.info(f"Returning cached individual summary for alert {alert_id}")
+
+            # Format the summary if requested
+            if format != SummaryFormat.TEXT:
+                summary_data["summary"] = format_summary(
+                    summary_data["summary"], format
+                )
+
+            return summary_data
+
+        # If no cached summary, return a message indicating it needs to be generated
+        return {
+            "alert_id": alert_id,
+            "summary": f"Individual summary not yet generated. Use the generate endpoint to create a {sentence_limit}-sentence summary.",
+            "status": "pending",
+            "message": f"Individual summaries are generated periodically. Check back later or use the generate endpoint for a {sentence_limit}-sentence summary.",
+            "sentence_limit": sentence_limit,
+        }
+
+    except Exception as e:
+        logger.error(f"Error fetching individual alert summary for {alert_id}: {e}")
+        raise HTTPException(
+            status_code=500, detail=f"Error fetching individual summary: {str(e)}"
+        )
+
+
+@app.post("/ai/summaries/individual/generate")
+async def generate_individual_alert_summary(
+    alert_id: str,
+    style: str = Query(
+        default="concise",
+        description="Summary style - 'concise' (1-2 sentences) or 'comprehensive' (detailed)",
+    ),
+    sentence_limit: int = Query(
+        default=2,
+        ge=1,
+        le=5,
+        description="Maximum number of sentences for the summary (1 for ultra-concise, 2+ for standard concise)",
+    ),
+    format: SummaryFormat = Query(
+        default=SummaryFormat.TEXT, description="Output format"
+    ),
+) -> Dict[str, Any]:
+    """Force generation of an individual alert summary."""
+    if not AI_SUMMARIZER:
+        raise HTTPException(status_code=503, detail="AI summarizer not available")
+
+    try:
+        # Fetch the specific alert
+        async with aiohttp.ClientSession(base_url=MBTA_V3_ENDPOINT) as session:
+            alerts = await fetch_alerts_with_retry(CONFIG, session)
+
+        # Find the specific alert
+        target_alert = None
+        for alert in alerts:
+            if alert.id == alert_id:
+                target_alert = alert
+                break
+
+        if not target_alert:
+            raise HTTPException(status_code=404, detail=f"Alert {alert_id} not found")
+
+        # Generate the individual summary
+        summary = await AI_SUMMARIZER.summarize_individual_alert(
+            target_alert, style=style, sentence_limit=sentence_limit
+        )
+
+        # Format the summary if requested
+        if format != SummaryFormat.TEXT:
+            summary = format_summary(summary, format)
+
+        # Store in cache
+        cache_key = f"ai_summary_individual:{alert_id}"
+        summary_data = {
+            "alert_id": alert_id,
+            "summary": summary,
+            "style": style,
+            "sentence_limit": sentence_limit,
+            "generated_at": datetime.now().isoformat(),
+            "format": format.value,
+        }
+
+        await REDIS_CLIENT.setex(
+            cache_key, 3600, json.dumps(summary_data)
+        )  # 1 hour TTL
+
+        # Save to local file if enabled
+        if CONFIG.file_output.enabled and target_alert:
+            # Create a summary for the file
+            file_summary = "Individual Alert Summary\n\n"
+            file_summary += f"## {target_alert.attributes.header}\n\n"
+            file_summary += f"{summary}\n\n"
+            if target_alert.attributes.effect:
+                file_summary += f"**Effect:** {target_alert.attributes.effect}\n"
+            if target_alert.attributes.severity:
+                file_summary += f"**Severity:** {target_alert.attributes.severity}\n"
+            if target_alert.attributes.cause:
+                file_summary += f"**Cause:** {target_alert.attributes.cause}\n"
+            if target_alert.attributes.timeframe:
+                file_summary += f"**Timeframe:** {target_alert.attributes.timeframe}\n"
+            file_summary += (
+                f"\n**Style:** {style}\n**Sentence Limit:** {sentence_limit}\n"
+            )
+
+            await save_summary_to_file(
+                file_summary, [target_alert], AI_SUMMARIZER.config.model, CONFIG
+            )
+
+        return summary_data
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error generating individual alert summary for {alert_id}: {e}")
+        raise HTTPException(
+            status_code=500, detail=f"Error generating individual summary: {str(e)}"
+        )
+
+
+@app.post("/ai/summaries/generate")
+async def generate_ai_summary_with_style(
+    alerts: List[AlertResource],
+    style: str = Query(
+        default="comprehensive",
+        description="Summary style - 'comprehensive' (detailed) or 'concise' (brief, 1-2 sentences per alert)",
+    ),
+    format: SummaryFormat = Query(
+        default=SummaryFormat.TEXT, description="Output format for the summary"
+    ),
+    include_route_info: bool = Query(
+        default=True, description="Include route information"
+    ),
+    include_severity: bool = Query(
+        default=True, description="Include severity information"
+    ),
+) -> Dict[str, Any]:
+    """Generate AI summary with specified style and format."""
+    if not AI_SUMMARIZER:
+        raise HTTPException(status_code=503, detail="AI summarizer not available")
+
+    try:
+        # Create summarization request with style
+        request = SummarizationRequest(
+            alerts=alerts,
+            include_route_info=include_route_info,
+            include_severity=include_severity,
+            format=format.value,
+            style=style,
+        )
+
+        # Generate summary
+        response = await AI_SUMMARIZER.summarize_alerts(request)
+
+        # Extract the summary text
+        summary = response.summary
+
+        # Format the summary if requested
+        if format != SummaryFormat.TEXT:
+            summary = format_summary(summary, format)
+
+        # Save to local file if enabled
+        if CONFIG.file_output.enabled and alerts:
+            logger.debug(
+                f"File output enabled, saving summary for {len(alerts)} alerts"
+            )
+            await save_summary_to_file(
+                summary, alerts, AI_SUMMARIZER.config.model, CONFIG
+            )
+        else:
+            logger.debug(
+                f"File output check - enabled: {CONFIG.file_output.enabled}, alerts: {len(alerts) if alerts else 0}"
+            )
+
+        return {
+            "summary": summary,
+            "alert_count": len(alerts),
+            "style": style,
+            "format": format.value,
+            "model_used": AI_SUMMARIZER.config.model,
+            "generated_at": datetime.now().isoformat(),
+        }
+
+    except Exception as e:
+        logger.error(f"Error generating AI summary with style {style}: {e}")
+        raise HTTPException(
+            status_code=500, detail=f"Error generating summary: {str(e)}"
         )
 
 
