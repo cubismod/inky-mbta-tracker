@@ -12,6 +12,7 @@ from queue import Full, Queue
 from typing import Any, AsyncGenerator, Awaitable, Callable, Dict, List
 
 import aiohttp
+import textdistance
 import uvicorn
 from ai_summarizer import (
     AISummarizer,
@@ -822,6 +823,68 @@ def format_summary(summary: str, format_type: SummaryFormat) -> str:
         return summary
 
 
+def validate_ai_summary(
+    summary: str, alerts: List[AlertResource], min_similarity: float = 0.105
+) -> tuple[bool, float, str]:
+    """
+    Validate AI-generated summary using Levenshtein similarity.
+
+    Args:
+        summary: The AI-generated summary text
+        alerts: List of input alerts
+        min_similarity: Minimum similarity threshold (0.0 to 1.0)
+
+    Returns:
+        Tuple of (is_valid, similarity_score, reason)
+    """
+    try:
+        if not alerts:
+            return False, 0.0, "No alerts provided for validation"
+
+        if not summary or len(summary.strip()) < 10:
+            return False, 0.0, "Summary too short or empty"
+
+        # Extract key information from alerts for comparison
+        alert_texts = []
+        for alert in alerts:
+            # Combine header, effect, cause, and severity
+            alert_text = f"{alert.attributes.header} "
+            if alert.attributes.effect:
+                alert_text += f"{alert.attributes.effect} "
+            if alert.attributes.cause:
+                alert_text += f"{alert.attributes.cause} "
+            if alert.attributes.severity:
+                alert_text += f"{alert.attributes.severity} "
+            alert_texts.append(alert_text.strip())
+
+        # Create a combined input text
+        input_text = " ".join(alert_texts)
+
+        # Calculate Levenshtein similarity
+        similarity = textdistance.levenshtein.normalized_similarity(
+            input_text.lower(), summary.lower()
+        )
+
+        # Additional validation checks
+        is_valid = similarity >= min_similarity
+
+        reason = ""
+        if not is_valid:
+            reason = f"Similarity {similarity:.3f} below threshold {min_similarity}"
+        else:
+            reason = f"Similarity {similarity:.3f} above threshold {min_similarity}"
+
+        logger.debug(
+            f"Summary validation - similarity: {similarity:.3f}, valid: {is_valid}, reason: {reason}"
+        )
+
+        return is_valid, similarity, reason
+
+    except Exception as e:
+        logger.error(f"Error validating AI summary: {e}", exc_info=True)
+        return False, 0.0, f"Validation error: {str(e)}"
+
+
 async def save_summary_to_file(
     summary: str, alerts: List[AlertResource], model_info: str, config: Config
 ) -> None:
@@ -833,6 +896,23 @@ async def save_summary_to_file(
     if not config.file_output.enabled:
         logger.debug("File output is disabled, skipping file save")
         return
+
+    # Validate summary if enabled
+    if config.file_output.validate_summaries:
+        is_valid, similarity, reason = validate_ai_summary(
+            summary, alerts, config.file_output.min_similarity_threshold
+        )
+
+        if not is_valid:
+            logger.warning(f"Summary validation failed: {reason}")
+            logger.warning(
+                f"Summary rejected - similarity {similarity:.3f} below threshold {config.file_output.min_similarity_threshold}"
+            )
+            return
+        else:
+            logger.info(f"Summary validation passed - similarity {similarity:.3f}")
+    else:
+        logger.debug("Summary validation disabled, proceeding with file save")
 
     try:
         import pathlib
@@ -855,6 +935,16 @@ async def save_summary_to_file(
             logger.error(f"Output path {output_dir} is not a directory")
             return
 
+        # Test write permissions
+        try:
+            test_file = output_dir / ".test_write"
+            test_file.write_text("test")
+            test_file.unlink()
+            logger.debug("Write permissions verified for output directory")
+        except Exception as e:
+            logger.error(f"Write permission test failed: {e}")
+            return
+
         # Build markdown content
         markdown_content = []
 
@@ -875,6 +965,16 @@ async def save_summary_to_file(
 
         if config.file_output.include_model_info:
             markdown_content.append(f"**AI Model:** {model_info}")
+            markdown_content.append("")
+
+        # Add validation info if validation was performed
+        if config.file_output.validate_summaries:
+            is_valid, similarity, _ = validate_ai_summary(
+                summary, alerts, config.file_output.min_similarity_threshold
+            )
+            markdown_content.append(
+                f"**Validation:** PASSED (similarity: {similarity:.3f})"
+            )
             markdown_content.append("")
 
         # Add summary content
@@ -1886,6 +1986,44 @@ async def get_active_alert_summaries(
                     },
                 )
 
+                # Validate individual summary if validation is enabled
+                if CONFIG.file_output.validate_summaries:
+                    is_valid, similarity, reason = validate_ai_summary(
+                        summary, [alert], CONFIG.file_output.min_similarity_threshold
+                    )
+
+                    if not is_valid:
+                        logger.warning(
+                            f"Active alerts summary validation failed for alert {alert.id}: {reason}"
+                        )
+                        logger.warning(
+                            f"Summary rejected - similarity {similarity:.3f} below threshold {CONFIG.file_output.min_similarity_threshold}"
+                        )
+                        # Add error entry instead of invalid summary
+                        summaries.append(
+                            {
+                                "alert_id": alert.id,
+                                "alert_header": alert.attributes.header,
+                                "alert_short_header": alert.attributes.short_header,
+                                "alert_effect": alert.attributes.effect,
+                                "alert_severity": alert.attributes.severity,
+                                "alert_cause": alert.attributes.cause,
+                                "alert_timeframe": alert.attributes.timeframe,
+                                "ai_summary": f"Summary validation failed: {reason}",
+                                "format": format,
+                                "model_used": AI_SUMMARIZER.config.model,
+                                "generated_at": datetime.now().isoformat(),
+                                "error": True,
+                                "validation_failed": True,
+                                "similarity_score": similarity,
+                            }
+                        )
+                        continue
+                    else:
+                        logger.debug(
+                            f"Active alerts summary validation passed for alert {alert.id} - similarity {similarity:.3f}"
+                        )
+
                 # Apply formatting if requested
                 if format != SummaryFormat.TEXT:
                     summary = format_summary(summary, format)
@@ -2208,6 +2346,44 @@ async def generate_bulk_alert_summaries(
                     },
                 )
 
+                # Validate individual summary if validation is enabled
+                if CONFIG.file_output.validate_summaries:
+                    is_valid, similarity, reason = validate_ai_summary(
+                        summary, [alert], CONFIG.file_output.min_similarity_threshold
+                    )
+
+                    if not is_valid:
+                        logger.warning(
+                            f"Bulk summary validation failed for alert {alert.id}: {reason}"
+                        )
+                        logger.warning(
+                            f"Summary rejected - similarity {similarity:.3f} below threshold {CONFIG.file_output.min_similarity_threshold}"
+                        )
+                        # Add error entry instead of invalid summary
+                        summaries.append(
+                            {
+                                "alert_id": alert.id,
+                                "alert_header": alert.attributes.header,
+                                "alert_short_header": alert.attributes.short_header,
+                                "alert_effect": alert.attributes.effect,
+                                "alert_severity": alert.attributes.severity,
+                                "alert_cause": alert.attributes.cause,
+                                "alert_timeframe": alert.attributes.timeframe,
+                                "ai_summary": f"Summary validation failed: {reason}",
+                                "format": format,
+                                "model_used": AI_SUMMARIZER.config.model,
+                                "generated_at": datetime.now().isoformat(),
+                                "error": True,
+                                "validation_failed": True,
+                                "similarity_score": similarity,
+                            }
+                        )
+                        continue
+                    else:
+                        logger.debug(
+                            f"Bulk summary validation passed for alert {alert.id} - similarity {similarity:.3f}"
+                        )
+
                 # Apply formatting if requested
                 if format != SummaryFormat.TEXT:
                     summary = format_summary(summary, format)
@@ -2379,6 +2555,28 @@ async def generate_individual_alert_summary(
         summary = await AI_SUMMARIZER.summarize_individual_alert(
             target_alert, style=style, sentence_limit=sentence_limit
         )
+
+        # Validate summary if validation is enabled
+        if CONFIG.file_output.validate_summaries:
+            is_valid, similarity, reason = validate_ai_summary(
+                summary, [target_alert], CONFIG.file_output.min_similarity_threshold
+            )
+
+            if not is_valid:
+                logger.warning(
+                    f"Individual summary validation failed for alert {alert_id}: {reason}"
+                )
+                logger.warning(
+                    f"Summary rejected - similarity {similarity:.3f} below threshold {CONFIG.file_output.min_similarity_threshold}"
+                )
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"Generated summary failed validation: {reason}. Similarity: {similarity:.3f}",
+                )
+            else:
+                logger.info(
+                    f"Individual summary validation passed for alert {alert_id} - similarity {similarity:.3f}"
+                )
 
         # Format the summary if requested
         if format != SummaryFormat.TEXT:

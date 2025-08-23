@@ -60,6 +60,14 @@ class FileOutputConfig(BaseModel):
     include_model_info: bool = Field(
         default=True, description="Include model information in the markdown content"
     )
+    validate_summaries: bool = Field(
+        default=True,
+        description="Validate summaries using Levenshtein similarity before saving",
+    )
+    min_similarity_threshold: float = Field(
+        default=0.105,
+        description="Minimum similarity threshold for summary validation (0.0 to 1.0)",
+    )
 
 
 class Config(BaseModel):
@@ -173,10 +181,38 @@ def load_config() -> Config:
                 f"Overriding IMT_FILE_OUTPUT_INCLUDE_MODEL_INFO with: {model_str} -> {config.file_output.include_model_info}"
             )
 
+    # Override with environment variables for similarity validation
+    if os.getenv("IMT_FILE_OUTPUT_VALIDATE_SUMMARIES"):
+        validate_str = os.getenv("IMT_FILE_OUTPUT_VALIDATE_SUMMARIES")
+        if validate_str:
+            config.file_output.validate_summaries = validate_str.lower() == "true"
+            logger.debug(
+                f"Overriding IMT_FILE_OUTPUT_VALIDATE_SUMMARIES with: {validate_str} -> {config.file_output.validate_summaries}"
+            )
+
+    if os.getenv("IMT_FILE_OUTPUT_MIN_SIMILARITY"):
+        similarity_str = os.getenv("IMT_FILE_OUTPUT_MIN_SIMILARITY")
+        if similarity_str:
+            try:
+                config.file_output.min_similarity_threshold = float(similarity_str)
+                logger.debug(
+                    f"Overriding IMT_FILE_OUTPUT_MIN_SIMILARITY with: {similarity_str} -> {config.file_output.min_similarity_threshold}"
+                )
+            except ValueError:
+                logger.warning(
+                    f"Invalid similarity threshold value: {similarity_str}, using default"
+                )
+
     logger.debug(f"Final config - file_output.enabled: {config.file_output.enabled}")
     logger.debug(
         f"Final config - file_output.output_directory: {config.file_output.output_directory}"
     )
     logger.debug(f"Final config - file_output.filename: {config.file_output.filename}")
+    logger.debug(
+        f"Final config - file_output.validate_summaries: {config.file_output.validate_summaries}"
+    )
+    logger.debug(
+        f"Final config - file_output.min_similarity_threshold: {config.file_output.min_similarity_threshold}"
+    )
 
     return config
