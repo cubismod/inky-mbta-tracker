@@ -23,6 +23,7 @@ from ai_summarizer import (
 from config import Config, load_config
 from consts import (
     ALERTS_CACHE_TTL,
+    HOUR,
     MBTA_V3_ENDPOINT,
     MINUTE,
     SHAPES_CACHE_TTL,
@@ -327,7 +328,7 @@ async def periodic_ai_summary_refresh() -> None:
     logger.info("Starting periodic AI summary refresh task")
     while True:
         try:
-            sleep_time = random.randint(4 * MINUTE, 45 * MINUTE)
+            sleep_time = random.randint(4 * MINUTE, 2 * HOUR)
             await asyncio.sleep(sleep_time)
 
             if AI_SUMMARIZER:
@@ -405,7 +406,7 @@ async def _periodic_individual_alert_summaries() -> None:
                     f"Queued {len(job_ids)} individual alert summary jobs (1-sentence limit)"
                 )
 
-            sleep_time = random.randint(4 * MINUTE, 45 * MINUTE)
+            sleep_time = random.randint(4 * MINUTE, 2 * HOUR)
             await asyncio.sleep(sleep_time)
 
         except Exception as e:
