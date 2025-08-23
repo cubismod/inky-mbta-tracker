@@ -102,6 +102,14 @@ class OllamaConfig(BaseModel):
         default=3, description="Maximum retry attempts for API calls"
     )
     cache_ttl: int = Field(default=3600, description="Cache TTL in seconds")
+    min_similarity_threshold: float = Field(
+        default=0.105,
+        description="Minimum similarity threshold for response validation (0.0 to 1.0)",
+    )
+    validate_only_short_responses: bool = Field(
+        default=True,
+        description="Only apply similarity validation to responses with 1 sentence or less",
+    )
 
 
 class SummaryJobQueue:
@@ -570,6 +578,8 @@ class AISummarizer:
         env_temperature = os.getenv("OLLAMA_TEMPERATURE")
         env_max_retries = os.getenv("OLLAMA_MAX_RETRIES")
         env_cache_ttl = os.getenv("OLLAMA_CACHE_TTL")
+        env_min_similarity = os.getenv("OLLAMA_MIN_SIMILARITY")
+        env_validate_only_short = os.getenv("OLLAMA_VALIDATE_ONLY_SHORT_RESPONSES")
 
         # If all required environment variables are set, use them
         if env_base_url and env_model:
@@ -581,6 +591,10 @@ class AISummarizer:
                 temperature=self._safe_float(env_temperature, 0.1),
                 max_retries=self._safe_int(env_max_retries, 3),
                 cache_ttl=self._safe_int(env_cache_ttl, 3600),
+                min_similarity_threshold=self._safe_float(env_min_similarity, 0.105),
+                validate_only_short_responses=self._safe_bool(
+                    env_validate_only_short, True
+                ),
             )
 
         # Fallback to config.json if environment variables are not complete
@@ -604,6 +618,12 @@ class AISummarizer:
                         temperature=ollama_config.get("temperature", 0.1),
                         max_retries=ollama_config.get("max_retries", 3),
                         cache_ttl=ollama_config.get("cache_ttl", 3600),
+                        min_similarity_threshold=ollama_config.get(
+                            "min_similarity_threshold", 0.105
+                        ),
+                        validate_only_short_responses=ollama_config.get(
+                            "validate_only_short_responses", True
+                        ),
                     )
         except Exception as e:
             logger.warning(f"Failed to load config from {config_path}: {e}")
@@ -617,6 +637,8 @@ class AISummarizer:
             temperature=0.1,
             max_retries=3,
             cache_ttl=3600,
+            min_similarity_threshold=0.105,
+            validate_only_short_responses=True,
         )
 
     def _safe_int(self, value: Optional[str], default: int) -> int:
@@ -638,6 +660,22 @@ class AISummarizer:
             # Remove any comments and whitespace
             clean_value = value.split("#")[0].strip()
             return float(clean_value)
+        except (ValueError, AttributeError):
+            return default
+
+    def _safe_bool(self, value: Optional[str], default: bool) -> bool:
+        """Safely parse boolean from environment variable."""
+        if not value:
+            return default
+        try:
+            # Remove any comments and whitespace
+            clean_value = value.split("#")[0].strip().lower()
+            if clean_value in ("true", "1", "yes", "on"):
+                return True
+            elif clean_value in ("false", "0", "no", "off"):
+                return False
+            else:
+                return default
         except (ValueError, AttributeError):
             return default
 
@@ -933,8 +971,25 @@ class AISummarizer:
         else:
             return summary
 
-    def _clean_model_response(self, summary: str) -> str:
-        """Clean up direct responses from the model and remove conversational phrases using regex."""
+    def _clean_model_response(
+        self,
+        summary: str,
+        original_input: Optional[str] = None,
+        min_similarity: Optional[float] = None,
+        use_config_threshold: bool = True,
+    ) -> str:
+        """
+        Clean up direct responses from the model and remove conversational phrases using regex.
+        Optionally validate similarity to original input.
+
+        Args:
+            summary: The AI-generated summary text to clean
+            original_input: Original input text for similarity validation (optional)
+            min_similarity: Minimum similarity threshold for validation (0.0 to 1.0)
+
+        Returns:
+            Cleaned summary text, or error message if similarity validation fails
+        """
         if not summary or len(summary.strip()) == 0:
             return summary
 
@@ -1066,14 +1121,96 @@ class AISummarizer:
         logger.debug(
             f"Cleaning model response (cleaned length: {len(cleaned_summary)})"
         )
+
+        # Count sentences to determine if similarity validation should be applied
+        sentence_count = self._count_sentences(cleaned_summary)
+        logger.debug(f"Response contains {sentence_count} sentence(s)")
+
+        # Apply similarity validation if original input is provided, validation is enabled, and response length criteria are met
+        should_validate = (
+            original_input
+            and cleaned_summary
+            and self.config.min_similarity_threshold > 0
+            and (not self.config.validate_only_short_responses or sentence_count <= 1)
+        )
+
+        if should_validate:
+            if sentence_count <= 1:
+                logger.debug(
+                    "Applying similarity validation for short response (1 sentence)"
+                )
+            else:
+                logger.debug(
+                    f"Applying similarity validation for longer response ({sentence_count} sentences) - short response validation disabled"
+                )
+        elif (
+            original_input
+            and cleaned_summary
+            and self.config.min_similarity_threshold > 0
+            and self.config.validate_only_short_responses
+            and sentence_count > 1
+        ):
+            logger.debug(
+                f"Skipping similarity validation for longer response ({sentence_count} sentences)"
+            )
+        elif not original_input:
+            logger.debug("Skipping similarity validation - no original input provided")
+        elif not self.config.min_similarity_threshold > 0:
+            logger.debug("Skipping similarity validation - validation disabled")
+
+        if should_validate:
+            try:
+                # Import textdistance for similarity calculation
+                import textdistance
+
+                if min_similarity is not None:
+                    threshold = min_similarity
+                elif use_config_threshold:
+                    threshold = self.config.min_similarity_threshold
+                else:
+                    threshold = 0.105
+
+                # Calculate Levenshtein similarity, handling None values safely
+                original = original_input.lower() if original_input is not None else ""
+                summary = cleaned_summary.lower() if cleaned_summary is not None else ""
+                similarity = textdistance.levenshtein.normalized_similarity(
+                    original, summary
+                )
+
+                logger.debug(
+                    f"Similarity validation - score: {similarity:.3f}, threshold: {threshold}"
+                )
+
+                if similarity < threshold:
+                    logger.warning(
+                        f"Cleaned summary failed similarity validation: {similarity:.3f} below threshold {threshold}"
+                    )
+                    # Return an error message indicating the summary was too different
+                    return f"Generated summary failed similarity validation (score: {similarity:.3f}, threshold: {threshold}). The AI response may be off-topic or irrelevant."
+                else:
+                    logger.debug(
+                        f"Cleaned summary passed similarity validation: {similarity:.3f}"
+                    )
+
+            except ImportError:
+                logger.warning(
+                    "textdistance not available, skipping similarity validation"
+                )
+            except Exception as e:
+                logger.error(f"Error during similarity validation: {e}", exc_info=True)
+                # Continue with the cleaned summary even if validation fails
+
         return cleaned_summary
 
-    async def _call_ollama(self, prompt: str) -> str:
+    async def _call_ollama(
+        self, prompt: str, alerts: Optional[List[AlertResource]] = None
+    ) -> str:
         """
         Call the Ollama API to generate a summary using the official client.
 
         Args:
             prompt: The prompt to send to the model
+            alerts: Optional list of alerts for similarity validation
 
         Returns:
             Generated summary text
@@ -1115,8 +1252,15 @@ class AISummarizer:
                 if content is None:
                     return "No content generated by model"
                 cleaned_content = content.strip()
-                # Clean up conversational starters
-                cleaned_content = self._clean_model_response(cleaned_content)
+                # Clean up conversational starters and validate similarity
+                alert_text = (
+                    self._extract_alert_text_for_validation(alerts)
+                    if alerts
+                    else prompt
+                )
+                cleaned_content = self._clean_model_response(
+                    cleaned_content, alert_text
+                )
                 # Check for truncation
                 # logger.debug(
                 #     f"Generated summary content (length: {len(final_content)}):\n{final_content}"
@@ -1128,16 +1272,30 @@ class AISummarizer:
                 if content is None:
                     return "No content generated by model"
                 cleaned_content = content.strip()
-                # Clean up conversational starters
-                cleaned_content = self._clean_model_response(cleaned_content)
+                # Clean up conversational starters and validate similarity
+                alert_text = (
+                    self._extract_alert_text_for_validation(alerts)
+                    if alerts
+                    else prompt
+                )
+                cleaned_content = self._clean_model_response(
+                    cleaned_content, alert_text
+                )
                 # Check for truncation
 
                 return cleaned_content
             else:
                 # Fallback: try to get content from response directly
                 fallback_content = str(response).strip()
-                # Clean up conversational starters
-                fallback_content = self._clean_model_response(fallback_content)
+                # Clean up conversational starters and validate similarity
+                alert_text = (
+                    self._extract_alert_text_for_validation(alerts)
+                    if alerts
+                    else prompt
+                )
+                fallback_content = self._clean_model_response(
+                    fallback_content, alert_text
+                )
                 # Check for truncation
                 # final_content = self._detect_truncation(fallback_content, prompt)
                 # logger.debug(
@@ -1232,7 +1390,7 @@ class AISummarizer:
                 )
 
             # Generate group summary using Ollama
-            summary = await self._call_ollama(prompt)
+            summary = await self._call_ollama(prompt, request.alerts)
 
             # Apply formatting if requested
             if request.format != "text":
@@ -1282,6 +1440,62 @@ class AISummarizer:
             model_used=self.config.model,
             processing_time_ms=round(processing_time, 2),
         )
+
+    def _extract_alert_text_for_validation(self, alerts: List[AlertResource]) -> str:
+        """
+        Extract key text from alerts for similarity validation.
+
+        Args:
+            alerts: List of alerts to extract text from
+
+        Returns:
+            Combined text string for similarity comparison
+        """
+        if not alerts:
+            return ""
+
+        alert_texts = []
+        for alert in alerts:
+            if not self._validate_alert_structure(alert):
+                continue
+
+            attrs = alert.attributes
+            alert_text = f"{attrs.header} "
+
+            if attrs.effect:
+                alert_text += f"{attrs.effect} "
+            if attrs.cause and attrs.cause != "UNKNOWN_CAUSE":
+                alert_text += f"{attrs.cause} "
+            if attrs.severity:
+                alert_text += f"{attrs.severity} "
+
+            alert_texts.append(alert_text.strip())
+
+        return " ".join(alert_texts)
+
+    def _count_sentences(self, text: str) -> int:
+        """
+        Count the number of sentences in the given text.
+
+        Args:
+            text: The text to analyze
+
+        Returns:
+            Number of sentences (minimum 1)
+        """
+        if not text or not text.strip():
+            return 0
+
+        # Split by common sentence terminators
+        # This handles periods, exclamation marks, question marks, and colons
+        sentence_terminators = r"[.!?:]\s+"
+        sentences = re.split(sentence_terminators, text.strip())
+
+        # Filter out empty sentences and count
+        sentence_count = len([s for s in sentences if s.strip()])
+
+        # Ensure at least 1 sentence is returned
+        return max(1, sentence_count)
 
     def _validate_alert_structure(self, alert: AlertResource) -> bool:
         """
@@ -1347,13 +1561,13 @@ class AISummarizer:
                 )
 
             # Generate the summary using Ollama
-            summary = await self._call_ollama(alert_text)
+            summary = await self._call_ollama(alert_text, [alert])
 
             if not summary:
                 return f"Unable to generate summary for alert {alert.id}."
 
-            # Clean the model response
-            cleaned_summary = self._clean_model_response(summary)
+            # Clean the model response and validate similarity
+            cleaned_summary = self._clean_model_response(summary, alert_text)
 
             logger.info(f"Generated {style} individual summary for alert {alert.id}")
             return cleaned_summary
@@ -1436,6 +1650,32 @@ Keep it brief and focused."""
         except Exception as e:
             logger.error(f"Error formatting single alert for prompt: {e}")
             return f"Error formatting alert {getattr(alert, 'id', 'Unknown')}: {str(e)}"
+
+    def set_similarity_threshold(self, threshold: float) -> None:
+        """
+        Set the minimum similarity threshold for response validation.
+
+        Args:
+            threshold: Minimum similarity threshold (0.0 to 1.0).
+                      Set to 0.0 to disable validation entirely.
+        """
+        if not 0.0 <= threshold <= 1.0:
+            raise ValueError("Similarity threshold must be between 0.0 and 1.0")
+
+        self.config.min_similarity_threshold = threshold
+        logger.info(f"Updated similarity threshold to {threshold}")
+
+    def set_short_response_validation(self, enabled: bool) -> None:
+        """
+        Enable or disable similarity validation for responses longer than 1 sentence.
+
+        Args:
+            enabled: If True, only validate responses with 1 sentence or less.
+                    If False, validate all responses regardless of length.
+        """
+        self.config.validate_only_short_responses = enabled
+        status = "enabled" if enabled else "disabled"
+        logger.info(f"Short response validation {status}")
 
     async def health_check(self) -> bool:
         """
