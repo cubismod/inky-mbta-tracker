@@ -1,8 +1,6 @@
 import asyncio
 import hashlib
-import json
 import logging
-import os
 import re
 import time
 from dataclasses import dataclass, field
@@ -10,6 +8,7 @@ from datetime import datetime, timedelta
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
+from config import OllamaConfig
 from mbta_responses import AlertResource
 from ollama import AsyncClient
 from ollama_queue_manager import (
@@ -21,6 +20,7 @@ from ollama_queue_manager import (
     OllamaQueueWorker,
 )
 from pydantic import BaseModel, Field
+from shared_types.shared_types import SummarizationResponse, SummaryCacheEntry
 from utils import get_redis
 
 logger = logging.getLogger(__name__)
@@ -81,50 +81,6 @@ class SummarizationRequest(BaseModel):
     style: str = Field(
         default="comprehensive",
         description="Summary style - 'comprehensive' (detailed) or 'concise' (brief, 1-2 sentences per alert)",
-    )
-
-
-class SummarizationResponse(BaseModel):
-    """Response model for alert summarization"""
-
-    summary: str
-    alert_count: int
-    model_used: str
-    processing_time_ms: float
-
-
-class OllamaConfig(BaseModel):
-    """Configuration for Ollama AI summarizer"""
-
-    base_url: str = Field(
-        default="http://localhost:11434", description="Ollama API base URL"
-    )
-    model: str = Field(
-        default="llama3.2:1b", description="Model to use for summarization"
-    )
-    timeout: int = Field(default=30, description="Request timeout in seconds")
-    temperature: float = Field(
-        default=0.1, description="Model temperature for generation"
-    )
-    max_retries: int = Field(
-        default=3, description="Maximum retry attempts for API calls"
-    )
-    cache_ttl: int = Field(default=3600, description="Cache TTL in seconds")
-    min_similarity_threshold: float = Field(
-        default=0.105,
-        description="Minimum similarity threshold for response validation (0.0 to 1.0)",
-    )
-    validate_only_short_responses: bool = Field(
-        default=True,
-        description="Only apply similarity validation to responses with 1 sentence or less",
-    )
-    enable_summary_rewriting: bool = Field(
-        default=True,
-        description="Enable automatic summary rewriting for clarity and readability",
-    )
-    rewrite_sentence_tolerance: int = Field(
-        default=1,
-        description="Maximum allowed sentence count difference between original and rewritten summaries (0 = exact match)",
     )
 
 
@@ -275,20 +231,20 @@ class SummaryJobQueue:
             cache_key = f"ai_summary:{alerts_hash}"
 
             # Store summary data
-            summary_data = {
-                "summary": summary,
-                "alert_count": len(alerts),
-                "alerts_hash": alerts_hash,
-                "generated_at": datetime.now().isoformat(),
-                "config": config,
-                "ttl": 3600,  # 1 hour default TTL
-            }
+            summary_data = SummaryCacheEntry(
+                summary=summary,
+                alert_count=len(alerts),
+                alerts_hash=alerts_hash,
+                generated_at=datetime.now(),
+                config=config,
+                ttl=3600,  # 1 hour default TTL
+            )
 
             # Store in Redis with TTL
             await self.redis.setex(
                 cache_key,
                 3600,  # 1 hour TTL
-                json.dumps(summary_data),
+                summary_data.model_dump_json(),
             )
 
             # Also store a mapping from alerts to summary hash for quick lookup
@@ -318,9 +274,9 @@ class SummaryJobQueue:
 
             cached_data = await self.redis.get(cache_key)
             if cached_data:
-                summary_data = json.loads(cached_data)
+                summary_data = SummaryCacheEntry.model_validate_json(cached_data)
                 logger.info(f"Retrieved cached summary from Redis: {cache_key}")
-                return summary_data.get("summary")
+                return summary_data.summary
 
             return None
 
@@ -409,6 +365,9 @@ class SummaryJobQueue:
                 # Adaptive backoff based on system load
                 await self._adaptive_backoff()
 
+            except asyncio.CancelledError:
+                # Cooperatively exit on cancellation
+                break
             except (ConnectionError, TimeoutError) as e:
                 logger.error(f"Connection error in job worker loop: {e}", exc_info=True)
                 await asyncio.sleep(1)
@@ -573,14 +532,38 @@ class AISummarizer:
     a concise, human-readable summary using local AI models via Ollama.
     """
 
-    def __init__(self, config: Optional[OllamaConfig] = None):
+    def _severity_to_text(self, severity: int) -> str:
+        """
+        Convert severity level number to human-readable text.
+
+        Args:
+            severity: Severity level (1-10)
+
+        Returns:
+            Human-readable severity description
+        """
+        severity_map = {
+            1: "Minor",
+            2: "Minor",
+            3: "Minor",
+            4: "Moderate",
+            5: "Moderate",
+            6: "Moderate",
+            7: "Major",
+            8: "Major",
+            9: "Major",
+            10: "Severe",
+        }
+        return severity_map.get(severity, f"Level {severity}")
+
+    def __init__(self, config: OllamaConfig):
         """
         Initialize the AI summarizer.
 
         Args:
-            config: Configuration for Ollama endpoint. If None, loads from environment.
+            config: Configuration for Ollama endpoint from main config.
         """
-        self.config = config or self._load_config_from_env()
+        self.config = config
         self._client: Optional[AsyncClient] = None
         self.job_queue = SummaryJobQueue(summarizer=self)
 
@@ -593,129 +576,6 @@ class AISummarizer:
                 redis_client=redis_client,
                 queue_name=getattr(self.config, "queue_name", "ollama_commands"),
             )
-
-    def _load_config_from_env(self) -> OllamaConfig:
-        """Load configuration from environment variables first, then fallback to config.json."""
-
-        # Check environment variables first (highest priority)
-        env_base_url = os.getenv("OLLAMA_BASE_URL")
-        env_model = os.getenv("OLLAMA_MODEL")
-        env_timeout = os.getenv("OLLAMA_TIMEOUT")
-        env_temperature = os.getenv("OLLAMA_TEMPERATURE")
-        env_max_retries = os.getenv("OLLAMA_MAX_RETRIES")
-        env_cache_ttl = os.getenv("OLLAMA_CACHE_TTL")
-        env_min_similarity = os.getenv("OLLAMA_MIN_SIMILARITY")
-        env_validate_only_short = os.getenv("OLLAMA_VALIDATE_ONLY_SHORT_RESPONSES")
-        env_enable_rewriting = os.getenv("OLLAMA_ENABLE_SUMMARY_REWRITING")
-        env_sentence_tolerance = os.getenv("OLLAMA_REWRITE_SENTENCE_TOLERANCE")
-
-        # If all required environment variables are set, use them
-        if env_base_url and env_model:
-            logger.info("Using environment variables for Ollama config")
-            return OllamaConfig(
-                base_url=env_base_url,
-                model=env_model,
-                timeout=self._safe_int(env_timeout, 30),
-                temperature=self._safe_float(env_temperature, 0.1),
-                max_retries=self._safe_int(env_max_retries, 3),
-                cache_ttl=self._safe_int(env_cache_ttl, 3600),
-                min_similarity_threshold=self._safe_float(env_min_similarity, 0.105),
-                validate_only_short_responses=self._safe_bool(
-                    env_validate_only_short, True
-                ),
-                enable_summary_rewriting=self._safe_bool(env_enable_rewriting, True),
-                rewrite_sentence_tolerance=self._safe_int(env_sentence_tolerance, 1),
-            )
-
-        # Fallback to config.json if environment variables are not complete
-        try:
-            config_path = "config.json"
-            if os.path.exists(config_path):
-                with open(config_path, "r") as f:
-                    config_data = json.loads(f.read())
-
-                ollama_config = config_data.get("ollama", {})
-                if ollama_config:
-                    logger.info(
-                        f"Loaded Ollama config from {config_path}: {ollama_config}"
-                    )
-                    return OllamaConfig(
-                        base_url=ollama_config.get(
-                            "base_url", "http://localhost:11434"
-                        ),
-                        model=ollama_config.get("model", "llama3.2:1b"),
-                        timeout=ollama_config.get("timeout", 30),
-                        temperature=ollama_config.get("temperature", 0.1),
-                        max_retries=ollama_config.get("max_retries", 3),
-                        cache_ttl=ollama_config.get("cache_ttl", 3600),
-                        min_similarity_threshold=ollama_config.get(
-                            "min_similarity_threshold", 0.105
-                        ),
-                        validate_only_short_responses=ollama_config.get(
-                            "validate_only_short_responses", True
-                        ),
-                        enable_summary_rewriting=ollama_config.get(
-                            "enable_summary_rewriting", True
-                        ),
-                        rewrite_sentence_tolerance=ollama_config.get(
-                            "rewrite_sentence_tolerance", 1
-                        ),
-                    )
-        except Exception as e:
-            logger.warning(f"Failed to load config from {config_path}: {e}")
-
-        # Final fallback to hardcoded defaults
-        logger.info("Using hardcoded defaults for Ollama config")
-        return OllamaConfig(
-            base_url="http://localhost:11434",
-            model="llama3.2:1b",
-            timeout=30,
-            temperature=0.1,
-            max_retries=3,
-            cache_ttl=3600,
-            min_similarity_threshold=0.105,
-            validate_only_short_responses=True,
-            enable_summary_rewriting=True,
-            rewrite_sentence_tolerance=1,
-        )
-
-    def _safe_int(self, value: Optional[str], default: int) -> int:
-        """Safely parse integer from environment variable."""
-        if not value:
-            return default
-        try:
-            # Remove any comments and whitespace
-            clean_value = value.split("#")[0].strip()
-            return int(clean_value)
-        except (ValueError, AttributeError):
-            return default
-
-    def _safe_float(self, value: Optional[str], default: float) -> float:
-        """Safely parse float from environment variable."""
-        if not value:
-            return default
-        try:
-            # Remove any comments and whitespace
-            clean_value = value.split("#")[0].strip()
-            return float(clean_value)
-        except (ValueError, AttributeError):
-            return default
-
-    def _safe_bool(self, value: Optional[str], default: bool) -> bool:
-        """Safely parse boolean from environment variable."""
-        if not value:
-            return default
-        try:
-            # Remove any comments and whitespace
-            clean_value = value.split("#")[0].strip().lower()
-            if clean_value in ("true", "1", "yes", "on"):
-                return True
-            elif clean_value in ("false", "0", "no", "off"):
-                return False
-            else:
-                return default
-        except (ValueError, AttributeError):
-            return default
 
     def _get_client(self) -> AsyncClient:
         """Get or create Ollama async client."""
@@ -756,6 +616,10 @@ class AISummarizer:
         max_workers = getattr(self.config, "max_workers", 2)
         poll_interval = getattr(self.config, "worker_poll_interval", 1.0)
         max_concurrent = getattr(self.config, "max_concurrent_jobs", 1)
+
+        # Pull the model if it's not already pulled
+        if self.config.model:
+            await self._ollama_pull_model(self.config.model)
 
         logger.info(f"Starting {max_workers} Redis queue workers")
 
@@ -845,31 +709,21 @@ class AISummarizer:
                 parts.append(f"   Brief: {attrs.short_header}")
 
             if attrs.effect:
-                parts.append(f"   Effect: {attrs.effect}")
+                parts.append(
+                    f"   Effect: {self._human_readable_effect_or_cause(attrs.effect)}"
+                )
 
             if include_severity:
-                severity_map = {
-                    1: "Minor",
-                    2: "Minor",
-                    3: "Minor",
-                    4: "Moderate",
-                    5: "Moderate",
-                    6: "Moderate",
-                    7: "Major",
-                    8: "Major",
-                    9: "Major",
-                    10: "Severe",
-                }
-                severity_text = severity_map.get(
-                    attrs.severity, f"Level {attrs.severity}"
-                )
+                severity_text = self._severity_to_text(attrs.severity)
                 parts.append(f"   Severity: {severity_text}")
 
             if attrs.timeframe:
                 parts.append(f"   Timeframe: {attrs.timeframe}")
 
             if attrs.cause and attrs.cause != "UNKNOWN_CAUSE":
-                parts.append(f"   Cause: {attrs.cause}")
+                parts.append(
+                    f"   Cause: {self._human_readable_effect_or_cause(attrs.cause)}"
+                )
 
             prompt_parts.append("\n".join(parts))
 
@@ -901,6 +755,12 @@ class AISummarizer:
         )
 
         return "\n\n".join(prompt_parts)
+
+    def _human_readable_effect_or_cause(self, cause: str) -> str:
+        """
+        Convert a cause to a human readable string.
+        """
+        return cause.lower().replace("_", " ").capitalize()
 
     def _format_alerts_for_prompt_adaptive(
         self, alerts: List[AlertResource], style: str = "comprehensive"
@@ -938,31 +798,21 @@ class AISummarizer:
                 parts.append(f"   Short Header: {attrs.short_header}")
 
             if hasattr(attrs, "effect") and attrs.effect:
-                parts.append(f"   Effect: {attrs.effect}")
+                parts.append(
+                    f"   Effect: {self._human_readable_effect_or_cause(attrs.effect)}"
+                )
 
             if hasattr(attrs, "severity") and attrs.severity is not None:
-                severity_map = {
-                    1: "Minor",
-                    2: "Minor",
-                    3: "Minor",
-                    4: "Moderate",
-                    5: "Moderate",
-                    6: "Moderate",
-                    7: "Major",
-                    8: "Major",
-                    9: "Major",
-                    10: "Severe",
-                }
-                severity_text = severity_map.get(
-                    attrs.severity, f"Level {attrs.severity}"
-                )
+                severity_text = self._severity_to_text(attrs.severity)
                 parts.append(f"   Severity: {severity_text}")
 
             if attrs.timeframe:
                 parts.append(f"   Timeframe: {attrs.timeframe}")
 
             if attrs.cause and attrs.cause != "UNKNOWN_CAUSE":
-                parts.append(f"   Cause: {attrs.cause}")
+                parts.append(
+                    f"   Cause: {self._human_readable_effect_or_cause(attrs.cause)}"
+                )
 
             prompt_parts.append("\n".join(parts))
 
@@ -1315,6 +1165,17 @@ class AISummarizer:
 
         return cleaned_summary
 
+    async def _ollama_pull_model(self, model: str) -> AsyncClient:
+        """
+        Pull a model from Ollama.
+        """
+        client = self._get_client()
+        async for response in await client.pull(model, stream=True):
+            logger.info(
+                f"Pulling model {model}{response.digest}: {response.status} {response.total}"
+            )
+        return client
+
     async def _analyze_and_rewrite_summary(
         self,
         summary: str,
@@ -1342,29 +1203,37 @@ class AISummarizer:
                 summary, original_alerts, style
             )
 
-            # Call Ollama for the rewrite
-            client = self._get_client()
-            response = await client.chat(
-                model=self.config.model,
-                messages=[{"role": "user", "content": rewrite_prompt}],
-                options={
-                    "temperature": 0.05,  # Lower temperature for more focused rewriting
-                    "top_p": 0.9,
-                    "top_k": 40,
-                    "num_predict": 1500,
-                    "stop": ["###", "---"],
-                    "repeat_penalty": 1.1,
-                    "num_ctx": 4096,
-                },
-            )
-
-            # Extract the rewritten content
-            if hasattr(response, "message") and hasattr(response.message, "content"):
-                rewritten_content = response.message.content
-            elif hasattr(response, "content"):
-                rewritten_content = response.content
+            # Call Ollama for the rewrite (with reasoning support if enabled)
+            if self.config.enable_reasoning:
+                rewritten_content = await self._chat_with_reasoning(
+                    rewrite_prompt, original_alerts
+                )
             else:
-                rewritten_content = str(response)
+                client = self._get_client()
+                response = await client.chat(
+                    model=self.config.model,
+                    messages=[{"role": "user", "content": rewrite_prompt}],
+                    options={
+                        "temperature": 0.05,  # Lower temperature for more focused rewriting
+                        "top_p": 0.9,
+                        "top_k": 40,
+                        "num_predict": 1500,
+                        "stop": ["###", "---"],
+                        "repeat_penalty": 1.1,
+                        "num_ctx": 4096,
+                        "think": False,
+                    },
+                )
+
+                # Extract the rewritten content
+                if hasattr(response, "message") and hasattr(
+                    response.message, "content"
+                ):
+                    rewritten_content = response.message.content or ""
+                elif hasattr(response, "content"):
+                    rewritten_content = response.content or ""
+                else:
+                    rewritten_content = str(response)
 
             if rewritten_content and rewritten_content.strip():
                 cleaned_rewrite = self._clean_model_response(
@@ -1522,7 +1391,8 @@ class AISummarizer:
                         "---",
                     ],  # Removed "\n\n" which was causing early truncation
                     "repeat_penalty": 1.1,  # Prevent repetitive text
-                    "num_ctx": 4096,  # Context window size
+                    "num_ctx": 4096,
+                    "think": False,
                 },
             )
 
@@ -1623,6 +1493,209 @@ class AISummarizer:
             raise ValueError(f"Invalid response from Ollama API: {e}")
         except Exception as e:
             raise RuntimeError(f"Unexpected error calling Ollama API: {e}")
+
+    async def _chat_with_reasoning(
+        self,
+        prompt: str,
+        alerts: Optional[List[AlertResource]] = None,
+        max_turns: Optional[int] = None,
+    ) -> str:
+        """
+        Handle multi-turn conversations with reasoning models like Qwen.
+
+        Args:
+            prompt: Initial prompt for the model
+            alerts: Optional alerts for context and validation
+            max_turns: Maximum conversation turns (defaults to config value)
+
+        Returns:
+            Final response from the model
+        """
+        if not self.config.enable_reasoning:
+            # Fall back to regular single-turn chat
+            return await self._call_ollama(prompt, alerts)
+
+        max_turns = max_turns or self.config.max_conversation_turns
+        messages = [{"role": "user", "content": prompt}]
+        conversation_history = []
+
+        logger.info(f"Starting reasoning conversation with {max_turns} max turns")
+
+        for turn in range(max_turns):
+            try:
+                logger.debug(f"Conversation turn {turn + 1}/{max_turns}")
+
+                # Call Ollama with current conversation context
+                client = self._get_client()
+                response = await client.chat(
+                    model=self.config.model,
+                    messages=messages,
+                    options={
+                        "temperature": self.config.temperature,
+                        "top_p": 0.9,
+                        "top_k": 40,
+                        "num_predict": 2000,
+                        "stop": ["###", "---"],
+                        "repeat_penalty": 1.1,
+                        "num_ctx": 4096,
+                        "stream": self.config.enable_streaming,
+                        "think": True,
+                    },
+                )
+
+                # Extract response content
+                if hasattr(response, "message") and hasattr(
+                    response.message, "content"
+                ):
+                    content = response.message.content
+                elif hasattr(response, "content"):
+                    content = response.content
+                else:
+                    content = str(response)
+
+                if not content:
+                    logger.warning(f"No content received on turn {turn + 1}")
+                    break
+
+                # Add assistant response to conversation history
+                messages.append({"role": "assistant", "content": content})
+                conversation_history.append(content)
+
+                # Check if the model has finished reasoning
+                if self._is_reasoning_complete(content):
+                    logger.info(f"Reasoning completed on turn {turn + 1}")
+                    break
+
+                # If not complete, add a follow-up prompt for the next turn
+                if turn < max_turns - 1:
+                    follow_up = self._generate_follow_up_prompt(
+                        content, turn + 1, max_turns
+                    )
+                    messages.append({"role": "user", "content": follow_up})
+                    logger.debug(f"Added follow-up prompt for turn {turn + 2}")
+
+            except Exception as e:
+                logger.error(f"Error on conversation turn {turn + 1}: {e}")
+                break
+
+        # Extract final response
+        final_response = self._extract_final_response(conversation_history)
+
+        # Clean and validate the response
+        if alerts:
+            alert_text = self._extract_alert_text_for_validation(alerts)
+            final_response = self._clean_model_response(final_response, alert_text)
+
+        return final_response
+
+    def _is_reasoning_complete(self, content: str) -> bool:
+        """
+        Check if the model has completed its reasoning process.
+
+        Args:
+            content: The model's response content
+
+        Returns:
+            True if reasoning appears complete, False otherwise
+        """
+        content_lower = content.lower()
+
+        # Check for completion indicators
+        completion_indicators = [
+            "therefore",
+            "thus",
+            "in conclusion",
+            "to summarize",
+            "final answer",
+            "summary:",
+            "conclusion:",
+            "the answer is",
+            "based on this analysis",
+        ]
+
+        # Check for thinking section completion
+        if "<think>" in content and "</think>" in content:
+            # If thinking section is complete, check if there's a conclusion
+            think_end = content.find("</think>")
+            after_think = content[think_end + 8 :].strip()
+            if after_think and len(after_think) > 20:
+                return True
+
+        # Check for completion phrases
+        return any(indicator in content_lower for indicator in completion_indicators)
+
+    def _generate_follow_up_prompt(
+        self, last_response: str, current_turn: int, max_turns: int
+    ) -> str:
+        """
+        Generate a follow-up prompt to continue the reasoning process.
+
+        Args:
+            last_response: The model's last response
+            current_turn: Current turn number (1-based)
+            max_turns: Maximum allowed turns
+
+        Returns:
+            Follow-up prompt for the next turn
+        """
+        if current_turn >= max_turns - 1:
+            # Final turn - ask for conclusion
+            return "Based on your analysis so far, please provide a final, concise summary of the MBTA alerts."
+
+        # Continue reasoning
+        return f"Please continue your analysis. You have {max_turns - current_turn} more turns to complete your reasoning. Focus on the key details and provide a clear summary."
+
+    def _extract_final_response(self, conversation_history: List[str]) -> str:
+        """
+        Extract the final response from the conversation history.
+
+        Args:
+            conversation_history: List of all model responses
+
+        Returns:
+            Final, cleaned response
+        """
+        if not conversation_history:
+            return "No response generated"
+
+        # Get the last response
+        final_response = conversation_history[-1]
+
+        # If reasoning mode is enabled and we want to extract thinking only
+        if self.config.extract_thinking_only:
+            # Extract content between <think> tags
+            think_start = final_response.find("<think>")
+            think_end = final_response.find("</think>")
+
+            if think_start != -1 and think_end != -1:
+                thinking_content = final_response[think_start + 7 : think_end].strip()
+                if thinking_content:
+                    return thinking_content
+
+        # Remove thinking sections if present
+        final_response = self._remove_thinking_sections(final_response)
+
+        return final_response.strip()
+
+    def _remove_thinking_sections(self, content: str) -> str:
+        """
+        Remove <think> sections from the content.
+
+        Args:
+            content: Content that may contain thinking sections
+
+        Returns:
+            Content with thinking sections removed
+        """
+        # Remove <think>...</think> sections
+        import re
+
+        content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL)
+
+        # Clean up extra whitespace
+        content = re.sub(r"\n\s*\n", "\n\n", content)
+
+        return content.strip()
 
     async def queue_summary_job(
         self,
@@ -1786,8 +1859,11 @@ class AISummarizer:
                     request.alerts, "comprehensive"
                 )
 
-            # Generate group summary using Ollama
-            summary = await self._call_ollama(prompt, request.alerts)
+            # Generate group summary using Ollama (with reasoning support if enabled)
+            if self.config.enable_reasoning:
+                summary = await self._chat_with_reasoning(prompt, request.alerts)
+            else:
+                summary = await self._call_ollama(prompt, request.alerts)
 
             # Apply formatting if requested
             if request.format != "text":
@@ -1860,11 +1936,11 @@ class AISummarizer:
             alert_text = f"{attrs.header} "
 
             if attrs.effect:
-                alert_text += f"{attrs.effect} "
+                alert_text += f"{self._human_readable_effect_or_cause(attrs.effect)} "
             if attrs.cause and attrs.cause != "UNKNOWN_CAUSE":
-                alert_text += f"{attrs.cause} "
+                alert_text += f"{self._human_readable_effect_or_cause(attrs.cause)} "
             if attrs.severity:
-                alert_text += f"{attrs.severity} "
+                alert_text += f"{self._severity_to_text(attrs.severity)} "
 
             alert_texts.append(alert_text.strip())
 
@@ -1957,8 +2033,11 @@ class AISummarizer:
                     [alert], "comprehensive"
                 )
 
-            # Generate the summary using Ollama
-            summary = await self._call_ollama(alert_text, [alert])
+            # Generate the summary using Ollama (with reasoning support if enabled)
+            if self.config.enable_reasoning:
+                summary = await self._chat_with_reasoning(alert_text, [alert])
+            else:
+                summary = await self._call_ollama(alert_text, [alert])
 
             if not summary:
                 return f"Unable to generate summary for alert {alert.id}."
@@ -2027,17 +2106,18 @@ class AISummarizer:
                 if sentence_limit == 1
                 else f"{sentence_limit} sentences maximum"
             )
+
             prompt = f"""Please provide a concise, focused summary of this MBTA transit alert in {sentence_text}. Include the locations affected, cause of the delay, and vehicle numbers or IDs if available.
 
 Alert ID: {alert_id}
 Header: {header}
 Short Header: {short_header}
-Effect: {effect}
-Severity: {severity}"""
+Effect: {self._human_readable_effect_or_cause(effect)}
+Severity: {self._severity_to_text(int(severity) if severity else 0)}"""
 
             # Only add cause if it's not UNKNOWN_CAUSE
             if cause and cause != "UNKNOWN_CAUSE":
-                prompt += f"\nCause: {cause}"
+                prompt += f"\nCause: {self._human_readable_effect_or_cause(cause)}"
 
             prompt += f"""
 {route_info}
@@ -2218,7 +2298,38 @@ Keep it brief and focused."""
                     logger.debug(f"Redis queue stats: {stats}")
 
                 await asyncio.sleep(30)  # Check every 30 seconds
-
+            except asyncio.CancelledError:
+                # Exit cleanly when cancelled
+                break
             except Exception as e:
                 logger.error(f"Error monitoring Redis queue workers: {e}")
                 await asyncio.sleep(30)
+
+    def create_summarization_request(
+        self,
+        alerts: List[AlertResource],
+        include_route_info: bool = True,
+        include_severity: bool = True,
+        format: str = "text",
+        style: str = "comprehensive",
+    ) -> SummarizationRequest:
+        """
+        Create a SummarizationRequest object with the given parameters.
+
+        Args:
+            alerts: List of alerts to summarize
+            include_route_info: Whether to include route information
+            include_severity: Whether to include severity information
+            format: Output format (text, markdown, json)
+            style: Summary style (comprehensive, concise)
+
+        Returns:
+            SummarizationRequest object
+        """
+        return SummarizationRequest(
+            alerts=alerts,
+            include_route_info=include_route_info,
+            include_severity=include_severity,
+            format=format,
+            style=style,
+        )

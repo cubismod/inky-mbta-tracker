@@ -699,4 +699,8 @@ async def process_queue_async(
                 await pipeline.execute()
                 redis_commands.labels("execute").inc()
         finally:
-            raise
+            try:
+                await tracker.redis.aclose()
+                redis_commands.labels("aclose").inc()
+            finally:
+                raise
