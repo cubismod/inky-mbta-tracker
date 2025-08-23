@@ -12,6 +12,14 @@ from typing import Any, Dict, List, Optional
 
 from mbta_responses import AlertResource
 from ollama import AsyncClient
+from ollama_queue_manager import (
+    OllamaCommandType,
+    OllamaJob,
+    OllamaJobPriority,
+    OllamaJobStatus,
+    OllamaQueueManager,
+    OllamaQueueWorker,
+)
 from pydantic import BaseModel, Field
 from utils import get_redis
 
@@ -576,6 +584,16 @@ class AISummarizer:
         self._client: Optional[AsyncClient] = None
         self.job_queue = SummaryJobQueue(summarizer=self)
 
+        # Initialize Redis queue manager if enabled
+        self.redis_queue_manager: Optional[OllamaQueueManager] = None
+        self.redis_queue_workers: List[OllamaQueueWorker] = []
+        if hasattr(self.config, "enable_queue") and self.config.enable_queue:
+            redis_client = get_redis()
+            self.redis_queue_manager = OllamaQueueManager(
+                redis_client=redis_client,
+                queue_name=getattr(self.config, "queue_name", "ollama_commands"),
+            )
+
     def _load_config_from_env(self) -> OllamaConfig:
         """Load configuration from environment variables first, then fallback to config.json."""
 
@@ -711,15 +729,89 @@ class AISummarizer:
         """Start the AI summarizer and job queue."""
         await self.job_queue.start()
 
+        # Start Redis queue workers if enabled
+        if self.redis_queue_manager:
+            await self._start_redis_queue_workers()
+
     async def stop(self) -> None:
         """Stop the AI summarizer and job queue."""
         await self.job_queue.stop()
+
+        # Stop Redis queue workers if enabled
+        if self.redis_queue_manager:
+            await self._stop_redis_queue_workers()
 
     async def close(self) -> None:
         """Close the Ollama client."""
         if self._client:
             # Ollama client doesn't have aclose method, just set to None
             self._client = None
+
+    async def _start_redis_queue_workers(self) -> None:
+        """Start Redis queue workers for processing Ollama commands."""
+        if not self.redis_queue_manager:
+            return
+
+        # Get configuration values with defaults
+        max_workers = getattr(self.config, "max_workers", 2)
+        poll_interval = getattr(self.config, "worker_poll_interval", 1.0)
+        max_concurrent = getattr(self.config, "max_concurrent_jobs", 1)
+
+        logger.info(f"Starting {max_workers} Redis queue workers")
+
+        for i in range(max_workers):
+            worker = OllamaQueueWorker(
+                queue_manager=self.redis_queue_manager,
+                worker_id=f"ollama_worker_{i}",
+                poll_interval=poll_interval,
+                max_concurrent_jobs=max_concurrent,
+                ai_summarizer=self,  # Pass self reference for job processing
+            )
+            self.redis_queue_workers.append(worker)
+
+            # Start worker in background
+            asyncio.create_task(worker.start())
+
+        logger.info("Redis queue workers started")
+
+    async def _stop_redis_queue_workers(self) -> None:
+        """Stop all Redis queue workers gracefully."""
+        if not self.redis_queue_workers:
+            return
+
+        logger.info(f"Stopping {len(self.redis_queue_workers)} Redis queue workers")
+
+        for worker in self.redis_queue_workers:
+            await worker.stop()
+
+        self.redis_queue_workers.clear()
+        logger.info("Redis queue workers stopped")
+
+    async def _enqueue_redis_job(
+        self,
+        command_type: OllamaCommandType,
+        payload: Dict[str, Any],
+        priority: OllamaJobPriority = OllamaJobPriority.NORMAL,
+        timeout_seconds: int = 300,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Optional[str]:
+        """Enqueue a job to the Redis queue if enabled."""
+        if not self.redis_queue_manager:
+            return None
+
+        try:
+            job_id = await self.redis_queue_manager.enqueue_job(
+                command_type=command_type,
+                payload=payload,
+                priority=priority,
+                timeout_seconds=timeout_seconds,
+                metadata=metadata,
+            )
+            logger.info(f"Enqueued Redis job {job_id} for {command_type.value}")
+            return job_id
+        except Exception as e:
+            logger.error(f"Failed to enqueue Redis job: {e}")
+            return None
 
     def _format_alerts_for_prompt(
         self,
@@ -1549,11 +1641,95 @@ class AISummarizer:
         Returns:
             Job ID for tracking
         """
+        # Try to use Redis queue first if available
+        if self.redis_queue_manager:
+            # Convert JobPriority to OllamaJobPriority
+            ollama_priority = OllamaJobPriority.NORMAL
+            if priority == JobPriority.HIGH:
+                ollama_priority = OllamaJobPriority.HIGH
+            elif priority == JobPriority.LOW:
+                ollama_priority = OllamaJobPriority.LOW
+
+            # Create payload for Redis queue
+            payload = {
+                "alerts": [alert.dict() for alert in alerts],
+                "include_route_info": config.get("include_route_info", True)
+                if config
+                else True,
+                "include_severity": config.get("include_severity", True)
+                if config
+                else True,
+                "format": config.get("format", "text") if config else "text",
+                "style": config.get("style", "comprehensive")
+                if config
+                else "comprehensive",
+            }
+
+            metadata = {
+                "source": "ai_summarizer",
+                "alert_count": len(alerts),
+                "original_priority": priority.value,
+            }
+
+            # Try to enqueue to Redis queue
+            redis_job_id = await self._enqueue_redis_job(
+                command_type=OllamaCommandType.SUMMARIZE_ALERTS,
+                payload=payload,
+                priority=ollama_priority,
+                metadata=metadata,
+            )
+
+            if redis_job_id:
+                return redis_job_id
+
+        # Fall back to existing job queue
         return await self.job_queue.add_job(alerts, priority, config)
 
     async def get_job_status(self, job_id: str) -> Optional[SummaryJob]:
         """Get the status of a queued summary job."""
+        # Check if this is a Redis job ID
+        if self.redis_queue_manager and not job_id.startswith(("summary_", "cached_")):
+            try:
+                redis_status = await self.redis_queue_manager.get_job_status(job_id)
+                if redis_status:
+                    # Convert Redis job status to SummaryJob status
+                    # This is a simplified conversion - you may want to enhance this
+                    return SummaryJob(
+                        id=job_id,
+                        alerts=[],  # Would need to fetch from Redis job details
+                        priority=JobPriority.NORMAL,
+                        created_at=datetime.now(),
+                        status=JobStatus.PROCESSING
+                        if redis_status == OllamaJobStatus.PROCESSING
+                        else JobStatus.PENDING,
+                    )
+            except Exception as e:
+                logger.warning(f"Failed to get Redis job status: {e}")
+
+        # Fall back to existing job queue
         return await self.job_queue.get_job_status(job_id)
+
+    async def get_redis_job_details(self, job_id: str) -> Optional[OllamaJob]:
+        """Get detailed information about a Redis job."""
+        if not self.redis_queue_manager:
+            return None
+
+        try:
+            return await self.redis_queue_manager.get_job_details(job_id)
+        except Exception as e:
+            logger.error(f"Failed to get Redis job details: {e}")
+            return None
+
+    async def get_redis_queue_stats(self) -> Optional[Dict[str, Any]]:
+        """Get Redis queue statistics."""
+        if not self.redis_queue_manager:
+            return None
+
+        try:
+            return await self.redis_queue_manager.get_queue_stats()
+        except Exception as e:
+            logger.error(f"Failed to get Redis queue stats: {e}")
+            return None
 
     async def get_cached_summary(self, alerts: List[AlertResource]) -> Optional[str]:
         """Get a cached summary from Redis if available."""
@@ -2024,3 +2200,25 @@ Keep it brief and focused."""
 
         logger.info(f"Queued {len(job_ids)} individual alert summary jobs")
         return job_ids
+
+    async def _monitor_workers(self) -> None:
+        """Monitor Redis queue workers and restart them if needed."""
+        while True:
+            try:
+                # Check if workers are still running
+                active_workers = [w for w in self.redis_queue_workers if w.running]
+                if len(active_workers) < len(self.redis_queue_workers):
+                    logger.warning("Some Redis queue workers stopped, restarting...")
+                    await self._stop_redis_queue_workers()
+                    await self._start_redis_queue_workers()
+
+                # Get queue statistics
+                if self.redis_queue_manager:
+                    stats = await self.redis_queue_manager.get_queue_stats()
+                    logger.debug(f"Redis queue stats: {stats}")
+
+                await asyncio.sleep(30)  # Check every 30 seconds
+
+            except Exception as e:
+                logger.error(f"Error monitoring Redis queue workers: {e}")
+                await asyncio.sleep(30)

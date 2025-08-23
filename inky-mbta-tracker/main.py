@@ -236,6 +236,36 @@ async def __main__() -> None:
             )
         )
 
+    # Start Ollama queue workers if enabled
+    if (
+        config.ollama.enabled
+        and hasattr(config.ollama, "enable_queue")
+        and config.ollama.enable_queue
+    ):
+        try:
+            from ai_summarizer import AISummarizer
+
+            ai_summarizer = AISummarizer()
+            await ai_summarizer.start()
+
+            # The AI summarizer will start its own Redis queue workers
+            logger.info("AI summarizer started with Redis queue workers")
+
+            # Add a task tracker for the AI summarizer monitoring
+            ai_summarizer_task = asyncio.create_task(
+                ai_summarizer._monitor_workers(),  # Use the existing method
+                name="ai_summarizer_monitor",
+            )
+            tasks.append(
+                TaskTracker(
+                    ai_summarizer_task,
+                    stop=None,
+                    event_type=TaskType.OLLAMA_QUEUE_WORKER,
+                )
+            )
+        except Exception as e:
+            logger.error(f"Failed to start AI summarizer with Redis queue: {e}")
+
     process_tasks: list[asyncio.Task[None]] = []
     num_proc = int(os.getenv("IMT_PROCESS_QUEUE_THREADS", "1"))
     for i in range(num_proc):
