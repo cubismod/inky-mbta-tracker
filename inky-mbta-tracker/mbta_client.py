@@ -909,6 +909,9 @@ async def precache_track_predictions_runner(
                 )
                 logger.info(f"Precached {predictions_count} track predictions")
 
+        except CancelledError:
+            logger.info("Track prediction precache runner cancelled")
+            break
         except Exception as e:
             logger.error("Error in track prediction precaching runner", exc_info=e)
 
@@ -948,6 +951,13 @@ async def watch_server_side_events(
             )
     except GeneratorExit:
         return
+    except CancelledError:
+        try:
+            await client.aclose()
+            redis_commands.labels("aclose").inc()
+        except Exception:
+            pass
+        raise
 
 
 @retry(

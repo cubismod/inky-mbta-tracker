@@ -8,6 +8,7 @@ from enum import Enum
 from typing import Any, Awaitable, Dict, List, Optional, TypeVar, Union, cast, overload
 
 from redis.asyncio import Redis
+from redis_lock.asyncio.async_lock import RedisLock
 
 T = TypeVar("T")
 
@@ -665,30 +666,36 @@ class OllamaQueueWorker:
     async def _process_job(self, job: OllamaJob) -> None:
         """Process a single job"""
         try:
-            logger.info(
-                f"Worker {self.worker_id} processing job {job.id} ({job.command_type.value})"
-            )
+            async with RedisLock(
+                self.queue_manager.redis,
+                "ollama_job_lock",
+                blocking_timeout=90,
+                expire_timeout=180,
+            ):
+                logger.info(
+                    f"Worker {self.worker_id} processing job {job.id} ({job.command_type.value})"
+                )
 
-            # Process the job based on command type
-            if job.command_type == OllamaCommandType.SUMMARIZE_ALERTS:
-                result = await self._process_summarize_alerts_job(job)
-            elif job.command_type == OllamaCommandType.SUMMARIZE_ALERT_GROUP:
-                result = await self._process_summarize_alert_group_job(job)
-            elif job.command_type == OllamaCommandType.REWRITE_SUMMARY:
-                result = await self._process_rewrite_summary_job(job)
-            elif job.command_type == OllamaCommandType.GENERATE_TEXT:
-                result = await self._process_generate_text_job(job)
-            elif job.command_type == OllamaCommandType.EMBED_TEXT:
-                result = await self._process_embed_text_job(job)
-            elif job.command_type == OllamaCommandType.CHAT_COMPLETION:
-                result = await self._process_chat_completion_job(job)
-            elif job.command_type == OllamaCommandType.CUSTOM_PROMPT:
-                result = await self._process_custom_prompt_job(job)
-            else:
-                raise ValueError(f"Unknown command type: {job.command_type}")
+                # Process the job based on command type
+                if job.command_type == OllamaCommandType.SUMMARIZE_ALERTS:
+                    result = await self._process_summarize_alerts_job(job)
+                elif job.command_type == OllamaCommandType.SUMMARIZE_ALERT_GROUP:
+                    result = await self._process_summarize_alert_group_job(job)
+                elif job.command_type == OllamaCommandType.REWRITE_SUMMARY:
+                    result = await self._process_rewrite_summary_job(job)
+                elif job.command_type == OllamaCommandType.GENERATE_TEXT:
+                    result = await self._process_generate_text_job(job)
+                elif job.command_type == OllamaCommandType.EMBED_TEXT:
+                    result = await self._process_embed_text_job(job)
+                elif job.command_type == OllamaCommandType.CHAT_COMPLETION:
+                    result = await self._process_chat_completion_job(job)
+                elif job.command_type == OllamaCommandType.CUSTOM_PROMPT:
+                    result = await self._process_custom_prompt_job(job)
+                else:
+                    raise ValueError(f"Unknown command type: {job.command_type}")
 
-            # Mark job as completed
-            await self.queue_manager.complete_job(job.id, result, self.worker_id)
+                # Mark job as completed
+                await self.queue_manager.complete_job(job.id, result, self.worker_id)
 
         except Exception as e:
             logger.error(f"Worker {self.worker_id} failed to process job {job.id}: {e}")

@@ -38,7 +38,12 @@ from mbta_responses import AlertResource, Alerts
 from prometheus_fastapi_instrumentator import Instrumentator
 from pydantic import BaseModel, ValidationError
 from redis.exceptions import RedisError
-from shared_types.shared_types import TaskType, TrackAssignment, TrackPrediction
+from shared_types.shared_types import (
+    IndividualSummaryCacheEntry,
+    TaskType,
+    TrackAssignment,
+    TrackPrediction,
+)
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
@@ -72,7 +77,7 @@ VEHICLES_QUEUE = Queue[State]()
 REDIS_CLIENT = get_redis()
 CONFIG = load_config()
 TRACK_PREDICTOR = TrackPredictor()
-AI_SUMMARIZER = AISummarizer() if CONFIG.ollama.enabled else None
+AI_SUMMARIZER = AISummarizer(CONFIG.ollama) if CONFIG.ollama.enabled else None
 
 # API timeout configurations
 API_REQUEST_TIMEOUT = int(os.environ.get("IMT_API_REQUEST_TIMEOUT", "30"))  # seconds
@@ -409,6 +414,9 @@ async def _periodic_individual_alert_summaries() -> None:
             sleep_time = random.randint(4 * MINUTE, 2 * HOUR)
             await asyncio.sleep(sleep_time)
 
+        except asyncio.CancelledError:
+            logger.info("Periodic individual alert summary task cancelled")
+            break
         except Exception as e:
             logger.error(f"Error in periodic individual alert summaries: {e}")
             await asyncio.sleep(300)  # Wait 5 minutes before retrying
@@ -2532,7 +2540,7 @@ async def generate_individual_alert_summary(
     format: SummaryFormat = Query(
         default=SummaryFormat.TEXT, description="Output format"
     ),
-) -> Dict[str, Any]:
+) -> IndividualSummaryCacheEntry:
     """Force generation of an individual alert summary."""
     if not AI_SUMMARIZER:
         raise HTTPException(status_code=503, detail="AI summarizer not available")
@@ -2585,17 +2593,18 @@ async def generate_individual_alert_summary(
 
         # Store in cache
         cache_key = f"ai_summary_individual:{alert_id}"
-        summary_data = {
-            "alert_id": alert_id,
-            "summary": summary,
-            "style": style,
-            "sentence_limit": sentence_limit,
-            "generated_at": datetime.now().isoformat(),
-            "format": format.value,
-        }
+        summary_data = IndividualSummaryCacheEntry(
+            alert_id=alert_id,
+            summary=summary,
+            style=style,
+            sentence_limit=sentence_limit,
+            generated_at=datetime.now(),
+            format=format.value,
+            ttl=3600,  # 1 hour default TTL
+        )
 
         await REDIS_CLIENT.setex(
-            cache_key, 3600, json.dumps(summary_data)
+            cache_key, 3600, summary_data.model_dump_json()
         )  # 1 hour TTL
 
         # Save to local file if enabled
