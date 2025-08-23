@@ -36,6 +36,18 @@ class OllamaConfig(BaseModel):
     cache_ttl: int = Field(
         default=300, description="Cache TTL for summaries in seconds"
     )
+    # Redis queue settings
+    enable_queue: bool = Field(
+        default=True, description="Enable Redis queue for Ollama commands"
+    )
+    queue_name: str = Field(default="ollama_commands", description="Redis queue name")
+    max_workers: int = Field(default=2, description="Maximum number of queue workers")
+    worker_poll_interval: float = Field(
+        default=1.0, description="Worker poll interval in seconds"
+    )
+    max_concurrent_jobs: int = Field(
+        default=1, description="Maximum concurrent jobs per worker"
+    )
 
 
 class FileOutputConfig(BaseModel):
