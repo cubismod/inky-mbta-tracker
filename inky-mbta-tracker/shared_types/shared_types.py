@@ -98,6 +98,7 @@ class TaskType(Enum):
     SCHEDULES = 1
     VEHICLES = 2
     PROCESSOR = 3
+    OLLAMA_QUEUE_WORKER = 4
     LIGHT_STOP = 4
     TRACK_PREDICTIONS = 6
     REDIS_BACKUP = 7
