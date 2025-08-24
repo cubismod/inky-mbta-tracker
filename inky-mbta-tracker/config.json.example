@@ -1,0 +1,42 @@
+{
+  "stops": [
+    {
+      "stop_id": "place-sstat",
+      "route_filter": "",
+      "direction_filter": -1,
+      "transit_time_min": 15,
+      "schedule_only": false,
+      "show_on_display": true
+    }
+  ],
+  "vehicles_by_route": ["Red", "Orange", "Blue", "Green"],
+  "vehicle_git_repo": null,
+  "vehicle_git_user": null,
+  "vehicle_git_token": null,
+  "vehicle_git_email": null,
+  "enable_track_predictions": false,
+  "track_prediction_routes": null,
+  "track_prediction_stations": null,
+  "track_prediction_interval_hours": 2,
+  "ollama": {
+    "enabled": true,
+    "base_url": "http://localhost:11434",
+    "model": "llama3.2:3b",
+    "timeout": 30,
+    "max_retries": 3,
+    "temperature": 0.1,
+    "cache_ttl": 300
+  },
+  "file_output": {
+    "enabled": true,
+    "output_directory": "./ai_summaries",
+    "filename": "mbta_alerts_summary.md",
+    "include_timestamp": true,
+    "include_alert_count": true,
+    "include_model_info": true,
+    "validate_summaries": true,
+    "min_similarity_threshold": 0.105
+    # validate_summaries: Enable Levenshtein similarity validation to reject summaries that are too different from input
+    # min_similarity_threshold: Minimum similarity score (0.0-1.0) - higher values require more similar summaries
+  }
+}

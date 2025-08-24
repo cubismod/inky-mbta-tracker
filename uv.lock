@@ -62,6 +62,18 @@ wheels = [
 ]
 
 [[package]]
+name = "aiologic"
+version = "0.14.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "wrapt" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/7e/2d/e893dcfa041dab1d045abfc8898239747cde19881796640861609138d360/aiologic-0.14.0.tar.gz", hash = "sha256:c87925fa2bfe9ae292859e1094eb8fb6d456c8202a16405b0a44134803c8a791", size = 54275, upload-time = "2025-02-12T14:45:31.414Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/4d/1f/f797b684fb4e11a5066ab464b460b5cfdbaedea9c4a3d0f0afc8e894ada0/aiologic-0.14.0-py3-none-any.whl", hash = "sha256:cc59d39dc1d5e2575b4a6b5faf678b551fb0f910c7cb42e4c5f5689ffedcce78", size = 44516, upload-time = "2025-02-12T14:45:27.835Z" },
+]
+
+[[package]]
 name = "aiosignal"
 version = "1.4.0"
 source = { registry = "https://pypi.org/simple" }
@@ -229,6 +241,18 @@ wheels = [
 ]
 
 [[package]]
+name = "culsans"
+version = "0.9.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "aiologic" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/90/5d/12e7e16b0caafaa8cca0728dd817204afd1274ddb35531b029b1c5cf7b2a/culsans-0.9.0.tar.gz", hash = "sha256:942dd3c3c77f20e9ac3383d9a5ef8b7b24c0dac1a593bdb20d46c8a38720a5f3", size = 42937, upload-time = "2025-07-16T17:18:21.545Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/6f/b4/1e3cccb48f09e89e0cfc06925182cbcd36abf80b8eda2489430b41c7eaff/culsans-0.9.0-py3-none-any.whl", hash = "sha256:d3537b65bbb341c2ac72e7d152deb8ab893b2a00452d2a68702a1a1a41619d6f", size = 12058, upload-time = "2025-07-16T17:18:20.526Z" },
+]
+
+[[package]]
 name = "deprecated"
 version = "1.2.18"
 source = { registry = "https://pypi.org/simple" }
@@ -346,6 +370,21 @@ wheels = [
 ]
 
 [[package]]
+name = "httpx"
+version = "0.28.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "anyio" },
+    { name = "certifi" },
+    { name = "httpcore" },
+    { name = "idna" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/b1/df/48c586a5fe32a0f01324ee087459e112ebb7224f646c0b5023f5e79e9956/httpx-0.28.1.tar.gz", hash = "sha256:75e98c5f16b0f35b567856f597f06ff2270a374470a5c2392242528e3e3e42fc", size = 141406, upload-time = "2024-12-06T15:37:23.222Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/2a/39/e50c7c3a983047577ee07d2a9e53faf5a69493943ec3f6a384bdc792deb2/httpx-0.28.1-py3-none-any.whl", hash = "sha256:d909fcccc110f8c7faf814ca82a9a4d816bc5a6dbfea25d6591d6985b8ba59ad", size = 73517, upload-time = "2024-12-06T15:37:21.509Z" },
+]
+
+[[package]]
 name = "humanize"
 version = "4.12.3"
 source = { registry = "https://pypi.org/simple" }
@@ -391,6 +430,7 @@ dependencies = [
     { name = "cffi" },
     { name = "charset-normalizer" },
     { name = "click" },
+    { name = "culsans" },
     { name = "fastapi" },
     { name = "frozenlist" },
     { name = "geojson" },
@@ -402,6 +442,7 @@ dependencies = [
     { name = "mdurl" },
     { name = "metaphone" },
     { name = "multidict" },
+    { name = "ollama" },
     { name = "packaging" },
     { name = "paho-mqtt" },
     { name = "polyline" },
@@ -451,6 +492,7 @@ requires-dist = [
     { name = "cffi", specifier = "==1.17.1" },
     { name = "charset-normalizer", specifier = "==3.4.3" },
     { name = "click", specifier = ">=8.2.1" },
+    { name = "culsans", specifier = ">=0.9.0" },
     { name = "fastapi", specifier = "==0.116.1" },
     { name = "frozenlist", specifier = "==1.7.0" },
     { name = "geojson", specifier = "==3.1.0" },
@@ -462,6 +504,7 @@ requires-dist = [
     { name = "mdurl", specifier = "==0.1.2" },
     { name = "metaphone", specifier = ">=0.6" },
     { name = "multidict", specifier = "==6.6.4" },
+    { name = "ollama", specifier = ">=0.5.0" },
     { name = "packaging", specifier = "==25.0" },
     { name = "paho-mqtt", specifier = "==2.1.0" },
     { name = "polyline", specifier = "==2.0.3" },
@@ -638,6 +681,19 @@ name = "numpy"
 version = "1.26.4"
 source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/65/6e/09db70a523a96d25e115e71cc56a6f9031e7b8cd166c1ac8438307c14058/numpy-1.26.4.tar.gz", hash = "sha256:2a02aba9ed12e4ac4eb3ea9421c420301a0c6460d9830d74a9df87efa4912010", size = 15786129, upload-time = "2024-02-06T00:26:44.495Z" }
+
+[[package]]
+name = "ollama"
+version = "0.5.3"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "httpx" },
+    { name = "pydantic" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/91/6d/ae96027416dcc2e98c944c050c492789502d7d7c0b95a740f0bb39268632/ollama-0.5.3.tar.gz", hash = "sha256:40b6dff729df3b24e56d4042fd9d37e231cee8e528677e0d085413a1d6692394", size = 43331, upload-time = "2025-08-07T21:44:10.422Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/be/f6/2091e50b8b6c3e6901f6eab283d5efd66fb71c86ddb1b4d68766c3eeba0f/ollama-0.5.3-py3-none-any.whl", hash = "sha256:a8303b413d99a9043dbf77ebf11ced672396b59bec27e6d5db67c88f01b279d2", size = 13490, upload-time = "2025-08-07T21:44:09.353Z" },
+]
 
 [[package]]
 name = "packaging"
