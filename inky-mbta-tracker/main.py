@@ -245,6 +245,6 @@ def run_main(api_server: bool) -> None:
     if api_server:
         import api_server as server
 
-        server.run_main()
+        run(server.run_main)
     else:
         run(__main__, backend="asyncio", backend_options={"use_uvloop": True})
