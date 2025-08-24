@@ -62,6 +62,18 @@ wheels = [
 ]
 
 [[package]]
+name = "aiologic"
+version = "0.14.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "wrapt" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/7e/2d/e893dcfa041dab1d045abfc8898239747cde19881796640861609138d360/aiologic-0.14.0.tar.gz", hash = "sha256:c87925fa2bfe9ae292859e1094eb8fb6d456c8202a16405b0a44134803c8a791", size = 54275, upload-time = "2025-02-12T14:45:31.414Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/4d/1f/f797b684fb4e11a5066ab464b460b5cfdbaedea9c4a3d0f0afc8e894ada0/aiologic-0.14.0-py3-none-any.whl", hash = "sha256:cc59d39dc1d5e2575b4a6b5faf678b551fb0f910c7cb42e4c5f5689ffedcce78", size = 44516, upload-time = "2025-02-12T14:45:27.835Z" },
+]
+
+[[package]]
 name = "aiosignal"
 version = "1.4.0"
 source = { registry = "https://pypi.org/simple" }
@@ -226,6 +238,18 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/d8/53/6f443c9a4a8358a93a6792e2acffb9d9d5cb0a5cfd8802644b7b1c9a02e4/colorama-0.4.6.tar.gz", hash = "sha256:08695f5cb7ed6e0531a20572697297273c47b8cae5a63ffc6d6ed5c201be6e44", size = 27697, upload-time = "2022-10-25T02:36:22.414Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/d1/d6/3965ed04c63042e047cb6a3e6ed1a63a35087b6a609aa3a15ed8ac56c221/colorama-0.4.6-py2.py3-none-any.whl", hash = "sha256:4f1d9991f5acc0ca119f9d443620b77f9d6b33703e51011c16baf57afb285fc6", size = 25335, upload-time = "2022-10-25T02:36:20.889Z" },
+]
+
+[[package]]
+name = "culsans"
+version = "0.9.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "aiologic" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/90/5d/12e7e16b0caafaa8cca0728dd817204afd1274ddb35531b029b1c5cf7b2a/culsans-0.9.0.tar.gz", hash = "sha256:942dd3c3c77f20e9ac3383d9a5ef8b7b24c0dac1a593bdb20d46c8a38720a5f3", size = 42937, upload-time = "2025-07-16T17:18:21.545Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/6f/b4/1e3cccb48f09e89e0cfc06925182cbcd36abf80b8eda2489430b41c7eaff/culsans-0.9.0-py3-none-any.whl", hash = "sha256:d3537b65bbb341c2ac72e7d152deb8ab893b2a00452d2a68702a1a1a41619d6f", size = 12058, upload-time = "2025-07-16T17:18:20.526Z" },
 ]
 
 [[package]]
@@ -406,6 +430,7 @@ dependencies = [
     { name = "cffi" },
     { name = "charset-normalizer" },
     { name = "click" },
+    { name = "culsans" },
     { name = "fastapi" },
     { name = "frozenlist" },
     { name = "geojson" },
@@ -467,6 +492,7 @@ requires-dist = [
     { name = "cffi", specifier = "==1.17.1" },
     { name = "charset-normalizer", specifier = "==3.4.3" },
     { name = "click", specifier = ">=8.2.1" },
+    { name = "culsans", specifier = ">=0.9.0" },
     { name = "fastapi", specifier = "==0.116.1" },
     { name = "frozenlist", specifier = "==1.7.0" },
     { name = "geojson", specifier = "==3.1.0" },
