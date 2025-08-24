@@ -1,8 +1,8 @@
-import asyncio
 import json
 import logging
 import os
 import random
+import signal
 import threading
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
@@ -20,6 +20,7 @@ from ai_summarizer import (
     SummarizationRequest,
     SummarizationResponse,
 )
+from anyio import create_task_group, sleep
 from config import Config, load_config
 from consts import (
     ALERTS_CACHE_TTL,
@@ -218,113 +219,78 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     else:
         logger.debug("File output is disabled")
 
-    # Start AI summarizer if enabled
-    if AI_SUMMARIZER:
-        try:
-            await AI_SUMMARIZER.start()
-            logger.info("AI summarizer started successfully")
-            sleep_max = os.getenv("IMT_SUMMARY_SLEEP_MAX", "30")
-            sleep_time = random.randint(0, int(sleep_max))
-
-            # Immediately create a job for any existing alerts
+    async with create_task_group() as tg:
+        # Start AI summarizer if enabled
+        if AI_SUMMARIZER:
             try:
-                await asyncio.sleep(sleep_time)
-                logger.info(
-                    f"Sleeping for {sleep_time} seconds before creating initial AI summarization job"
-                )
+                await AI_SUMMARIZER.start()
+                logger.info("AI summarizer started successfully")
+                sleep_max = os.getenv("IMT_SUMMARY_SLEEP_MAX", "30")
+                sleep_time = random.randint(0, int(sleep_max))
 
-                logger.info(
-                    "Creating initial AI summarization job for existing alerts..."
-                )
-
-                # Use retry logic for MBTA API call
-                async with aiohttp.ClientSession(base_url=MBTA_V3_ENDPOINT) as session:
-                    alerts = await fetch_alerts_with_retry(CONFIG, session)
-
-                if alerts:
-                    job_id = await AI_SUMMARIZER.queue_summary_job(
-                        alerts,
-                        priority=JobPriority.HIGH,  # High priority for startup
-                        config={
-                            "include_route_info": True,
-                            "include_severity": True,
-                        },
-                    )
+                # Immediately create a job for any existing alerts
+                try:
+                    await sleep(sleep_time)
                     logger.info(
-                        f"Initial startup: queued AI summary job {job_id} for {len(alerts)} alerts"
+                        f"Sleeping for {sleep_time} seconds before creating initial AI summarization job"
                     )
-                else:
-                    logger.info("No existing alerts to summarize on startup")
-            except Exception as e:
-                logger.warning(f"Failed to create initial AI summarization job: {e}")
-                # Don't fail startup, just log the warning
 
-            # Start background task for periodic AI summary refresh
-            logger.info("Creating periodic AI summary refresh task...")
-            background_task = asyncio.create_task(periodic_ai_summary_refresh())
-            app.state.ai_summary_task = background_task
-            logger.info(f"Started periodic AI summary refresh task: {background_task}")
+                    logger.info(
+                        "Creating initial AI summarization job for existing alerts..."
+                    )
 
-            # Start background task for periodic individual alert summaries
-            logger.info("Creating periodic individual alert summary task...")
-            individual_task = asyncio.create_task(
-                _periodic_individual_alert_summaries()
-            )
-            app.state.individual_summary_task = individual_task
-            logger.info(
-                f"Started periodic individual alert summary task: {individual_task}"
-            )
+                    # Use retry logic for MBTA API call
+                    async with aiohttp.ClientSession(
+                        base_url=MBTA_V3_ENDPOINT
+                    ) as session:
+                        alerts = await fetch_alerts_with_retry(CONFIG, session)
 
-            # Check if the tasks are actually running
-            if background_task.done():
-                logger.error("Periodic AI summary refresh task completed immediately!")
-            else:
-                logger.info("Periodic AI summary refresh task is running")
+                    if alerts:
+                        # TODO: Use a task group
+                        job_id = await AI_SUMMARIZER.queue_summary_job(
+                            alerts,
+                            priority=JobPriority.HIGH,  # High priority for startup
+                            config={
+                                "include_route_info": True,
+                                "include_severity": True,
+                            },
+                        )
+                        logger.info(
+                            f"Initial startup: queued AI summary job {job_id} for {len(alerts)} alerts"
+                        )
+                    else:
+                        logger.info("No existing alerts to summarize on startup")
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to create initial AI summarization job: {e}"
+                    )
+                    # Don't fail startup, just log the warning
 
-            if individual_task.done():
-                logger.error(
-                    "Periodic individual alert summary task completed immediately!"
+                # Start background task for periodic AI summary refresh
+                logger.info("Creating periodic AI summary refresh task...")
+                background_task = tg.start_soon(periodic_ai_summary_refresh)
+                app.state.ai_summary_task = background_task
+                logger.info(
+                    f"Started periodic AI summary refresh task: {background_task}"
                 )
-            else:
-                logger.info("Periodic individual alert summary task is running")
 
-        except Exception as e:
-            logger.error(f"Failed to start AI summarizer: {e}", exc_info=True)
-            # Don't fail startup, just log the error
-    else:
-        logger.info("AI summarizer not enabled")
+                # Start background task for periodic individual alert summaries
+                logger.info("Creating periodic individual alert summary task...")
+                individual_task = tg.start_soon(_periodic_individual_alert_summaries)
+                app.state.individual_summary_task = individual_task
+                logger.info(
+                    f"Started periodic individual alert summary task: {individual_task}"
+                )
+            except Exception as e:
+                logger.error(f"Failed to start AI summarizer: {e}", exc_info=True)
+                # Don't fail startup, just log the error
+        else:
+            logger.info("AI summarizer not enabled")
 
-    yield
+        yield
 
-    # Shutdown
-    logger.info("Shutting down MBTA Transit Data API...")
 
-    # Stop AI summarizer if enabled
-    if AI_SUMMARIZER:
-        try:
-            # Cancel background task if it exists
-            if hasattr(app.state, "ai_summary_task"):
-                app.state.ai_summary_task.cancel()
-                try:
-                    await app.state.ai_summary_task
-                except asyncio.CancelledError:
-                    pass
-                logger.info("Cancelled periodic AI summary refresh task")
-
-            # Cancel individual alert summary task if it exists
-            if hasattr(app.state, "individual_summary_task"):
-                app.state.individual_summary_task.cancel()
-                try:
-                    await app.state.individual_summary_task
-                except asyncio.CancelledError:
-                    pass
-                logger.info("Cancelled periodic individual alert summary task")
-
-            await AI_SUMMARIZER.stop()
-            await AI_SUMMARIZER.close()
-            logger.info("AI summarizer stopped successfully")
-        except Exception as e:
-            logger.error(f"Failed to stop AI summarizer: {e}")
+# TODO: move this to another file
 
 
 async def periodic_ai_summary_refresh() -> None:
@@ -333,7 +299,7 @@ async def periodic_ai_summary_refresh() -> None:
     while True:
         try:
             sleep_time = random.randint(4 * MINUTE, 2 * HOUR)
-            await asyncio.sleep(sleep_time)
+            await sleep(sleep_time)
 
             if AI_SUMMARIZER:
                 try:
@@ -375,15 +341,12 @@ async def periodic_ai_summary_refresh() -> None:
                     )
                     # Continue running even if this cycle fails
 
-        except asyncio.CancelledError:
-            logger.info("Periodic AI summary refresh task cancelled")
-            break
         except Exception as e:
             logger.error(
                 f"Unexpected error in periodic AI summary refresh: {e}", exc_info=True
             )
             # Wait a bit before retrying
-            await asyncio.sleep(60)
+            await sleep(60)
 
 
 async def _periodic_individual_alert_summaries() -> None:
@@ -398,7 +361,7 @@ async def _periodic_individual_alert_summaries() -> None:
 
             if not alerts:
                 logger.warning("No alerts found for individual summaries")
-                await asyncio.sleep(300)  # Wait 5 minutes before retrying
+                await sleep(5 * MINUTE)  # Wait 5 minutes before retrying
                 continue
 
             # Queue individual summary jobs for each alert with 1-sentence limit
@@ -411,14 +374,11 @@ async def _periodic_individual_alert_summaries() -> None:
                 )
 
             sleep_time = random.randint(4 * MINUTE, 2 * HOUR)
-            await asyncio.sleep(sleep_time)
+            await sleep(sleep_time)
 
-        except asyncio.CancelledError:
-            logger.info("Periodic individual alert summary task cancelled")
-            break
         except Exception as e:
             logger.error(f"Error in periodic individual alert summaries: {e}")
-            await asyncio.sleep(300)  # Wait 5 minutes before retrying
+            await sleep(5 * MINUTE)  # Wait 5 minutes before retrying
 
 
 # ============================================================================
@@ -567,11 +527,9 @@ async def generate_track_prediction(
                     prediction="No prediction could be generated",
                 )
 
-        return await asyncio.wait_for(
-            _generate_prediction(), timeout=TRACK_PREDICTION_TIMEOUT
-        )
+        return await _generate_prediction()
 
-    except asyncio.TimeoutError:
+    except TimeoutError:
         logging.error(
             f"Track prediction request timed out after {TRACK_PREDICTION_TIMEOUT} seconds"
         )
@@ -666,14 +624,11 @@ async def generate_chained_track_predictions(
             )
 
     tasks = [
-        process_single_prediction(pred_request)
+        await process_single_prediction(pred_request)
         for pred_request in chained_request.predictions
     ]
-    results = await asyncio.gather(*tasks)
 
-    return ChainedPredictionsResponse(
-        results=list(results),
-    )
+    return ChainedPredictionsResponse(results=tasks)
 
 
 @app.get("/stats/{station_id}/{route_id}")
@@ -1117,15 +1072,7 @@ async def get_vehicles(request: Request) -> dict:  # noqa: ARG001  # pyright: ig
     Get current vehicle positions as GeoJSON FeatureCollection. Also includes the next/current stop GeoJSON data.
     """
     try:
-        return await asyncio.wait_for(
-            get_vehicles_data(REDIS_CLIENT), timeout=API_REQUEST_TIMEOUT
-        )
-
-    except asyncio.TimeoutError:
-        logging.error(
-            f"Vehicle data request timed out after {API_REQUEST_TIMEOUT} seconds"
-        )
-        raise HTTPException(status_code=504, detail="Request timed out")
+        return await get_vehicles_data(REDIS_CLIENT)
     except (ConnectionError, TimeoutError) as e:
         logging.error(
             f"Error getting vehicles due to connection issue: {e}", exc_info=True
@@ -1223,13 +1170,6 @@ async def stream_vehicles(
             logger.error("Failed to send initial SSE payload (redis)", exc_info=e)
 
         while True:
-            # Client disconnect check
-            try:
-                if await request.is_disconnected():
-                    break
-            except (RuntimeError, asyncio.CancelledError):
-                break
-
             # Keep the background worker in TRAFFIC state while a client is connected
             try:
                 VEHICLES_QUEUE.put_nowait(State.TRAFFIC)
@@ -1253,7 +1193,7 @@ async def stream_vehicles(
                 last_heartbeat = now
                 yield f": keep-alive {now.isoformat()}\n\n"
 
-            await asyncio.sleep(poll_interval)
+            await sleep(poll_interval)
 
     headers = {
         "Cache-Control": "no-cache",
@@ -1302,15 +1242,8 @@ async def get_vehicles_json(request: Request) -> Response:  # noqa: ARG001  # py
                 headers={"Content-Disposition": "attachment; filename=vehicles.json"},
             )
 
-        return await asyncio.wait_for(
-            _get_vehicles_json_data(), timeout=API_REQUEST_TIMEOUT
-        )
+        return _get_vehicles_json_data()
 
-    except asyncio.TimeoutError:
-        logging.error(
-            f"Vehicle JSON request timed out after {API_REQUEST_TIMEOUT} seconds"
-        )
-        raise HTTPException(status_code=504, detail="Request timed out")
     except (ConnectionError, TimeoutError) as e:
         logging.error(
             f"Error getting vehicles JSON due to connection issue: {e}", exc_info=True
@@ -1416,11 +1349,8 @@ async def get_alerts(request: Request) -> Response:  # noqa: ARG001  # pyright: 
                 media_type="application/json",
             )
 
-        return await asyncio.wait_for(_get_alerts_data(), timeout=API_REQUEST_TIMEOUT)
+        return await _get_alerts_data()
 
-    except asyncio.TimeoutError:
-        logging.error(f"Alerts request timed out after {API_REQUEST_TIMEOUT} seconds")
-        raise HTTPException(status_code=504, detail="Request timed out")
     except (ConnectionError, TimeoutError) as e:
         logging.error(
             f"Error getting alerts due to connection issue: {e}", exc_info=True
@@ -1500,15 +1430,8 @@ async def get_alerts_json(request: Request) -> Response:  # noqa: ARG001  # pyri
                 headers={"Content-Disposition": "attachment; filename=alerts.json"},
             )
 
-        return await asyncio.wait_for(
-            _get_alerts_json_data(), timeout=API_REQUEST_TIMEOUT
-        )
+        return await _get_alerts_json_data()
 
-    except asyncio.TimeoutError:
-        logging.error(
-            f"Alerts JSON request timed out after {API_REQUEST_TIMEOUT} seconds"
-        )
-        raise HTTPException(status_code=504, detail="Request timed out")
     except (ConnectionError, TimeoutError) as e:
         logging.error(
             f"Error getting alerts JSON due to connection issue: {e}", exc_info=True
@@ -1680,11 +1603,8 @@ async def get_shapes(request: Request) -> Response:  # noqa: ARG001  # pyright: 
                 media_type="application/json",
             )
 
-        return await asyncio.wait_for(_get_shapes_data(), timeout=API_REQUEST_TIMEOUT)
+        return await _get_shapes_data()
 
-    except asyncio.TimeoutError:
-        logging.error(f"Shapes request timed out after {API_REQUEST_TIMEOUT} seconds")
-        raise HTTPException(status_code=504, detail="Request timed out")
     except (ConnectionError, TimeoutError) as e:
         logging.error(
             f"Error getting shapes due to connection issue: {e}", exc_info=True
@@ -1735,15 +1655,8 @@ async def get_shapes_json(request: Request) -> Response:  # noqa: ARG001  # pyri
                 headers={"Content-Disposition": "attachment; filename=shapes.json"},
             )
 
-        return await asyncio.wait_for(
-            _get_shapes_json_data(), timeout=API_REQUEST_TIMEOUT
-        )
+        return await _get_shapes_json_data()
 
-    except asyncio.TimeoutError:
-        logging.error(
-            f"Shapes JSON request timed out after {API_REQUEST_TIMEOUT} seconds"
-        )
-        raise HTTPException(status_code=504, detail="Request timed out")
     except (ConnectionError, TimeoutError) as e:
         logging.error(
             f"Error getting shapes JSON due to connection issue: {e}", exc_info=True
@@ -1782,34 +1695,34 @@ async def test_ai_summarization(
         async with aiohttp.ClientSession(base_url=MBTA_V3_ENDPOINT) as session:
             alerts = await fetch_alerts_with_retry(CONFIG, session)
 
-        if not alerts:
+            if not alerts:
+                return {
+                    "status": "no_alerts",
+                    "message": "No active alerts to summarize",
+                    "alert_count": 0,
+                }
+
+            # Force generate a summary
+            summary = await AI_SUMMARIZER.force_generate_summary(
+                alerts[:3],  # Just use first 3 alerts for testing
+                config={
+                    "include_route_info": True,
+                    "include_severity": True,
+                },
+            )
+
+            # Apply formatting if requested
+            if format != SummaryFormat.TEXT:
+                summary = format_summary(summary, format)
+
             return {
-                "status": "no_alerts",
-                "message": "No active alerts to summarize",
-                "alert_count": 0,
+                "status": "success",
+                "message": "AI summary generated successfully",
+                "alert_count": len(alerts[:3]),
+                "summary": summary,
+                "format": format,
+                "model": AI_SUMMARIZER.config.model,
             }
-
-        # Force generate a summary
-        summary = await AI_SUMMARIZER.force_generate_summary(
-            alerts[:3],  # Just use first 3 alerts for testing
-            config={
-                "include_route_info": True,
-                "include_severity": True,
-            },
-        )
-
-        # Apply formatting if requested
-        if format != SummaryFormat.TEXT:
-            summary = format_summary(summary, format)
-
-        return {
-            "status": "success",
-            "message": "AI summary generated successfully",
-            "alert_count": len(alerts[:3]),
-            "summary": summary,
-            "format": format,
-            "model": AI_SUMMARIZER.config.model,
-        }
 
     except Exception as e:
         logger.error(f"AI summarization test failed: {e}", exc_info=True)
@@ -2710,143 +2623,17 @@ async def generate_ai_summary_with_style(
 
 
 # ============================================================================
-# CACHE WARMING UTILITIES
-# ============================================================================
-
-
-async def warm_all_caches_internal() -> dict[str, bool]:
-    """
-    Internal utility to warm all API endpoint caches concurrently.
-    Used for optimizing cache performance during startup or maintenance.
-
-    Returns:
-        Dictionary indicating success/failure for each cache type
-    """
-    results = {}
-
-    async def warm_vehicles_cache() -> bool:
-        try:
-            features = await get_vehicle_features(REDIS_CLIENT)
-            feature_collection = FeatureCollection(features)
-            geojson_str = dumps(feature_collection, sort_keys=True)
-
-            # Warm both regular and JSON caches
-            await asyncio.gather(
-                REDIS_CLIENT.setex("api:vehicles", VEHICLES_CACHE_TTL, geojson_str),
-                REDIS_CLIENT.setex(
-                    "api:vehicles:json", VEHICLES_CACHE_TTL, geojson_str
-                ),
-            )
-            return True
-        except (
-            RedisError,
-            aiohttp.ClientError,
-            ValidationError,
-            ValueError,
-            TypeError,
-        ) as e:
-            logging.error("Failed to warm vehicles cache", exc_info=e)
-            return False
-
-    async def warm_alerts_cache() -> bool:
-        try:
-            async with aiohttp.ClientSession() as session:
-                alerts = await fetch_alerts_with_retry(CONFIG, session)
-                feature_collection = FeatureCollection(alerts)
-                geojson_str = dumps(feature_collection, sort_keys=True)
-
-                # Warm both regular and JSON caches
-                await asyncio.gather(
-                    REDIS_CLIENT.setex("api:alerts", ALERTS_CACHE_TTL, geojson_str),
-                    REDIS_CLIENT.setex(
-                        "api:alerts:json", ALERTS_CACHE_TTL, geojson_str
-                    ),
-                )
-
-                # Queue AI summary if enabled and there are alerts
-                if AI_SUMMARIZER and alerts:
-                    try:
-                        # Queue summary job with low priority for background processing
-                        job_id = await AI_SUMMARIZER.queue_summary_job(
-                            alerts,
-                            priority=JobPriority.LOW,
-                            config={
-                                "include_route_info": True,
-                                "include_severity": True,
-                            },
-                        )
-                        logger.info(
-                            f"Queued AI summary job {job_id} for {len(alerts)} alerts during cache warming"
-                        )
-                    except Exception as e:
-                        logger.warning(
-                            f"Failed to queue AI summary during cache warming: {e}"
-                        )
-                        # Don't fail cache warming if AI summarization fails
-
-                return True
-        except (
-            RedisError,
-            aiohttp.ClientError,
-            ValidationError,
-            ValueError,
-            TypeError,
-        ) as e:
-            logging.error("Failed to warm alerts cache", exc_info=e)
-            return False
-
-    async def warm_shapes_cache() -> bool:
-        try:
-            features = await get_shapes_features(CONFIG, REDIS_CLIENT)
-            feature_collection = FeatureCollection(features)
-            geojson_str = dumps(feature_collection, sort_keys=True)
-
-            # Warm both regular and JSON caches
-            await asyncio.gather(
-                REDIS_CLIENT.setex("api:shapes", SHAPES_CACHE_TTL, geojson_str),
-                REDIS_CLIENT.setex("api:shapes:json", SHAPES_CACHE_TTL, geojson_str),
-            )
-            return True
-        except (
-            RedisError,
-            aiohttp.ClientError,
-            ValidationError,
-            ValueError,
-            TypeError,
-        ) as e:
-            logging.error("Failed to warm shapes cache", exc_info=e)
-            return False
-
-    # Warm all caches concurrently
-    cache_tasks = [
-        ("vehicles", warm_vehicles_cache()),
-        ("alerts", warm_alerts_cache()),
-        ("shapes", warm_shapes_cache()),
-    ]
-
-    cache_results = await asyncio.gather(
-        *[task for _, task in cache_tasks], return_exceptions=True
-    )
-
-    for i, (cache_name, _) in enumerate(cache_tasks):
-        result = cache_results[i]
-        if isinstance(result, Exception):
-            logging.error(f"Error warming {cache_name} cache", exc_info=result)
-            results[cache_name] = False
-        elif isinstance(result, bool):
-            results[cache_name] = result
-        else:
-            results[cache_name] = False
-
-    return results
-
-
-# ============================================================================
 # MAIN FUNCTION
 # ============================================================================
 
 
-def run_main() -> None:
+def signal_handler(_signum, _frame):
+    VEHICLES_QUEUE.put(State.SHUTDOWN)
+
+
+async def run_main() -> None:
+    signal.signal(signal.SIGTERM, signal_handler)
+    signal.signal(signal.SIGINT, signal_handler)
     thr = threading.Thread(
         target=bg_worker,
         kwargs={
@@ -2856,4 +2643,5 @@ def run_main() -> None:
     )
     thr.start()
     port = int(os.environ.get("IMT_API_PORT", "8080"))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    server = uvicorn.Server(uvicorn.Config(app, host="0.0.0.0", port=port))
+    await server.serve()
