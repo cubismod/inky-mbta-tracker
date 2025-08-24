@@ -3,22 +3,18 @@ import hashlib
 import logging
 import re
 import time
-from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
+from anyio.abc import TaskGroup
 from config import OllamaConfig
 from mbta_responses import AlertResource
 from ollama import AsyncClient
 from ollama_queue_manager import (
     OllamaCommandType,
-    OllamaJob,
     OllamaJobPriority,
-    OllamaJobStatus,
-    OllamaQueueManager,
-    OllamaQueueWorker,
 )
 from pydantic import BaseModel, Field
 from shared_types.shared_types import SummarizationResponse, SummaryCacheEntry
@@ -46,23 +42,23 @@ class JobPriority(Enum):
     URGENT = 4  # Emergency alerts
 
 
-@dataclass
-class SummaryJob:
-    """A job to summarize alerts"""
+# @dataclass
+# class SummaryJob:
+#     """A job to summarize alerts"""
 
-    id: str
-    alerts: List[AlertResource]
-    priority: JobPriority
-    created_at: datetime
-    status: JobStatus = JobStatus.PENDING
-    started_at: Optional[datetime] = None
-    completed_at: Optional[datetime] = None
-    result: Optional[str] = None
-    error: Optional[str] = None
-    retry_count: int = 0
-    max_retries: int = 3
-    backoff_until: Optional[datetime] = None
-    config: Dict[str, Any] = field(default_factory=dict)
+#     id: str
+#     alerts: List[AlertResource]
+#     priority: JobPriority
+#     created_at: datetime
+#     status: JobStatus = JobStatus.PENDING
+#     started_at: Optional[datetime] = None
+#     completed_at: Optional[datetime] = None
+#     result: Optional[str] = None
+#     error: Optional[str] = None
+#     retry_count: int = 0
+#     max_retries: int = 3
+#     backoff_until: Optional[datetime] = None
+#     config: Dict[str, Any] = field(default_factory=dict)
 
 
 class SummarizationRequest(BaseModel):
@@ -127,103 +123,105 @@ class SummaryJobQueue:
         self.backoff_multiplier = 1.5  # Exponential backoff multiplier
         self.cpu_threshold = 0.7  # CPU usage threshold to trigger backoff
 
-    async def start(self) -> None:
-        """Start the job queue worker."""
-        if self._running:
-            return
+    # async def start(self, tg: TaskGroup) -> None:
+    #     """Start the job queue worker."""
+    #     if self._running:
+    #         return
 
-        self._running = True
-        self._worker_task = asyncio.create_task(self._worker_loop())
-        logger.info("Summary job queue started")
+    #     self._running = True
+    #     self._worker_task = tg.start_soon(self._worker_loop)
+    #     logger.info("Summary job queue started")
 
-    async def stop(self) -> None:
-        """Stop the job queue worker."""
-        if not self._running:
-            return
+    # async def stop(self) -> None:
+    #     """Stop the job queue worker."""
+    #     if not self._running:
+    #         return
 
-        self._running = False
-        if self._worker_task:
-            self._worker_task.cancel()
-            try:
-                await self._worker_task
-            except asyncio.CancelledError:
-                pass
-        logger.info("Summary job queue stopped")
+    #     self._running = False
+    #     if self._worker_task:
+    #         self._worker_task.cancel()
+    #         try:
+    #             await self._worker_task
+    #         except asyncio.CancelledError:
+    #             pass
+    #     logger.info("Summary job queue stopped")
 
-    async def add_job(
-        self,
-        alerts: List[AlertResource],
-        priority: JobPriority = JobPriority.NORMAL,
-        config: Optional[Dict[str, Any]] = None,
-    ) -> str:
-        """
-        Add a summary job to the queue.
+    # async def perform_summary(
+    #     self,
+    #     alerts: List[AlertResource],
+    #     priority: JobPriority = JobPriority.NORMAL,
+    #     config: Optional[Dict[str, Any]] = None,
+    # ) -> str:
+    #     """
+    #     Perform a summary job.
 
-        Args:
-            alerts: Alerts to summarize
-            priority: Job priority level
-            config: Additional configuration for summarization
+    #     Args:
+    #         alerts: Alerts to summarize
+    #         priority: Job priority level
+    #         config: Additional configuration for summarization
 
-        Returns:
-            Job ID
+    #     Returns:
+    #         Job ID
 
-        Raises:
-            ValueError: If queue is full
-        """
-        # First check if we already have a cached summary
-        cached_summary = await self._get_summary_from_redis(alerts)
-        if cached_summary:
-            logger.info("Found cached summary, skipping job creation")
-            # Return a special job ID indicating cached result
-            return f"cached_{self._create_alerts_hash(alerts)}"
+    #     Raises:
+    #         ValueError: If queue is full
+    #     """
+    #     # First check if we already have a cached summary
+    #     cached_summary = await self._get_summary_from_redis(alerts)
+    #     if cached_summary:
+    #         return cached_summary
 
-        async with self._lock:
-            if len(self.jobs) + len(self.pending_jobs) >= self.max_queue_size:
-                raise ValueError("Job queue is full")
+    # async with self._lock:
+    #     if len(self.jobs) + len(self.pending_jobs) >= self.max_queue_size:
+    #         raise ValueError("Job queue is full")
 
-            job_id = f"summary_{int(time.time() * 1000)}_{len(self.jobs)}"
-            job = SummaryJob(
-                id=job_id,
-                alerts=alerts,
-                priority=priority,
-                created_at=datetime.now(),
-                config=config or {},
-            )
+    #     job_id = f"summary_{int(time.time() * 1000)}_{len(self.jobs)}"
+    #     job = SummaryJob(
+    #         id=job_id,
+    #         alerts=alerts,
+    #         priority=priority,
+    #         created_at=datetime.now(),
+    #         config=config or {},
+    #     )
 
-            self.jobs[job_id] = job
-            self.pending_jobs.append(job_id)
+    #     self.jobs[job_id] = job
+    #     self.pending_jobs.append(job_id)
 
-            # Sort by priority (higher priority first)
-            self.pending_jobs.sort(
-                key=lambda jid: self.jobs[jid].priority.value, reverse=True
-            )
+    #     # Sort by priority (higher priority first)
+    #     self.pending_jobs.sort(
+    #         key=lambda jid: self.jobs[jid].priority.value, reverse=True
+    #     )
 
-            logger.info(f"Added summary job {job_id} with priority {priority.name}")
-            return job_id
+    #     logger.info(f"Added summary job {job_id} with priority {priority.name}")
+    #     return job_id
 
-    async def get_job_status(self, job_id: str) -> Optional[SummaryJob]:
-        """Get the status of a job."""
-        async with self._lock:
-            if job_id in self.jobs:
-                return self.jobs[job_id]
-            elif job_id in self.completed_jobs:
-                return self.completed_jobs[job_id]
-            return None
+    # async def get_job_status(self, job_id: str) -> Optional[SummaryJob]:
+    #     """Get the status of a job."""
+    #     async with self._lock:
+    #         if job_id in self.jobs:
+    #             return self.jobs[job_id]
+    #         elif job_id in self.completed_jobs:
+    #             return self.completed_jobs[job_id]
+    #         return None
 
-    async def cancel_job(self, job_id: str) -> bool:
-        """Cancel a pending job."""
-        async with self._lock:
-            if job_id in self.pending_jobs:
-                self.pending_jobs.remove(job_id)
-                if job_id in self.jobs:
-                    self.jobs[job_id].status = JobStatus.CANCELLED
-                    self.completed_jobs[job_id] = self.jobs.pop(job_id)
-                logger.info(f"Cancelled summary job {job_id}")
-                return True
-            return False
+    # async def cancel_job(self, job_id: str) -> bool:
+    #     """Cancel a pending job."""
+    #     async with self._lock:
+    #         if job_id in self.pending_jobs:
+    #             self.pending_jobs.remove(job_id)
+    #             if job_id in self.jobs:
+    #                 self.jobs[job_id].status = JobStatus.CANCELLED
+    #                 self.completed_jobs[job_id] = self.jobs.pop(job_id)
+    #             logger.info(f"Cancelled summary job {job_id}")
+    #             return True
+    #         return False
 
     async def _store_summary_in_redis(
-        self, alerts: List[AlertResource], summary: str, config: Dict[str, Any]
+        self,
+        alerts: List[AlertResource],
+        summary: str,
+        config: Dict[str, Any],
+        tg: TaskGroup,
     ) -> None:
         """Store the generated summary in Redis with appropriate TTL."""
         try:
@@ -242,7 +240,8 @@ class SummaryJobQueue:
             )
 
             # Store in Redis with TTL
-            await self.redis.setex(
+            tg.start_soon(
+                self.redis.setex,
                 cache_key,
                 3600,  # 1 hour TTL
                 summary_data.model_dump_json(),
@@ -250,7 +249,7 @@ class SummaryJobQueue:
 
             # Also store a mapping from alerts to summary hash for quick lookup
             alerts_key = f"alerts_to_summary:{alerts_hash}"
-            await self.redis.setex(alerts_key, 3600, cache_key)
+            tg.start_soon(self.redis.setex, alerts_key, 3600, cache_key)
 
             logger.info(f"Stored summary in Redis with key: {cache_key}")
 
@@ -338,142 +337,142 @@ class SummaryJobQueue:
         summary_lower = summary.lower()
         return any(indicator.lower() in summary_lower for indicator in error_indicators)
 
-    async def _worker_loop(self) -> None:
-        """Main worker loop that processes jobs."""
-        while self._running:
-            try:
-                # Check if we can process more jobs (only one at a time to queue Ollama requests)
-                if (
-                    len(self.running_jobs) < self.max_concurrent_jobs
-                    and self.pending_jobs
-                ):
-                    job_id = self.pending_jobs.pop(0)
-                    asyncio.create_task(self._process_job(job_id))
-                    logger.debug(
-                        f"Queued job {job_id} for sequential Ollama processing"
-                    )
+    # async def _worker_loop(self) -> None:
+    #     """Main worker loop that processes jobs."""
+    #     while self._running:
+    #         try:
+    #             # Check if we can process more jobs (only one at a time to queue Ollama requests)
+    #             if (
+    #                 len(self.running_jobs) < self.max_concurrent_jobs
+    #                 and self.pending_jobs
+    #             ):
+    #                 job_id = self.pending_jobs.pop(0)
+    #                 asyncio.create_task(self._process_job(job_id))
+    #                 logger.debug(
+    #                     f"Queued job {job_id} for sequential Ollama processing"
+    #                 )
 
-                # Clean up completed jobs (keep last 100)
-                if len(self.completed_jobs) > 100:
-                    oldest_jobs = sorted(
-                        self.completed_jobs.keys(),
-                        key=lambda k: self.completed_jobs[k].completed_at
-                        or datetime.now(),
-                    )
-                    for old_job_id in oldest_jobs[:-100]:
-                        del self.completed_jobs[old_job_id]
+    #             # Clean up completed jobs (keep last 100)
+    #             if len(self.completed_jobs) > 100:
+    #                 oldest_jobs = sorted(
+    #                     self.completed_jobs.keys(),
+    #                     key=lambda k: self.completed_jobs[k].completed_at
+    #                     or datetime.now(),
+    #                 )
+    #                 for old_job_id in oldest_jobs[:-100]:
+    #                     del self.completed_jobs[old_job_id]
 
-                # Adaptive backoff based on system load
-                await self._adaptive_backoff()
+    #             # Adaptive backoff based on system load
+    #             await self._adaptive_backoff()
 
-            except asyncio.CancelledError:
-                # Cooperatively exit on cancellation
-                break
-            except (ConnectionError, TimeoutError) as e:
-                logger.error(f"Connection error in job worker loop: {e}", exc_info=True)
-                await asyncio.sleep(1)
-            except ValueError as e:
-                logger.error(f"Data error in job worker loop: {e}", exc_info=True)
-                await asyncio.sleep(1)
-            except Exception as e:
-                logger.error(f"Unexpected error in job worker loop: {e}", exc_info=True)
-                await asyncio.sleep(1)
+    #         except asyncio.CancelledError:
+    #             # Cooperatively exit on cancellation
+    #             break
+    #         except (ConnectionError, TimeoutError) as e:
+    #             logger.error(f"Connection error in job worker loop: {e}", exc_info=True)
+    #             await asyncio.sleep(1)
+    #         except ValueError as e:
+    #             logger.error(f"Data error in job worker loop: {e}", exc_info=True)
+    #             await asyncio.sleep(1)
+    #         except Exception as e:
+    #             logger.error(f"Unexpected error in job worker loop: {e}", exc_info=True)
+    #             await asyncio.sleep(1)
 
-    async def _adaptive_backoff(self) -> None:
-        """Implement adaptive backoff based on system load and job queue status."""
-        # Simple backoff: longer delay if many jobs are running
-        active_jobs = len(self.running_jobs) + len(self.pending_jobs)
+    # async def _adaptive_backoff(self) -> None:
+    #     """Implement adaptive backoff based on system load and job queue status."""
+    #     # Simple backoff: longer delay if many jobs are running
+    #     active_jobs = len(self.running_jobs) + len(self.pending_jobs)
 
-        if active_jobs > self.max_concurrent_jobs * 2:
-            # Heavy load - longer delay
-            delay = min(self.base_backoff_seconds * 2, self.max_backoff_seconds)
-        elif active_jobs > self.max_concurrent_jobs:
-            # Moderate load - normal delay
-            delay = self.base_backoff_seconds
-        else:
-            # Light load - minimal delay
-            delay = self.base_backoff_seconds * 0.5
+    #     if active_jobs > self.max_concurrent_jobs * 2:
+    #         # Heavy load - longer delay
+    #         delay = min(self.base_backoff_seconds * 2, self.max_backoff_seconds)
+    #     elif active_jobs > self.max_concurrent_jobs:
+    #         # Moderate load - normal delay
+    #         delay = self.base_backoff_seconds
+    #     else:
+    #         # Light load - minimal delay
+    #         delay = self.base_backoff_seconds * 0.5
 
-        await asyncio.sleep(delay)
+    #     await asyncio.sleep(delay)
 
-    async def _process_job(self, job_id: str) -> None:
-        """Process a single summary job."""
-        if job_id not in self.jobs:
-            return
+    # async def _process_job(self, job_id: str) -> None:
+    #     """Process a single summary job."""
+    #     if job_id not in self.jobs:
+    #         return
 
-        job = self.jobs[job_id]
-        job.status = JobStatus.PROCESSING
-        job.started_at = datetime.now()
-        self.running_jobs.add(job_id)
+    #     job = self.jobs[job_id]
+    #     job.status = JobStatus.PROCESSING
+    #     job.started_at = datetime.now()
+    #     self.running_jobs.add(job_id)
 
-        try:
-            # Check if job should be delayed due to backoff
-            if job.backoff_until and datetime.now() < job.backoff_until:
-                remaining = (job.backoff_until - datetime.now()).total_seconds()
-                logger.info(f"Job {job_id} delayed for {remaining:.1f}s due to backoff")
-                await asyncio.sleep(remaining)
+    #     try:
+    #         # Check if job should be delayed due to backoff
+    #         if job.backoff_until and datetime.now() < job.backoff_until:
+    #             remaining = (job.backoff_until - datetime.now()).total_seconds()
+    #             logger.info(f"Job {job_id} delayed for {remaining:.1f}s due to backoff")
+    #             await asyncio.sleep(remaining)
 
-            # Process the job (sequential - only one Ollama request at a time)
-            logger.info(
-                f"Processing summary job {job_id} (sequential Ollama processing)"
-            )
+    #         # Process the job (sequential - only one Ollama request at a time)
+    #         logger.info(
+    #             f"Processing summary job {job_id} (sequential Ollama processing)"
+    #         )
 
-            # Generate the actual AI summary
-            summary = await self._generate_summary(job.alerts, job.config)
+    #         # Generate the actual AI summary
+    #         summary = await self._generate_summary(job.alerts, job.config)
 
-            # Only store successful summaries in Redis (not error messages)
-            if not self._is_error_message(summary):
-                await self._store_summary_in_redis(job.alerts, summary, job.config)
-                logger.info(f"Stored successful summary in Redis for job {job_id}")
-            else:
-                logger.warning(
-                    f"Not storing error message in Redis for job {job_id}: {summary}"
-                )
+    #         # Only store successful summaries in Redis (not error messages)
+    #         if not self._is_error_message(summary):
+    #             await self._store_summary_in_redis(job.alerts, summary, job.config)
+    #             logger.info(f"Stored successful summary in Redis for job {job_id}")
+    #         else:
+    #             logger.warning(
+    #                 f"Not storing error message in Redis for job {job_id}: {summary}"
+    #             )
 
-            job.result = summary
-            job.status = JobStatus.COMPLETED
-            job.completed_at = datetime.now()
+    #         job.result = summary
+    #         job.status = JobStatus.COMPLETED
+    #         job.completed_at = datetime.now()
 
-            logger.info(f"Completed summary job {job_id}")
+    #         logger.info(f"Completed summary job {job_id}")
 
-        except Exception as e:
-            job.error = str(e)
-            job.status = JobStatus.FAILED
+    #     except Exception as e:
+    #         job.error = str(e)
+    #         job.status = JobStatus.FAILED
 
-            # Implement retry logic with exponential backoff
-            if job.retry_count < job.max_retries:
-                job.retry_count += 1
-                backoff_delay = min(
-                    self.base_backoff_seconds
-                    * (self.backoff_multiplier**job.retry_count),
-                    self.max_backoff_seconds,
-                )
-                job.backoff_until = datetime.now() + timedelta(seconds=backoff_delay)
-                job.status = JobStatus.PENDING
+    #         # Implement retry logic with exponential backoff
+    #         if job.retry_count < job.max_retries:
+    #             job.retry_count += 1
+    #             backoff_delay = min(
+    #                 self.base_backoff_seconds
+    #                 * (self.backoff_multiplier**job.retry_count),
+    #                 self.max_backoff_seconds,
+    #             )
+    #             job.backoff_until = datetime.now() + timedelta(seconds=backoff_delay)
+    #             job.status = JobStatus.PENDING
 
-                # Re-add to pending queue
-                async with self._lock:
-                    self.pending_jobs.append(job_id)
-                    # Re-sort by priority
-                    self.pending_jobs.sort(
-                        key=lambda jid: self.jobs[jid].priority.value, reverse=True
-                    )
+    #             # Re-add to pending queue
+    #             async with self._lock:
+    #                 self.pending_jobs.append(job_id)
+    #                 # Re-sort by priority
+    #                 self.pending_jobs.sort(
+    #                     key=lambda jid: self.jobs[jid].priority.value, reverse=True
+    #                 )
 
-                logger.info(
-                    f"Retrying job {job_id} in {backoff_delay:.1f}s (attempt {job.retry_count})"
-                )
-            else:
-                logger.error(
-                    f"Job {job_id} failed after {job.max_retries} retries: {e}"
-                )
+    #             logger.info(
+    #                 f"Retrying job {job_id} in {backoff_delay:.1f}s (attempt {job.retry_count})"
+    #             )
+    #         else:
+    #             logger.error(
+    #                 f"Job {job_id} failed after {job.max_retries} retries: {e}"
+    #             )
 
-        finally:
-            self.running_jobs.discard(job_id)
+    #     finally:
+    #         self.running_jobs.discard(job_id)
 
-            # Move completed job to completed_jobs
-            async with self._lock:
-                if job_id in self.jobs:
-                    self.completed_jobs[job_id] = self.jobs.pop(job_id)
+    #         # Move completed job to completed_jobs
+    #         async with self._lock:
+    #             if job_id in self.jobs:
+    #                 self.completed_jobs[job_id] = self.jobs.pop(job_id)
 
     async def _generate_summary(
         self, alerts: List[AlertResource], config: Dict[str, Any]
@@ -566,17 +565,17 @@ class AISummarizer:
         """
         self.config = config
         self._client: Optional[AsyncClient] = None
-        self.job_queue = SummaryJobQueue(summarizer=self)
+        # self.job_queue = SummaryJobQueue(summarizer=self)
 
-        # Initialize Redis queue manager if enabled
-        self.redis_queue_manager: Optional[OllamaQueueManager] = None
-        self.redis_queue_workers: List[OllamaQueueWorker] = []
-        if hasattr(self.config, "enable_queue") and self.config.enable_queue:
-            redis_client = get_redis()
-            self.redis_queue_manager = OllamaQueueManager(
-                redis_client=redis_client,
-                queue_name=getattr(self.config, "queue_name", "ollama_commands"),
-            )
+        # # Initialize Redis queue manager if enabled
+        # self.redis_queue_manager: Optional[OllamaQueueManager] = None
+        # self.redis_queue_workers: List[OllamaQueueWorker] = []
+        # if hasattr(self.config, "enable_queue") and self.config.enable_queue:
+        #     redis_client = get_redis()
+        #     self.redis_queue_manager = OllamaQueueManager(
+        #         redis_client=redis_client,
+        #         queue_name=getattr(self.config, "queue_name", "ollama_commands"),
+        #     )
 
     def _get_client(self) -> AsyncClient:
         """Get or create Ollama async client."""
@@ -586,71 +585,67 @@ class AISummarizer:
             )
         return self._client
 
-    async def start(self) -> None:
-        """Start the AI summarizer and job queue."""
-        await self.job_queue.start()
+    # async def start(self, tg: TaskGroup) -> None:
+    #     """Start the AI summarize."""
 
-        # Start Redis queue workers if enabled
-        if self.redis_queue_manager:
-            await self._start_redis_queue_workers()
+    # async def stop(self) -> None:
+    #     """Stop the AI summarizer and job queue."""
+    #     await self.job_queue.stop()
 
-    async def stop(self) -> None:
-        """Stop the AI summarizer and job queue."""
-        await self.job_queue.stop()
+    #     # Stop Redis queue workers if enabled
+    #     if self.redis_queue_manager:
+    #         await self._stop_redis_queue_workers()
 
-        # Stop Redis queue workers if enabled
-        if self.redis_queue_manager:
-            await self._stop_redis_queue_workers()
+    # async def close(self) -> None:
+    #     """Close the Ollama client."""
+    #     if self._client:
+    #         # Ollama client doesn't have aclose method, just set to None
+    #         self._client = None
 
-    async def close(self) -> None:
-        """Close the Ollama client."""
-        if self._client:
-            # Ollama client doesn't have aclose method, just set to None
-            self._client = None
+    # async def _start_redis_queue_workers(self, tg: TaskGroup) -> None:
+    #     # TODO: rewrite ollama queue to natively use Anyio
+    #     """Start Redis queue workers for processing Ollama commands."""
+    #     if not self.redis_queue_manager:
+    #         return
 
-    async def _start_redis_queue_workers(self) -> None:
-        """Start Redis queue workers for processing Ollama commands."""
-        if not self.redis_queue_manager:
-            return
+    #     # Get configuration values with defaults
+    #     max_workers = getattr(self.config, "max_workers", 2)
+    #     poll_interval = getattr(self.config, "worker_poll_interval", 1.0)
+    #     max_concurrent = getattr(self.config, "max_concurrent_jobs", 1)
 
-        # Get configuration values with defaults
-        max_workers = getattr(self.config, "max_workers", 2)
-        poll_interval = getattr(self.config, "worker_poll_interval", 1.0)
-        max_concurrent = getattr(self.config, "max_concurrent_jobs", 1)
+    #     # Pull the model if it's not already pulled
+    #     if self.config.model:
+    #         await self._ollama_pull_model(self.config.model)
 
-        # Pull the model if it's not already pulled
-        if self.config.model:
-            await self._ollama_pull_model(self.config.model)
+    #     logger.info(f"Starting {max_workers} Redis queue workers")
 
-        logger.info(f"Starting {max_workers} Redis queue workers")
+    #     for i in range(max_workers):
+    #         worker = OllamaQueueWorker(
+    #             queue_manager=self.redis_queue_manager,
+    #             worker_id=f"ollama_worker_{i}",
+    #             poll_interval=poll_interval,
+    #             max_concurrent_jobs=max_concurrent,
+    #             ai_summarizer=self,  # Pass self reference for job processing
+    #         )
+    #         self.redis_queue_workers.append(worker)
 
-        for i in range(max_workers):
-            worker = OllamaQueueWorker(
-                queue_manager=self.redis_queue_manager,
-                worker_id=f"ollama_worker_{i}",
-                poll_interval=poll_interval,
-                max_concurrent_jobs=max_concurrent,
-                ai_summarizer=self,  # Pass self reference for job processing
-            )
-            self.redis_queue_workers.append(worker)
+    #         # Start worker in background
+    #         tg.start_soon(worker.start(), tg)
 
-            # Start worker in background
-            asyncio.create_task(worker.start())
+    #     logger.info("Redis queue workers started")
 
-        logger.info("Redis queue workers started")
+    # async def _stop_redis_queue_workers(self) -> None:
+    #     """Stop all Redis queue workers gracefully."""
+    #     if not self.redis_queue_workers:
+    #         return
 
-    async def _stop_redis_queue_workers(self) -> None:
-        """Stop all Redis queue workers gracefully."""
-        if not self.redis_queue_workers:
-            return
+    #     logger.info(f"Stopping {len(self.redis_queue_workers)} Redis queue workers")
 
-        logger.info(f"Stopping {len(self.redis_queue_workers)} Redis queue workers")
+    #     for worker in self.redis_queue_workers:
+    #         await worker.stop()
 
-        for worker in self.redis_queue_workers:
-            await worker.stop()
-
-        self.redis_queue_workers.clear()
-        logger.info("Redis queue workers stopped")
+    #     self.redis_queue_workers.clear()
+    #     logger.info("Redis queue workers stopped")
 
     async def _enqueue_redis_job(
         self,
@@ -1366,6 +1361,16 @@ class AISummarizer:
 
         return summary
 
+    def _create_default_prompt(self) -> str:
+        return str.join(
+            "\n",
+            [
+                "You are a helpful assistant who is in charge of summarizing MBTA transit alerts and managing rewrites.",
+                "You strive for accuracy, clarity, and professionalism in your summaries.",
+                "Your responses do not include thinking or reasoning processes and are concise.",
+            ],
+        )
+
     def _create_rewrite_prompt(
         self,
         summary: str,
@@ -1384,6 +1389,7 @@ class AISummarizer:
             Prompt for the rewrite process
         """
         prompt_parts = [
+            self._create_default_prompt(),
             "Please analyze and rewrite the following MBTA transit alert summary to improve clarity, readability, and professional tone.",
             "",
             "ORIGINAL SUMMARY:",
@@ -1775,116 +1781,116 @@ class AISummarizer:
 
         return content.strip()
 
-    async def queue_summary_job(
-        self,
-        alerts: List[AlertResource],
-        priority: JobPriority = JobPriority.NORMAL,
-        config: Optional[Dict[str, Any]] = None,
-    ) -> str:
-        """
-        Queue a summary job for background processing.
+    # async def queue_summary_job(
+    #     self,
+    #     alerts: List[AlertResource],
+    #     priority: JobPriority = JobPriority.NORMAL,
+    #     config: Optional[Dict[str, Any]] = None,
+    # ) -> str:
+    #     """
+    #     Queue a summary job for background processing.
 
-        Args:
-            alerts: Alerts to summarize
-            priority: Job priority level
-            config: Additional configuration for summarization
+    #     Args:
+    #         alerts: Alerts to summarize
+    #         priority: Job priority level
+    #         config: Additional configuration for summarization
 
-        Returns:
-            Job ID for tracking
-        """
-        # Try to use Redis queue first if available
-        if self.redis_queue_manager:
-            # Convert JobPriority to OllamaJobPriority
-            ollama_priority = OllamaJobPriority.NORMAL
-            if priority == JobPriority.HIGH:
-                ollama_priority = OllamaJobPriority.HIGH
-            elif priority == JobPriority.LOW:
-                ollama_priority = OllamaJobPriority.LOW
+    #     Returns:
+    #         Job ID for tracking
+    #     """
+    #     # Try to use Redis queue first if available
+    #     if self.redis_queue_manager:
+    #         # Convert JobPriority to OllamaJobPriority
+    #         ollama_priority = OllamaJobPriority.NORMAL
+    #         if priority == JobPriority.HIGH:
+    #             ollama_priority = OllamaJobPriority.HIGH
+    #         elif priority == JobPriority.LOW:
+    #             ollama_priority = OllamaJobPriority.LOW
 
-            # Create payload for Redis queue
-            payload = {
-                "alerts": [alert.dict() for alert in alerts],
-                "include_route_info": config.get("include_route_info", True)
-                if config
-                else True,
-                "include_severity": config.get("include_severity", True)
-                if config
-                else True,
-                "format": config.get("format", "text") if config else "text",
-                "style": config.get("style", "comprehensive")
-                if config
-                else "comprehensive",
-            }
+    #         # Create payload for Redis queue
+    #         payload = {
+    #             "alerts": [alert.dict() for alert in alerts],
+    #             "include_route_info": config.get("include_route_info", True)
+    #             if config
+    #             else True,
+    #             "include_severity": config.get("include_severity", True)
+    #             if config
+    #             else True,
+    #             "format": config.get("format", "text") if config else "text",
+    #             "style": config.get("style", "comprehensive")
+    #             if config
+    #             else "comprehensive",
+    #         }
 
-            metadata = {
-                "source": "ai_summarizer",
-                "alert_count": len(alerts),
-                "original_priority": priority.value,
-            }
+    #         metadata = {
+    #             "source": "ai_summarizer",
+    #             "alert_count": len(alerts),
+    #             "original_priority": priority.value,
+    #         }
 
-            # Try to enqueue to Redis queue
-            redis_job_id = await self._enqueue_redis_job(
-                command_type=OllamaCommandType.SUMMARIZE_ALERTS,
-                payload=payload,
-                priority=ollama_priority,
-                metadata=metadata,
-            )
+    #         # Try to enqueue to Redis queue
+    #         redis_job_id = await self._enqueue_redis_job(
+    #             command_type=OllamaCommandType.SUMMARIZE_ALERTS,
+    #             payload=payload,
+    #             priority=ollama_priority,
+    #             metadata=metadata,
+    #         )
 
-            if redis_job_id:
-                return redis_job_id
+    #         if redis_job_id:
+    #             return redis_job_id
 
-        # Fall back to existing job queue
-        return await self.job_queue.add_job(alerts, priority, config)
+    #     # Fall back to existing job queue
+    #     return await self.job_queue.perform_summary(alerts, priority, config)
 
-    async def get_job_status(self, job_id: str) -> Optional[SummaryJob]:
-        """Get the status of a queued summary job."""
-        # Check if this is a Redis job ID
-        if self.redis_queue_manager and not job_id.startswith(("summary_", "cached_")):
-            try:
-                redis_status = await self.redis_queue_manager.get_job_status(job_id)
-                if redis_status:
-                    # Convert Redis job status to SummaryJob status
-                    # This is a simplified conversion - you may want to enhance this
-                    return SummaryJob(
-                        id=job_id,
-                        alerts=[],  # Would need to fetch from Redis job details
-                        priority=JobPriority.NORMAL,
-                        created_at=datetime.now(),
-                        status=JobStatus.PROCESSING
-                        if redis_status == OllamaJobStatus.PROCESSING
-                        else JobStatus.PENDING,
-                    )
-            except Exception as e:
-                logger.warning(f"Failed to get Redis job status: {e}")
+    # async def get_job_status(self, job_id: str) -> Optional[SummaryJob]:
+    #     """Get the status of a queued summary job."""
+    #     # Check if this is a Redis job ID
+    #     if self.redis_queue_manager and not job_id.startswith(("summary_", "cached_")):
+    #         try:
+    #             redis_status = await self.redis_queue_manager.get_job_status(job_id)
+    #             if redis_status:
+    #                 # Convert Redis job status to SummaryJob status
+    #                 # This is a simplified conversion - you may want to enhance this
+    #                 return SummaryJob(
+    #                     id=job_id,
+    #                     alerts=[],  # Would need to fetch from Redis job details
+    #                     priority=JobPriority.NORMAL,
+    #                     created_at=datetime.now(),
+    #                     status=JobStatus.PROCESSING
+    #                     if redis_status == OllamaJobStatus.PROCESSING
+    #                     else JobStatus.PENDING,
+    #                 )
+    #         except Exception as e:
+    #             logger.warning(f"Failed to get Redis job status: {e}")
 
-        # Fall back to existing job queue
-        return await self.job_queue.get_job_status(job_id)
+    #     # Fall back to existing job queue
+    #     return await self.job_queue.get_job_status(job_id)
 
-    async def get_redis_job_details(self, job_id: str) -> Optional[OllamaJob]:
-        """Get detailed information about a Redis job."""
-        if not self.redis_queue_manager:
-            return None
+    # async def get_redis_job_details(self, job_id: str) -> Optional[OllamaJob]:
+    #     """Get detailed information about a Redis job."""
+    #     if not self.redis_queue_manager:
+    #         return None
 
-        try:
-            return await self.redis_queue_manager.get_job_details(job_id)
-        except Exception as e:
-            logger.error(f"Failed to get Redis job details: {e}")
-            return None
+    #     try:
+    #         return await self.redis_queue_manager.get_job_details(job_id)
+    #     except Exception as e:
+    #         logger.error(f"Failed to get Redis job details: {e}")
+    #         return None
 
-    async def get_redis_queue_stats(self) -> Optional[Dict[str, Any]]:
-        """Get Redis queue statistics."""
-        if not self.redis_queue_manager:
-            return None
+    # async def get_redis_queue_stats(self) -> Optional[Dict[str, Any]]:
+    #     """Get Redis queue statistics."""
+    #     if not self.redis_queue_manager:
+    #         return None
 
-        try:
-            return await self.redis_queue_manager.get_queue_stats()
-        except Exception as e:
-            logger.error(f"Failed to get Redis queue stats: {e}")
-            return None
+    #     try:
+    #         return await self.redis_queue_manager.get_queue_stats()
+    #     except Exception as e:
+    #         logger.error(f"Failed to get Redis queue stats: {e}")
+    #         return None
 
-    async def get_cached_summary(self, alerts: List[AlertResource]) -> Optional[str]:
-        """Get a cached summary from Redis if available."""
-        return await self.job_queue._get_summary_from_redis(alerts)
+    # async def get_cached_summary(self, alerts: List[AlertResource]) -> Optional[str]:
+    #     """Get a cached summary from Redis if available."""
+    #     return await self.job_queue._get_summary_from_redis(alerts)
 
     async def force_generate_summary(
         self, alerts: List[AlertResource], config: Optional[Dict[str, Any]] = None
@@ -1947,7 +1953,7 @@ class AISummarizer:
             if request.format != "text":
                 summary = self._format_summary(summary, request.format)
 
-            processing_time = (asyncio.get_event_loop().time() - start_time) * 1000
+            processing_time = (time.time() - start_time) * 1000
 
             return SummarizationResponse(
                 summary=summary,
@@ -2185,7 +2191,8 @@ class AISummarizer:
                 else f"{sentence_limit} sentences maximum"
             )
 
-            prompt = f"""Please provide a concise, focused summary of this MBTA transit alert in {sentence_text}. Include the locations affected, cause of the delay, and vehicle numbers or IDs if available.
+            prompt = f"""{self._create_default_prompt()}
+Please provide a concise, focused summary of this MBTA transit alert in {sentence_text}. Include the locations affected, cause of the delay, and vehicle numbers or IDs if available.
 
 Alert ID: {alert_id}
 Header: {header}
@@ -2198,7 +2205,7 @@ Severity: {self._severity_to_text(int(severity) if severity else 0)}"""
                 prompt += f"\nCause: {self._human_readable_effect_or_cause(cause)}"
 
             prompt += f"""
-{route_info}
+\n{route_info}
 
 IMPORTANT: Provide a single, concise summary in {sentence_text} that:
 1. Clearly explains what the issue is
@@ -2294,96 +2301,72 @@ Keep it brief and focused."""
             logger.warning(f"Ollama health check failed due to unexpected error: {e}")
             return False
 
-    def queue_individual_alert_summary_job(
-        self,
-        alert: AlertResource,
-        priority: JobPriority = JobPriority.HIGH,
-        sentence_limit: int = 2,
-    ) -> str:
-        """
-        Queue a job to generate an individual alert summary.
+    # def queue_individual_alert_summary_job(
+    #     self,
+    #     alert: AlertResource,
+    #     priority: JobPriority = JobPriority.HIGH,
+    #     sentence_limit: int = 2,
+    # ) -> str:
+    #     """
+    #     Queue a job to generate an individual alert summary.
 
-        Args:
-            alert: The alert to summarize
-            priority: Job priority for processing
-            sentence_limit: Maximum number of sentences for the summary (1 for ultra-concise, 2+ for standard)
+    #     Args:
+    #         alert: The alert to summarize
+    #         priority: Job priority for processing
+    #         sentence_limit: Maximum number of sentences for the summary (1 for ultra-concise, 2+ for standard)
 
-        Returns:
-            Job ID for tracking
-        """
-        try:
-            # Use the existing job queue mechanism for individual alerts
-            # The job queue will handle creating the SummaryJob internally
-            job_id = asyncio.create_task(self.job_queue.add_job([alert], priority))
+    #     Returns:
+    #         Job ID for tracking
+    #     """
+    #     try:
+    #         # Use the existing job queue mechanism for individual alerts
+    #         # The job queue will handle creating the SummaryJob internally
+    #         job_id = asyncio.create_task(self.job_queue.perform_summary([alert], priority))
 
-            logger.info(
-                f"Queued individual alert summary job for alert {alert.id}, job_id: {job_id}"
-            )
-            return f"individual_{alert.id}_{int(time.time())}"
+    #         logger.info(
+    #             f"Queued individual alert summary job for alert {alert.id}, job_id: {job_id}"
+    #         )
+    #         return f"individual_{alert.id}_{int(time.time())}"
 
-        except Exception as e:
-            logger.error(f"Error queuing individual alert summary job: {e}")
-            return ""
+    #     except Exception as e:
+    #         logger.error(f"Error queuing individual alert summary job: {e}")
+    #         return ""
 
-    def queue_bulk_individual_summaries(
-        self,
-        alerts: List[AlertResource],
-        priority: JobPriority = JobPriority.LOW,
-        sentence_limit: int = 2,
-    ) -> List[str]:
-        """
-        Queue multiple individual alert summary jobs.
+    # def queue_bulk_individual_summaries(
+    #     self,
+    #     alerts: List[AlertResource],
+    #     priority: JobPriority = JobPriority.LOW,
+    #     sentence_limit: int = 2,
+    # ) -> List[str]:
+    #     """
+    #     Queue multiple individual alert summary jobs.
 
-        Args:
-            alerts: List of alerts to summarize individually
-            priority: Job priority for processing
-            sentence_limit: Maximum number of sentences for each summary (1 for ultra-concise, 2+ for standard)
+    #     Args:
+    #         alerts: List of alerts to summarize individually
+    #         priority: Job priority for processing
+    #         sentence_limit: Maximum number of sentences for each summary (1 for ultra-concise, 2+ for standard)
 
-        Returns:
-            List of job IDs that were queued
-        """
-        job_ids = []
+    #     Returns:
+    #         List of job IDs that were queued
+    #     """
+    #     job_ids = []
 
-        for alert in alerts:
-            if self._validate_alert_structure(alert):
-                # Create config with sentence_limit for individual alerts
-                config = {"sentence_limit": sentence_limit}
-                job_id = asyncio.create_task(
-                    self.job_queue.add_job([alert], priority, config)
-                )
-                if job_id:
-                    job_ids.append(f"individual_{alert.id}_{int(time.time())}")
-            else:
-                logger.warning(
-                    f"Skipping invalid alert {alert.id} for individual summary"
-                )
+    #     for alert in alerts:
+    #         if self._validate_alert_structure(alert):
+    #             # Create config with sentence_limit for individual alerts
+    #             config = {"sentence_limit": sentence_limit}
+    #             job_id = asyncio.create_task(
+    #                 self.job_queue.perform_summary([alert], priority, config)
+    #             )
+    #             if job_id:
+    #                 job_ids.append(f"individual_{alert.id}_{int(time.time())}")
+    #         else:
+    #             logger.warning(
+    #                 f"Skipping invalid alert {alert.id} for individual summary"
+    #             )
 
-        logger.info(f"Queued {len(job_ids)} individual alert summary jobs")
-        return job_ids
-
-    async def _monitor_workers(self) -> None:
-        """Monitor Redis queue workers and restart them if needed."""
-        while True:
-            try:
-                # Check if workers are still running
-                active_workers = [w for w in self.redis_queue_workers if w.running]
-                if len(active_workers) < len(self.redis_queue_workers):
-                    logger.warning("Some Redis queue workers stopped, restarting...")
-                    await self._stop_redis_queue_workers()
-                    await self._start_redis_queue_workers()
-
-                # Get queue statistics
-                if self.redis_queue_manager:
-                    stats = await self.redis_queue_manager.get_queue_stats()
-                    logger.debug(f"Redis queue stats: {stats}")
-
-                await asyncio.sleep(30)  # Check every 30 seconds
-            except asyncio.CancelledError:
-                # Exit cleanly when cancelled
-                break
-            except Exception as e:
-                logger.error(f"Error monitoring Redis queue workers: {e}")
-                await asyncio.sleep(30)
+    #     logger.info(f"Queued {len(job_ids)} individual alert summary jobs")
+    #     return job_ids
 
     def create_summarization_request(
         self,

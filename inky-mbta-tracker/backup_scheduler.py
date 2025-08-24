@@ -1,9 +1,11 @@
-import asyncio
 import logging
 import os
 from datetime import UTC, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
+from anyio import sleep
+from anyio.abc import TaskGroup
+from consts import HOUR
 from redis_backup import RedisBackup
 
 logger = logging.getLogger(__name__)
@@ -12,10 +14,16 @@ logger = logging.getLogger(__name__)
 class BackupScheduler:
     """Schedules Redis backups to run at 3:00am daily"""
 
-    def __init__(self, backup_time: time = time(3, 0), backup_dir: str = "./backups"):
+    def __init__(
+        self,
+        tg: TaskGroup,
+        backup_time: time = time(3, 0),
+        backup_dir: str = "./backups",
+    ):
         self.backup_time = backup_time
         self.backup = RedisBackup(backup_dir=backup_dir)
         self.running = False
+        self.tg = tg
 
     def _get_next_backup_time(self) -> datetime:
         """Calculate the next backup time in UTC"""
@@ -39,7 +47,7 @@ class BackupScheduler:
         # Convert to UTC for consistent internal handling
         return next_backup_eastern.astimezone(UTC)
 
-    async def run_scheduler(self) -> None:
+    async def run_scheduler(self, tg: TaskGroup) -> None:
         """Main scheduler loop that runs the backup task at 3:00am daily"""
         self.running = True
         logger.info("Redis backup scheduler started")
@@ -58,8 +66,7 @@ class BackupScheduler:
                     f"Next backup scheduled for: {next_backup_eastern.strftime('%Y-%m-%d %I:%M %p %Z')} (in {sleep_seconds / 3600:.1f} hours)"
                 )
 
-                # Sleep until backup time
-                await asyncio.sleep(sleep_seconds)
+                await sleep(sleep_seconds)
 
                 if not self.running:
                     break
@@ -73,18 +80,15 @@ class BackupScheduler:
                     )
 
                     # Cleanup old backups (keep 7 days by default)
-                    await self.backup.cleanup_old_backups()
+                    tg.start_soon(self.backup.cleanup_old_backups)
 
                 except Exception as e:
                     logger.error("Scheduled backup failed", exc_info=e)
 
-            except asyncio.CancelledError:
-                logger.info("Backup scheduler cancelled")
-                break
             except Exception as e:
                 logger.error("Backup scheduler error", exc_info=e)
                 # Wait 1 hour before retrying on error
-                await asyncio.sleep(3600)
+                await sleep(HOUR)
 
         logger.info("Redis backup scheduler stopped")
 
@@ -93,8 +97,7 @@ class BackupScheduler:
         self.running = False
 
 
-def run_backup_scheduler() -> None:
-    """Synchronous wrapper to run the backup scheduler"""
+async def run_backup_scheduler(tg: TaskGroup) -> None:
     backup_time_str = os.getenv("IMT_REDIS_BACKUP_TIME", "03:00")
     if isinstance(backup_time_str, str):
         try:
@@ -109,17 +112,5 @@ def run_backup_scheduler() -> None:
     else:
         backup_time = time(hour=3, minute=0)
 
-    scheduler = BackupScheduler(backup_time=backup_time)
-
-    try:
-        loop = asyncio.get_event_loop()
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-
-    try:
-        loop.run_until_complete(scheduler.run_scheduler())
-    except KeyboardInterrupt:
-        logger.info("Backup scheduler interrupted by user")
-    finally:
-        scheduler.stop()
+    scheduler = BackupScheduler(tg=tg, backup_time=backup_time)
+    await scheduler.run_scheduler(tg)

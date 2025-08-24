@@ -1,14 +1,13 @@
 import json
 import os
-from asyncio import Runner
-from datetime import datetime
 from queue import Queue
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING
 
+from anyio import run
 from redis.asyncio import Redis
+from vehicles_background_worker import run_background_worker
 
 if TYPE_CHECKING:
-    from shared_types.shared_types import TaskType
     from vehicles_background_worker import State
 
 
@@ -38,76 +37,10 @@ async def get_vehicles_data(r_client: Redis) -> dict:
     return result
 
 
-def thread_runner(
-    target: "TaskType",
-    queue: Any,
-    transit_time_min: int = 0,
-    stop_id: Optional[str] = None,
-    route: Optional[str] = None,
-    direction_filter: Optional[int] = None,
-    expiration_time: Optional[datetime] = None,
-    show_on_display: bool = True,
-    route_substring_filter: Optional[str] = None,
-    precache_routes: Optional[list[str]] = None,
-    precache_stations: Optional[list[str]] = None,
-    precache_interval_hours: int = 4,
-    vehicles_queue: Optional["Queue[State]"] = None,
-) -> None:
-    from mbta_client import (
-        precache_track_predictions_runner,
-        watch_static_schedule,
-        watch_station,
-        watch_vehicles,
+def bg_worker(queue: Queue[State]) -> None:
+    run(
+        run_background_worker,
+        queue,
+        backend="asyncio",
+        backend_options={"use_uvloop": True},
     )
-    from shared_types.shared_types import TaskType
-    from vehicles_background_worker import run_background_worker
-
-    with Runner() as runner:
-        match target:
-            case TaskType.SCHEDULES:
-                if stop_id and queue is not None:
-                    runner.run(
-                        watch_static_schedule(
-                            stop_id,
-                            route,
-                            direction_filter,
-                            queue,
-                            transit_time_min,
-                            show_on_display,
-                            route_substring_filter,
-                        )
-                    )
-            case TaskType.SCHEDULE_PREDICTIONS:
-                if queue is not None:
-                    runner.run(
-                        watch_station(
-                            stop_id or "place-sstat",
-                            route,
-                            direction_filter,
-                            queue,
-                            transit_time_min,
-                            expiration_time,
-                            show_on_display,
-                            route_substring_filter,
-                        )
-                    )
-            case TaskType.VEHICLES:
-                if queue is not None:
-                    runner.run(
-                        watch_vehicles(
-                            queue,
-                            expiration_time,
-                            route or "Red",
-                        )
-                    )
-            case TaskType.TRACK_PREDICTIONS:
-                runner.run(
-                    precache_track_predictions_runner(
-                        routes=precache_routes,
-                        target_stations=precache_stations,
-                        interval_hours=precache_interval_hours,
-                    )
-                )
-            case TaskType.VEHICLES_BACKGROUND_WORKER:
-                if vehicles_queue:
-                    runner.run(run_background_worker(vehicles_queue))

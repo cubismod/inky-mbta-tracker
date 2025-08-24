@@ -1,4 +1,3 @@
-import asyncio
 import logging
 from datetime import datetime, timedelta
 from typing import Optional
@@ -7,6 +6,8 @@ from zoneinfo import ZoneInfo
 import aiohttp
 import humanize
 from aiohttp import ClientSession
+from anyio import sleep
+from anyio.abc import TaskGroup
 from config import Config
 from consts import MBTA_V3_ENDPOINT
 from geojson import Feature, LineString, Point
@@ -186,7 +187,7 @@ async def collect_alerts(config: Config, session: ClientSession) -> list[AlertRe
 
             # Small delay between batches to avoid rate limiting
             if batch_num < len(route_batches):
-                await asyncio.sleep(0.1)
+                await sleep(0.1)
     else:
         logger.warning("No vehicles_by_route configured, cannot collect alerts")
 
@@ -202,7 +203,7 @@ async def collect_alerts(config: Config, session: ClientSession) -> list[AlertRe
     return collected_alerts
 
 
-async def get_vehicle_features(redis_client: Redis) -> list[Feature]:
+async def get_vehicle_features(redis_client: Redis, tg: TaskGroup) -> list[Feature]:
     """Extract vehicle features from Redis data"""
     features = dict[str, Feature]()
 
@@ -253,7 +254,7 @@ async def get_vehicle_features(redis_client: Redis) -> list[Feature]:
 
                     if not vehicle_info.route.startswith("Amtrak"):
                         stop = await light_get_stop(
-                            redis_client, vehicle_info.stop, session
+                            redis_client, vehicle_info.stop, session, tg
                         )
                         platform_prediction = None
                         if stop:
@@ -330,37 +331,19 @@ async def get_vehicle_features(redis_client: Redis) -> list[Feature]:
                     )
                     features[f"v-{vehicle_info.id}"] = feature
 
-                    # if (
-                    #     stop
-                    #     and stop.stop_id
-                    #     and vehicle_info.stop
-                    #     and stop.long
-                    #     and stop.lat
-                    #     and not vehicle_info.route.isdecimal()
-                    # ):
-                    #     stop_point = Point((stop.long, stop.lat))
-                    #     stop_feature = Feature(
-                    #         geometry=stop_point,
-                    #         id=vehicle_info.stop,
-                    #         properties={
-                    #             "marker-size": "small",
-                    #             "marker-symbol": "building",
-                    #             "marker-color": lookup_vehicle_color(vehicle_info),
-                    #             "name": stop.stop_id,
-                    #             "id": vehicle_info.stop,
-                    #         },
-                    #     )
-                    #     features[f"v-{vehicle_info.stop}"] = stop_feature
-
     return list(features.values())
 
 
-async def get_shapes_features(config: Config, redis_client: Redis) -> list[Feature]:
+async def get_shapes_features(
+    config: Config, redis_client: Redis, tg: TaskGroup
+) -> list[Feature]:
     """Get route shapes as GeoJSON features"""
     lines = list()
     if config.vehicles_by_route:
         async with aiohttp.ClientSession(base_url=MBTA_V3_ENDPOINT) as session:
-            shapes = await get_shapes(redis_client, config.vehicles_by_route, session)
+            shapes = await get_shapes(
+                redis_client, config.vehicles_by_route, session, tg
+            )
             if shapes:
                 for k, v in shapes.items():
                     for line in v:

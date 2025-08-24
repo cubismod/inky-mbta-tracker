@@ -7,6 +7,8 @@ from datetime import datetime, timedelta
 from enum import Enum
 from typing import Any, Awaitable, Dict, List, Optional, TypeVar, Union, cast, overload
 
+from anyio import sleep
+from anyio.abc import TaskGroup
 from redis.asyncio import Redis
 from redis_lock.asyncio.async_lock import RedisLock
 
@@ -619,7 +621,6 @@ class OllamaQueueWorker:
         self.max_concurrent_jobs = max_concurrent_jobs
         self.ai_summarizer = ai_summarizer
         self.running = False
-        self.active_jobs: Dict[str, asyncio.Task] = {}
 
     async def start(self) -> None:
         """Start the worker"""
@@ -629,39 +630,19 @@ class OllamaQueueWorker:
         while self.running:
             try:
                 # Check if we can process more jobs
-                if len(self.active_jobs) < self.max_concurrent_jobs:
+                    if len(self.) < self.max_concurrent_jobs:
                     job = await self.queue_manager.dequeue_job(
                         self.worker_id, timeout=1
                     )
                     if job:
                         # Start processing the job
-                        task = asyncio.create_task(self._process_job(job))
-                        self.active_jobs[job.id] = task
+                        await self._process_job(job)
 
-                        # Clean up completed tasks
-                        self.active_jobs = {
-                            job_id: task
-                            for job_id, task in self.active_jobs.items()
-                            if not task.done()
-                        }
-
-                await asyncio.sleep(self.poll_interval)
+                await sleep(self.poll_interval)
 
             except Exception as e:
                 logger.error(f"Worker {self.worker_id} error: {e}")
-                await asyncio.sleep(self.poll_interval)
-
-    async def stop(self) -> None:
-        """Stop the worker"""
-        self.running = False
-        logger.info(f"Stopping Ollama queue worker {self.worker_id}")
-
-        # Wait for active jobs to complete
-        if self.active_jobs:
-            logger.info(
-                f"Waiting for {len(self.active_jobs)} active jobs to complete..."
-            )
-            await asyncio.gather(*self.active_jobs.values(), return_exceptions=True)
+                await sleep(self.poll_interval)
 
     async def _process_job(self, job: OllamaJob) -> None:
         """Process a single job"""

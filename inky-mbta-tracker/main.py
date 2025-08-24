@@ -2,14 +2,20 @@ import asyncio
 import logging
 import os
 import re
-import signal
 from asyncio import Queue as AsyncQueue
-from asyncio import Runner, sleep
 from datetime import UTC, datetime, timedelta
 from random import randint
 from typing import Optional
 
 import click
+from anyio import (
+    create_memory_object_stream,
+    create_task_group,
+    from_thread,
+    run,
+    to_thread,
+)
+from anyio.streams.memory import MemoryObjectSendStream
 from backup_scheduler import BackupScheduler
 from config import StopSetup, load_config
 from dotenv import load_dotenv
@@ -19,7 +25,6 @@ from mbta_client import (
     watch_station,
     watch_vehicles,
 )
-from prometheus import running_threads
 from prometheus_client import start_http_server
 from schedule_tracker import (
     ScheduleEvent,
@@ -119,12 +124,12 @@ def queue_watcher(queue: AsyncQueue[ScheduleEvent]) -> None:
 
 # launches a departures tracking thread, target should either be "schedule" or "predictions"
 # returns a TaskTracker
-def start_task(  # type: ignore
+def start_task(
     target: TaskType,
-    queue: AsyncQueue[ScheduleEvent | VehicleRedisSchema],
+    send_stream: MemoryObjectSendStream[ScheduleEvent | VehicleRedisSchema],
     stop: Optional[StopSetup] = None,
     route_id: Optional[str] = None,
-) -> Optional[TaskTracker]:
+) -> None:
     exp_time = datetime.now().astimezone(UTC) + timedelta(
         minutes=randint(MIN_TASK_RESTART_MINS, MAX_TASK_RESTART_MINS)
     )
@@ -134,269 +139,135 @@ def start_task(  # type: ignore
     match target:
         case TaskType.SCHEDULES:
             if stop:
-                task = asyncio.create_task(
-                    watch_static_schedule(
-                        stop_id=stop.stop_id,
-                        route=stop.route_filter,
-                        direction=direction_filter,
-                        queue=queue,
-                        transit_time_min=stop.transit_time_min,
-                        show_on_display=stop.show_on_display,
-                        route_substring_filter=stop.route_substring_filter,
-                    ),
-                    name=f"{stop.route_filter}_{stop.stop_id}_schedules",
+                from_thread.run(
+                    watch_static_schedule,
+                    stop.stop_id,
+                    stop.route_filter,
+                    direction_filter,
+                    send_stream,
+                    stop.transit_time_min,
+                    stop.show_on_display,
+                    stop.route_substring_filter,
                 )
-                return TaskTracker(task=task, stop=stop, event_type=target)
         case TaskType.SCHEDULE_PREDICTIONS:
             if stop:
-                task = asyncio.create_task(
-                    watch_station(
-                        stop_id=stop.stop_id,
-                        route=stop.route_filter,
-                        direction_filter=direction_filter,
-                        queue=queue,
-                        transit_time_min=stop.transit_time_min,
-                        expiration_time=exp_time,
-                        show_on_display=stop.show_on_display,
-                        route_substring_filter=stop.route_substring_filter,
-                    ),
-                    name=f"{stop.route_filter}_{stop.stop_id}_predictions",
-                )
-                return TaskTracker(
-                    task=task, expiration_time=exp_time, stop=stop, event_type=target
+                from_thread.run(
+                    watch_station,
+                    stop.stop_id,
+                    stop.route_filter,
+                    direction_filter,
+                    send_stream,
+                    stop.transit_time_min,
+                    exp_time,
+                    stop.show_on_display,
+                    stop.route_substring_filter,
                 )
         case TaskType.VEHICLES:
-            task = asyncio.create_task(
-                watch_vehicles(
-                    queue=queue,
-                    expiration_time=exp_time,
-                    route_id=route_id or "",
-                ),
-                name=f"{route_id}_vehicles",
+            from_thread.run(
+                watch_vehicles,
+                send_stream,
+                exp_time,
+                route_id or "",
             )
-            return TaskTracker(
-                task=task,
-                expiration_time=exp_time,
-                route_id=route_id,
-                event_type=target,
-            )
-        case TaskType.TRACK_PREDICTIONS:
-            # This case requires special handling with config parameters
-            return None  # Will be handled separately in __main__()
 
 
 async def __main__() -> None:
-    # Create shutdown event and register signal handlers for graceful exit
-    shutdown_event = asyncio.Event()
-    try:
-        loop = asyncio.get_running_loop()
-        for sig in (getattr(signal, "SIGINT", None), getattr(signal, "SIGTERM", None)):
-            if sig is not None:
-                try:
-                    loop.add_signal_handler(sig, shutdown_event.set)
-                except NotImplementedError:
-                    # Signal handlers may not be available (e.g., on Windows)
-                    pass
-    except RuntimeError:
-        # Fallback if no running loop; Runner below provides one
-        pass
     config = load_config()
 
+    send_stream, receive_stream = create_memory_object_stream[
+        ScheduleEvent | VehicleRedisSchema
+    ](max_buffer_size=5000)
+
     # Use asyncio queue to feed async consumers
-    queue: AsyncQueue[ScheduleEvent | VehicleRedisSchema] = AsyncQueue(maxsize=5000)
     tasks: list[TaskTracker] = []
 
     await schema_versioner()
 
     start_http_server(int(os.getenv("IMT_PROM_PORT", "8000")))
-
-    for stop in config.stops:
-        if stop.schedule_only:
-            tk = start_task(TaskType.SCHEDULES, stop=stop, queue=queue)
-            if tk:
-                tasks.append(tk)
-        else:
-            tk = start_task(TaskType.SCHEDULE_PREDICTIONS, stop=stop, queue=queue)
-            if tk:
-                tasks.append(tk)
-    if config.vehicles_by_route:
-        for route_id in config.vehicles_by_route:
-            tk = start_task(
-                TaskType.VEHICLES,
-                route_id=route_id,
-                queue=queue,
-            )
-            if tk:
-                tasks.append(tk)
-
-    # Run backup scheduler as native asyncio task for proper cancellation
-    # Parse backup time from env (default 03:00, America/New_York)
-    from datetime import time as dt_time
-
-    backup_time_str = os.getenv("IMT_REDIS_BACKUP_TIME", "03:00")
-    if isinstance(backup_time_str, str):
-        try:
-            hour, minute = map(int, backup_time_str.split(":"))
-            backup_time = dt_time(hour=hour, minute=minute)
-        except Exception:
-            logger.error(
-                f"Invalid IMT_REDIS_BACKUP_TIME format: {backup_time_str}, using default 03:00"
-            )
-            backup_time = dt_time(hour=3, minute=0)
-    else:
-        backup_time = dt_time(hour=3, minute=0)
-
-    backup_scheduler = BackupScheduler(backup_time=backup_time)
-    backup_task = asyncio.create_task(
-        backup_scheduler.run_scheduler(), name="redis_backup_scheduler"
-    )
-    tasks.append(TaskTracker(backup_task, stop=None, event_type=TaskType.REDIS_BACKUP))
-
-    # Start track prediction precaching if enabled
-    if config.enable_track_predictions:
-        track_pred_task = asyncio.create_task(
-            precache_track_predictions_runner(
-                routes=config.track_prediction_routes,
-                target_stations=config.track_prediction_stations,
-                interval_hours=config.track_prediction_interval_hours,
-            ),
-            name="track_predictions_precache",
-        )
-        tasks.append(
-            TaskTracker(
-                track_pred_task, stop=None, event_type=TaskType.TRACK_PREDICTIONS
-            )
-        )
-
-    # Start Ollama queue workers if enabled
-    if (
-        config.ollama.enabled
-        and hasattr(config.ollama, "enable_queue")
-        and config.ollama.enable_queue
-    ):
-        try:
-            from ai_summarizer import AISummarizer
-
-            ai_summarizer = AISummarizer(config.ollama)
-            await ai_summarizer.start()
-
-            # The AI summarizer will start its own Redis queue workers
-            logger.info("AI summarizer started with Redis queue workers")
-
-            # Add a task tracker for the AI summarizer monitoring
-            ai_summarizer_task = asyncio.create_task(
-                ai_summarizer._monitor_workers(),  # Use the existing method
-                name="ai_summarizer_monitor",
-            )
-            tasks.append(
-                TaskTracker(
-                    ai_summarizer_task,
-                    stop=None,
-                    event_type=TaskType.OLLAMA_QUEUE_WORKER,
+    async with create_task_group() as tg:
+        for stop in config.stops:
+            if stop.schedule_only:
+                await to_thread.run_sync(
+                    start_task,
+                    TaskType.SCHEDULES,
+                    send_stream,
+                    stop,
+                    abandon_on_cancel=True,
+                    cancellable=True,
                 )
+            else:
+                await to_thread.run_sync(
+                    start_task,
+                    TaskType.SCHEDULE_PREDICTIONS,
+                    send_stream,
+                    stop,
+                    abandon_on_cancel=True,
+                    cancellable=True,
+                )
+        if config.vehicles_by_route:
+            for route_id in config.vehicles_by_route:
+                await to_thread.run_sync(
+                    start_task,
+                    TaskType.VEHICLES,
+                    send_stream,
+                    stop,
+                    route_id,
+                    abandon_on_cancel=True,
+                    cancellable=True,
+                )
+
+        # Run backup scheduler as native asyncio task for proper cancellation
+        # Parse backup time from env (default 03:00, America/New_York)
+        from datetime import time as dt_time
+
+        backup_time_str = os.getenv("IMT_REDIS_BACKUP_TIME", "03:00")
+        if isinstance(backup_time_str, str):
+            try:
+                hour, minute = map(int, backup_time_str.split(":"))
+                backup_time = dt_time(hour=hour, minute=minute)
+            except Exception:
+                logger.error(
+                    f"Invalid IMT_REDIS_BACKUP_TIME format: {backup_time_str}, using default 03:00"
+                )
+                backup_time = dt_time(hour=3, minute=0)
+        else:
+            backup_time = dt_time(hour=3, minute=0)
+
+        backup_scheduler = BackupScheduler(backup_time=backup_time)
+        tg.start_soon(backup_scheduler.run_scheduler)
+
+        # Start track prediction precaching if enabled
+        if config.enable_track_predictions:
+            tg.start_soon(
+                precache_track_predictions_runner,
+                config.track_prediction_routes,
+                config.track_prediction_stations,
+                config.track_prediction_interval_hours,
             )
-        except Exception as e:
-            logger.error(f"Failed to start AI summarizer with Redis queue: {e}")
 
-    process_tasks: list[asyncio.Task[None]] = []
-    num_proc = int(os.getenv("IMT_PROCESS_QUEUE_THREADS", "1"))
-    for i in range(num_proc):
-        t = asyncio.create_task(process_queue_async(queue), name=f"event_processor_{i}")
-        process_tasks.append(t)
-        # Stagger processor start to reduce initial contention
-        if i < num_proc - 1:
-            await sleep(2)
+        # Start Ollama queue workers if enabled
+        if (
+            config.ollama.enabled
+            and hasattr(config.ollama, "enable_queue")
+            and config.ollama.enable_queue
+        ):
+            try:
+                from ai_summarizer import AISummarizer
 
-    for t in process_tasks:
-        tasks.append(TaskTracker(t, stop=None, event_type=TaskType.PROCESSOR))
+                ai_summarizer = AISummarizer(config.ollama)
+                await ai_summarizer.start(tg)
 
-    # Main supervision loop with shutdown awareness
-    while not shutdown_event.is_set():
-        running_threads.set(len(tasks))
-        try:
-            await asyncio.wait_for(shutdown_event.wait(), timeout=30)
-        except asyncio.TimeoutError:
-            pass
-        # Iterate over a snapshot since we may remove/restart tasks during iteration
-        for task in list(tasks):
-            if (
-                task.expiration_time
-                and datetime.now().astimezone(UTC) > task.expiration_time
-            ) or task.task.done():
-                tasks.remove(task)
-                match task.event_type:
-                    case TaskType.VEHICLES:
-                        tk = start_task(
-                            TaskType.VEHICLES,
-                            route_id=task.route_id,
-                            queue=queue,
-                        )
-                        if tk:
-                            tasks.append(tk)
-                    case TaskType.SCHEDULES:
-                        tk = start_task(TaskType.SCHEDULES, stop=task.stop, queue=queue)
-                        if tk:
-                            tasks.append(tk)
-                    case TaskType.SCHEDULE_PREDICTIONS:
-                        tk = start_task(
-                            TaskType.SCHEDULE_PREDICTIONS,
-                            stop=task.stop,
-                            queue=queue,
-                        )
-                        if tk:
-                            tasks.append(tk)
-                    case TaskType.TRACK_PREDICTIONS:
-                        # Restart track predictions precaching thread
-                        if config.enable_track_predictions:
-                            track_pred_task = asyncio.create_task(
-                                precache_track_predictions_runner(
-                                    routes=config.track_prediction_routes,
-                                    target_stations=config.track_prediction_stations,
-                                    interval_hours=config.track_prediction_interval_hours,
-                                ),
-                                name="track_predictions_precache",
-                            )
-                            tasks.append(
-                                TaskTracker(
-                                    track_pred_task,
-                                    stop=None,
-                                    event_type=TaskType.TRACK_PREDICTIONS,
-                                )
-                            )
+                # The AI summarizer will start its own Redis queue workers
+                logger.info("AI summarizer started with Redis queue workers")
 
-    # Begin graceful shutdown
-    logger.info("Shutdown signal received; cancelling tasks...")
-    # Stop backup scheduler first to avoid new work
-    try:
-        backup_scheduler.stop()
-    except Exception:
-        pass
+                # Add a task tracker for the AI summarizer monitoring
+                tg.start_soon(
+                    ai_summarizer._monitor_workers,  # Use the existing method
+                )
+            except Exception as e:
+                logger.error(f"Failed to start AI summarizer with Redis queue: {e}")
 
-    # Stop AI summarizer if it was started
-    try:
-        if "ai_summarizer" in locals() and ai_summarizer:
-            await ai_summarizer.stop()
-            await ai_summarizer.close()
-    except Exception as e:
-        logger.error(f"Error stopping AI summarizer: {e}")
-
-    # Cancel all running asyncio tasks we created
-    for tt in tasks:
-        if not tt.task.done():
-            tt.task.cancel()
-    # Ensure processor tasks are also cancelled
-    for t in process_tasks:
-        if not t.done():
-            t.cancel()
-    # Await task cancellation with a timeout
-    try:
-        await asyncio.wait(
-            [tt.task for tt in tasks] + process_tasks,
-            timeout=10,
-        )
-    except Exception:
-        pass
-    logger.info("Shutdown complete")
+        tg.start_soon(process_queue_async, receive_stream)
 
 
 @click.command()
@@ -407,13 +278,4 @@ def run_main(api_server: bool) -> None:
 
         server.run_main()
     else:
-        # Install uvloop if available for better async performance
-        try:
-            import uvloop
-
-            uvloop.install()
-            logging.info("uvloop installed as event loop policy")
-        except Exception:
-            logging.info("uvloop not available; using default event loop")
-        with Runner() as runner:
-            runner.run(__main__())
+        run(__main__, backend="asyncio", backend_options={"use_uvloop": True})
