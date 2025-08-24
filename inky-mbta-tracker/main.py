@@ -2,7 +2,6 @@ import asyncio
 import logging
 import os
 import re
-from asyncio import Queue as AsyncQueue
 from datetime import UTC, datetime, timedelta
 from random import randint
 from typing import Optional
@@ -11,10 +10,9 @@ import click
 from anyio import (
     create_memory_object_stream,
     create_task_group,
-    from_thread,
     run,
-    to_thread,
 )
+from anyio.abc import TaskGroup
 from anyio.streams.memory import MemoryObjectSendStream
 from backup_scheduler import BackupScheduler
 from config import StopSetup, load_config
@@ -117,16 +115,11 @@ class TaskTracker:
         self.event_type = event_type
 
 
-def queue_watcher(queue: AsyncQueue[ScheduleEvent]) -> None:
-    # Deprecated: kept for reference; using asyncio.Queue + async consumers now
-    pass
-
-
-# launches a departures tracking thread, target should either be "schedule" or "predictions"
-# returns a TaskTracker
+# launches a departures tracking task, target should either be "schedule" or "predictions"
 def start_task(
     target: TaskType,
     send_stream: MemoryObjectSendStream[ScheduleEvent | VehicleRedisSchema],
+    tg: TaskGroup,
     stop: Optional[StopSetup] = None,
     route_id: Optional[str] = None,
 ) -> None:
@@ -139,7 +132,7 @@ def start_task(
     match target:
         case TaskType.SCHEDULES:
             if stop:
-                from_thread.run(
+                tg.start_soon(
                     watch_static_schedule,
                     stop.stop_id,
                     stop.route_filter,
@@ -151,7 +144,7 @@ def start_task(
                 )
         case TaskType.SCHEDULE_PREDICTIONS:
             if stop:
-                from_thread.run(
+                tg.start_soon(
                     watch_station,
                     stop.stop_id,
                     stop.route_filter,
@@ -163,7 +156,7 @@ def start_task(
                     stop.route_substring_filter,
                 )
         case TaskType.VEHICLES:
-            from_thread.run(
+            tg.start_soon(
                 watch_vehicles,
                 send_stream,
                 exp_time,
@@ -187,33 +180,30 @@ async def __main__() -> None:
     async with create_task_group() as tg:
         for stop in config.stops:
             if stop.schedule_only:
-                await to_thread.run_sync(
+                tg.start_soon(
                     start_task,
                     TaskType.SCHEDULES,
                     send_stream,
+                    tg,
                     stop,
-                    abandon_on_cancel=True,
-                    cancellable=True,
                 )
             else:
-                await to_thread.run_sync(
+                tg.start_soon(
                     start_task,
                     TaskType.SCHEDULE_PREDICTIONS,
                     send_stream,
+                    tg,
                     stop,
-                    abandon_on_cancel=True,
-                    cancellable=True,
                 )
         if config.vehicles_by_route:
             for route_id in config.vehicles_by_route:
-                await to_thread.run_sync(
+                tg.start_soon(
                     start_task,
                     TaskType.VEHICLES,
                     send_stream,
+                    tg,
                     stop,
                     route_id,
-                    abandon_on_cancel=True,
-                    cancellable=True,
                 )
 
         # Run backup scheduler as native asyncio task for proper cancellation
@@ -245,29 +235,8 @@ async def __main__() -> None:
                 config.track_prediction_interval_hours,
             )
 
-        # Start Ollama queue workers if enabled
-        if (
-            config.ollama.enabled
-            and hasattr(config.ollama, "enable_queue")
-            and config.ollama.enable_queue
-        ):
-            try:
-                from ai_summarizer import AISummarizer
-
-                ai_summarizer = AISummarizer(config.ollama)
-                await ai_summarizer.start(tg)
-
-                # The AI summarizer will start its own Redis queue workers
-                logger.info("AI summarizer started with Redis queue workers")
-
-                # Add a task tracker for the AI summarizer monitoring
-                tg.start_soon(
-                    ai_summarizer._monitor_workers,  # Use the existing method
-                )
-            except Exception as e:
-                logger.error(f"Failed to start AI summarizer with Redis queue: {e}")
-
-        tg.start_soon(process_queue_async, receive_stream)
+        # consumer
+        await process_queue_async(receive_stream, tg)
 
 
 @click.command()
