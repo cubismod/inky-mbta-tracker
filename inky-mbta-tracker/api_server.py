@@ -40,7 +40,6 @@ from pydantic import BaseModel, ValidationError
 from redis.exceptions import RedisError
 from shared_types.shared_types import (
     IndividualSummaryCacheEntry,
-    TaskType,
     TrackAssignment,
     TrackPrediction,
 )
@@ -58,7 +57,7 @@ from tenacity import (
     wait_exponential_jitter,
 )
 from track_predictor.track_predictor import TrackPredictionStats, TrackPredictor
-from utils import get_redis, get_vehicles_data, thread_runner
+from utils import bg_worker, get_redis, get_vehicles_data
 from vehicles_background_worker import State
 
 # ============================================================================
@@ -2849,11 +2848,9 @@ async def warm_all_caches_internal() -> dict[str, bool]:
 
 def run_main() -> None:
     thr = threading.Thread(
-        target=thread_runner,
+        target=bg_worker,
         kwargs={
-            "target": TaskType.VEHICLES_BACKGROUND_WORKER,
-            "queue": None,
-            "vehicles_queue": VEHICLES_QUEUE,
+            "queue": VEHICLES_QUEUE,
         },
         name="vehicles_background_worker",
     )
