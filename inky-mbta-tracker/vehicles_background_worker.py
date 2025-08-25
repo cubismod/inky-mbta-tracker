@@ -6,7 +6,8 @@ from queue import Queue
 
 from anyio import create_task_group, sleep
 from anyio.abc import TaskGroup
-from utils import get_redis, get_vehicles_data
+from redis.asyncio import Redis
+from utils import get_vehicles_data
 
 logger = logging.getLogger(__name__)
 
@@ -28,9 +29,9 @@ class BackgroundWorker:
     state_expiration: datetime = datetime.now() + timedelta(seconds=60)
     shutdown: bool = False
 
-    def __init__(self) -> None:
+    def __init__(self, r_client: Redis) -> None:
         self.queue = Queue()
-        self.redis = get_redis()
+        self.redis = r_client
 
     async def run(self, tg: TaskGroup) -> None:
         while not self.shutdown:

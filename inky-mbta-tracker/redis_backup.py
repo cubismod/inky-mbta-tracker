@@ -1,10 +1,10 @@
 import logging
 from datetime import UTC, datetime
-from typing import Any, Optional
+from typing import Any
 
 from anyio import Path, create_task_group, open_file
 from prometheus import redis_commands
-from utils import get_redis
+from redis.asyncio import Redis
 
 logger = logging.getLogger(__name__)
 
@@ -12,9 +12,8 @@ logger = logging.getLogger(__name__)
 class RedisBackup:
     """Handles Redis backups in RESP format"""
 
-    def __init__(self, redis_url: Optional[str] = None, backup_dir: str = "./backups"):
-        r = get_redis()
-        self.redis = r
+    def __init__(self, r_client: Redis, backup_dir: str = "./backups"):
+        self.redis = r_client
         self.backup_dir = Path(backup_dir)
 
     async def create_backup(self) -> str:
@@ -147,9 +146,9 @@ class RedisBackup:
             logger.error("Failed to cleanup old backups", exc_info=e)
 
 
-async def run_backup() -> None:
+async def run_backup(r_client: Redis) -> None:
     """Standalone function to run a backup"""
     async with create_task_group() as tg:
-        backup = RedisBackup()
+        backup = RedisBackup(r_client=r_client)
         tg.start_soon(backup.create_backup)
         tg.start_soon(backup.cleanup_old_backups)

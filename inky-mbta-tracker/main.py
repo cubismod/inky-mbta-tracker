@@ -24,6 +24,7 @@ from mbta_client import (
     watch_vehicles,
 )
 from prometheus_client import start_http_server
+from redis.asyncio.connection import ConnectionPool
 from schedule_tracker import (
     ScheduleEvent,
     VehicleRedisSchema,
@@ -33,6 +34,10 @@ from shared_types.schema_versioner import schema_versioner
 from shared_types.shared_types import TaskType
 
 load_dotenv()
+
+RedisPool = ConnectionPool().from_url(
+    f"redis://:{os.environ.get('IMT_REDIS_PASSWORD', '')}@{os.environ.get('IMT_REDIS_ENDPOINT', '')}:{int(os.environ.get('IMT_REDIS_PORT', '6379'))}"
+)
 
 
 class APIKeyFilter(logging.Filter):
