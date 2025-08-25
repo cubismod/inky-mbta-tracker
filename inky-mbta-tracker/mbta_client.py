@@ -4,7 +4,6 @@ from asyncio import CancelledError
 from collections import Counter
 from datetime import UTC, datetime, timedelta
 from random import randint
-from types import TracebackType
 from typing import TYPE_CHECKING, Optional
 from zoneinfo import ZoneInfo
 
@@ -36,7 +35,7 @@ from mbta_responses import (
     Vehicle,
 )
 from polyline import decode
-from prometheus import mbta_api_requests, redis_commands, tracker_executions
+from prometheus import mbta_api_requests, tracker_executions
 from pydantic import BaseModel, TypeAdapter, ValidationError
 from redis.asyncio.client import Redis
 from redis_cache import check_cache, write_cache
@@ -49,7 +48,6 @@ from tenacity import (
     retry_if_not_exception_type,
     wait_exponential_jitter,
 )
-from utils import get_redis
 
 if TYPE_CHECKING:
     from track_predictor.track_predictor import TrackPredictor
@@ -201,6 +199,7 @@ class MBTAApi:
 
     def __init__(
         self,
+        r_client: Redis,
         stop_id: Optional[str] = None,
         route: Optional[str] = None,
         direction_filter: Optional[int] = None,
@@ -217,10 +216,10 @@ class MBTAApi:
         self.expiration_time = expiration_time
         self.watcher_type = watcher_type
 
-        self.r_client = get_redis()
+        self.r_client = r_client
         from track_predictor.track_predictor import TrackPredictor
 
-        self.track_predictor = TrackPredictor()
+        self.track_predictor = TrackPredictor(r_client)
         self.show_on_display = show_on_display
         self.route_substring_filter = route_substring_filter
 
@@ -242,19 +241,6 @@ class MBTAApi:
 
     async def __aenter__(self) -> "MBTAApi":
         return self
-
-    async def __aexit__(
-        self,
-        exc_type: Optional[BaseException],
-        exc_value: Optional[BaseException],
-        traceback: Optional[TracebackType],
-    ) -> Optional[bool]:
-        await self.r_client.aclose()
-        redis_commands.labels("aclose").inc()
-        if exc_value:
-            logger.error(f"Error in MBTAApi {exc_type}", exc_info=exc_value)
-            return True
-        return False
 
     @staticmethod
     def determine_time(

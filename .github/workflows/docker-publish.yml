@@ -77,8 +77,8 @@ jobs:
         run: uv sync --group dev
       - name: Run ruff check
         run: uv run ruff check
-      - name: Run mypy
-        run: uv run mypy
+      - name: Run pyright
+        run: uv run pyright
       - name: Run pytest
         run: uv run pytest inky-mbta-tracker/tests/
   pr-check:

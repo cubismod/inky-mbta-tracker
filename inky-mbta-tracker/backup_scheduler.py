@@ -7,6 +7,7 @@ from anyio import sleep
 from anyio.abc import TaskGroup
 from consts import HOUR
 from redis_backup import RedisBackup
+from redis.asyncio import Redis
 
 logger = logging.getLogger(__name__)
 
@@ -17,11 +18,12 @@ class BackupScheduler:
     def __init__(
         self,
         tg: TaskGroup,
+        r_client: Redis,
         backup_time: time = time(3, 0),
         backup_dir: str = "./backups",
     ):
         self.backup_time = backup_time
-        self.backup = RedisBackup(backup_dir=backup_dir)
+        self.backup = RedisBackup(r_client, backup_dir)
         self.running = False
         self.tg = tg
 

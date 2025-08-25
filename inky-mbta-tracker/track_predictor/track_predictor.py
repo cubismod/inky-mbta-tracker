@@ -28,6 +28,7 @@ from prometheus import (
     track_predictions_validated,
 )
 from pydantic import ValidationError
+from redis.asyncio import Redis
 from redis_cache import check_cache, write_cache
 from shared_types.shared_types import (
     TrackAssignment,
@@ -39,7 +40,6 @@ from tenacity import (
     retry,
     wait_exponential_jitter,
 )
-from utils import get_redis
 
 logger = logging.getLogger(__name__)
 
@@ -84,8 +84,8 @@ class TrackPredictor:
     assignments before they are officially announced by the MBTA.
     """
 
-    def __init__(self) -> None:
-        self.redis = get_redis()
+    def __init__(self, r_client: Redis) -> None:
+        self.redis = r_client
 
     async def store_historical_assignment(
         self, assignment: TrackAssignment, tg: TaskGroup

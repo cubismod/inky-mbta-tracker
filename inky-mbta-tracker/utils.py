@@ -1,22 +1,18 @@
 import json
-import os
 from queue import Queue
 from typing import TYPE_CHECKING
 
 from anyio import run
 from redis.asyncio import Redis
+from redis.asyncio.connection import ConnectionPool
 from vehicles_background_worker import run_background_worker
 
 if TYPE_CHECKING:
     from vehicles_background_worker import State
 
 
-def get_redis() -> Redis:
-    return Redis(
-        host=os.environ.get("IMT_REDIS_ENDPOINT", ""),
-        port=int(os.environ.get("IMT_REDIS_PORT", "6379")),
-        password=os.environ.get("IMT_REDIS_PASSWORD", ""),
-    )
+def get_redis(pool: ConnectionPool) -> Redis:
+    return Redis().from_pool(pool)
 
 
 async def get_vehicles_data(r_client: Redis) -> dict:
