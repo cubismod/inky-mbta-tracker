@@ -353,7 +353,8 @@ async def get_shapes_features(
     if config.vehicles_by_route:
         shapes = await get_shapes(redis_client, config.vehicles_by_route, session, tg)
         if shapes:
-            for k, v in shapes.lines:
+            # Iterate over the mapping of route -> list of line coordinate sequences
+            for k, v in shapes.lines.items():
                 for line in v:
                     if k.startswith("74") or k.startswith("75"):
                         k = silver_line_lookup(k)
@@ -364,3 +365,9 @@ async def get_shapes_features(
                         )
                     )
     return lines
+
+
+async def background_refresh(r_client: Redis, tg: TaskGroup):
+    while True:
+        await get_vehicle_features(r_client, tg)
+        await sleep(2)

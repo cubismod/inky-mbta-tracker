@@ -10,6 +10,7 @@ from queue import Queue
 from typing import Optional
 from zoneinfo import ZoneInfo
 
+import anyio
 import humanize
 from anyio.abc import TaskGroup
 from anyio.streams.memory import MemoryObjectReceiveStream
@@ -512,38 +513,86 @@ async def process_queue_async(
     receive_stream: MemoryObjectReceiveStream[ScheduleEvent | VehicleRedisSchema],
     tg: TaskGroup,
 ) -> None:
-    """Async consumer that batches events into Redis pipelines."""
+    """Async consumer that micro-batches stream items into Redis pipelines.
+
+    Improves throughput and correctness by:
+    - Building a single pipeline per batch (transaction=False)
+    - Processing items sequentially to avoid pipeline race conditions
+    - Flushing on size or latency thresholds
+    - Throttling MQTT/cleanup to a minimum interval
+    """
     tracker = Tracker()
 
-    async def flush(pipeline: Pipeline) -> None:
+    batch_max_items = int(os.getenv("IMT_QUEUE_BATCH_SIZE", "256"))
+    batch_latency_ms = int(os.getenv("IMT_QUEUE_BATCH_LATENCY_MS", "50"))
+    mqtt_min_interval = int(os.getenv("IMT_MQTT_MIN_INTERVAL_SEC", "5"))
+    last_mqtt_ts = 0.0
+
+    async def flush_batch(items: list[ScheduleEvent | VehicleRedisSchema]) -> None:
+        if not items:
+            return
+        pipeline: Pipeline = tracker.redis.pipeline(transaction=False)
         try:
+            for it in items:
+                if isinstance(it, ScheduleEvent):
+                    queue_processed_item.labels("schedule").inc()
+                else:
+                    queue_processed_item.labels("vehicle").inc()
+                # Process sequentially to mutate the shared pipeline deterministically
+                await tracker.process_queue_item(it, pipeline)
+
+            # Housekeeping: prune expired entries in the same round trip
+            pipeline.zremrangebyscore("time", "-inf", str(datetime.now().timestamp()))
+            redis_commands.labels("zremrangebyscore").inc()
+
             await pipeline.execute()
             redis_commands.labels("execute").inc()
-            await tracker.redis.zremrangebyscore(
-                "time", "-inf", str(datetime.now().timestamp())
-            )
-            redis_commands.labels("zremrangebyscore").inc()
         except ResponseError as err:
-            logger.error("Unable to communicate with Redis", exc_info=err)
+            logger.error(
+                "Unable to communicate with Redis during batch flush", exc_info=err
+            )
+        except Exception:
+            logger.error("Unexpected error during batch flush", exc_info=True)
 
-    try:
-        async for item in receive_stream:
-            pipeline = tracker.redis.pipeline()
-            if isinstance(item, ScheduleEvent):
-                queue_processed_item.labels("schedule").inc()
-                tg.start_soon(tracker.process_queue_item, item, pipeline)
-            if isinstance(item, VehicleRedisSchema):
-                queue_processed_item.labels("vehicle").inc()
-                tg.start_soon(tracker.process_queue_item, item, pipeline)
-            await flush(pipeline)
-            if random.randint(0, 10) < 3:
-                async with RedisLock(
-                    tracker.redis, "send_mqtt", blocking_timeout=15, expire_timeout=20
-                ):
-                    cleanup_pipeline = tracker.redis.pipeline(transaction=False)
-                    await tracker.cleanup(cleanup_pipeline)
-                    await cleanup_pipeline.execute()
-                    redis_commands.labels("execute").inc()
-                    await tracker.send_mqtt()
-    except ResponseError as e:
-        logger.error("Failed to export schema key counts", exc_info=e)
+    # Main consumer loop: receive, then drain to form a batch
+    while True:
+        try:
+            # Block for the first item to start a batch
+            first = await receive_stream.receive()
+            batch: list[ScheduleEvent | VehicleRedisSchema] = [first]
+
+            # Compute deadline for latency-bounded batching
+            deadline = anyio.current_time() + (batch_latency_ms / 1000.0)
+            while len(batch) < batch_max_items:
+                remaining = deadline - anyio.current_time()
+                if remaining <= 0:
+                    break
+                # Try to pull more items until either batch is full or latency budget expires
+                with anyio.move_on_after(remaining):
+                    nxt = await receive_stream.receive()
+                    batch.append(nxt)
+                    continue
+                break
+
+            await flush_batch(batch)
+
+            # Throttle MQTT/cleanup by time rather than per-item randomness
+            now = time.time()
+            if now - last_mqtt_ts >= mqtt_min_interval:
+                try:
+                    async with RedisLock(
+                        tracker.redis,
+                        "send_mqtt",
+                        blocking_timeout=5,
+                        expire_timeout=10,
+                    ):
+                        cleanup_pipeline = tracker.redis.pipeline(transaction=False)
+                        await tracker.cleanup(cleanup_pipeline)
+                        await cleanup_pipeline.execute()
+                        redis_commands.labels("execute").inc()
+                        await tracker.send_mqtt()
+                    last_mqtt_ts = now
+                except ResponseError:
+                    logger.error("Error during MQTT/cleanup cycle", exc_info=True)
+        except Exception:
+            logger.error("Failed in queue consumer loop", exc_info=True)
