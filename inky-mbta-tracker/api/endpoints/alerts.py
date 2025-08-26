@@ -1,13 +1,13 @@
 import logging
 
 import aiohttp
+from api.core import GET_DI
 from consts import ALERTS_CACHE_TTL, MBTA_V3_ENDPOINT
 from fastapi import APIRouter, HTTPException, Request, Response
 from mbta_responses import Alerts
 from pydantic import ValidationError
 from redis.exceptions import RedisError
 
-from ..core import CONFIG, REDIS_CLIENT
 from ..limits import limiter
 from ..services.alerts import fetch_alerts_with_retry
 
@@ -22,19 +22,24 @@ router = APIRouter()
     ),
 )
 @limiter.limit("100/minute")
-async def get_alerts(request: Request) -> Response:
+async def get_alerts(request: Request, commons: GET_DI) -> Response:
     try:
         cache_key = "api:alerts"
-        cached_data = await REDIS_CLIENT.get(cache_key)
+        cached_data = await commons.r_client.get(cache_key)
         if cached_data:
             return Response(content=cached_data, media_type="application/json")
 
         async with aiohttp.ClientSession(base_url=MBTA_V3_ENDPOINT) as session:
-            alerts = await fetch_alerts_with_retry(CONFIG, session)
+            alerts = await fetch_alerts_with_retry(
+                commons.config, session, commons.r_client
+            )
 
         alerts_data = Alerts(data=alerts)
         alerts_json = alerts_data.model_dump_json(exclude_unset=True)
-        await REDIS_CLIENT.setex(cache_key, ALERTS_CACHE_TTL, alerts_json)
+        if commons.tg:
+            commons.tg.start_soon(
+                commons.r_client.setex, cache_key, ALERTS_CACHE_TTL, alerts_json
+            )
         return Response(content=alerts_json, media_type="application/json")
     except (ConnectionError, TimeoutError):
         logging.error("Error getting alerts due to connection issue", exc_info=True)
@@ -54,10 +59,10 @@ async def get_alerts(request: Request) -> Response:
     response_class=Response,
 )
 @limiter.limit("100/minute")
-async def get_alerts_json(request: Request) -> Response:
+async def get_alerts_json(request: Request, commons: GET_DI) -> Response:
     try:
         cache_key = "api:alerts:json"
-        cached_data = await REDIS_CLIENT.get(cache_key)
+        cached_data = await commons.r_client.get(cache_key)
         if cached_data:
             return Response(
                 content=cached_data,
@@ -66,10 +71,15 @@ async def get_alerts_json(request: Request) -> Response:
             )
 
         async with aiohttp.ClientSession(base_url=MBTA_V3_ENDPOINT) as session:
-            alerts = await fetch_alerts_with_retry(CONFIG, session)
+            alerts = await fetch_alerts_with_retry(
+                commons.config, session, commons.r_client
+            )
         alerts_data = Alerts(data=alerts)
         alerts_json = alerts_data.model_dump_json(exclude_unset=True)
-        await REDIS_CLIENT.setex(cache_key, ALERTS_CACHE_TTL, alerts_json)
+        if commons.tg:
+            commons.tg.start_soon(
+                commons.r_client.setex, cache_key, ALERTS_CACHE_TTL, alerts_json
+            )
         return Response(
             content=alerts_json,
             media_type="application/json",

@@ -15,9 +15,8 @@ from .endpoints.health import router as health_router
 from .endpoints.predictions import router as predictions_router
 from .endpoints.shapes import router as shapes_router
 from .endpoints.vehicles import router as vehicles_router
-from .lifespan import lifespan
 from .limits import limiter
-from .middleware import HeaderLoggingMiddleware, TrafficMonitoringMiddleware
+from .middleware import HeaderLoggingMiddleware
 
 
 def create_app() -> FastAPI:
@@ -26,9 +25,8 @@ def create_app() -> FastAPI:
         description=(
             "API for MBTA transit data including track predictions, vehicle positions, alerts, and route shapes"
         ),
-        version="2.0.0",
+        version="2.1.0",
         docs_url="/",
-        lifespan=lifespan,
         servers=[{"url": "https://imt.ryanwallace.cloud", "description": "Production"}],
         swagger_ui_parameters={
             "defaultModelsExpandDepth": 1,
@@ -43,7 +41,6 @@ def create_app() -> FastAPI:
         app.state.limiter = limiter
         app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)  # type: ignore
 
-    app.add_middleware(TrafficMonitoringMiddleware)
     app.add_middleware(HeaderLoggingMiddleware)
 
     origins = [

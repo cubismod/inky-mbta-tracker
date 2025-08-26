@@ -1,12 +1,12 @@
 from functools import wraps
-from typing import Any, Awaitable, Callable
+from inspect import iscoroutinefunction
+from typing import Awaitable, Callable, ParamSpec, TypeVar
 
 from fastapi import Request, Response
 from slowapi.util import get_remote_address
 from starlette.middleware.base import BaseHTTPMiddleware
-from vehicles_background_worker import State
 
-from .core import VEHICLES_QUEUE, logger
+from .core import logger
 
 
 class HeaderLoggingMiddleware(BaseHTTPMiddleware):
@@ -56,36 +56,33 @@ def get_client_ip(request: Request) -> str:
     if "X-Real-IP" in request.headers:
         return request.headers["X-Real-IP"]
     # Default to remote address
-    return get_remote_address(request)
+    remote = get_remote_address(request)
+    return remote or "unknown"
+
+
+P = ParamSpec("P")
+R = TypeVar("R")
 
 
 class NoOpLimiter:
     """No-op limiter for when rate limiting is disabled"""
 
-    def limit(self, rate: str) -> Callable:
-        def decorator(func: Callable) -> Callable:
-            @wraps(func)
-            def wrapper(*args: Any, **kwargs: Any) -> Any:
-                return func(*args, **kwargs)
+    def limit(self, rate: str) -> Callable[[Callable[P, R]], Callable[P, R]]:
+        def decorator(func: Callable[P, R]) -> Callable[P, R]:
+            # Preserve sync/async behavior of the wrapped function
+            if iscoroutinefunction(func):
 
-            return wrapper
+                @wraps(func)
+                async def async_wrapper(*args: P.args, **kwargs: P.kwargs) -> R:  # type: ignore[func-returns-value]
+                    return await func(*args, **kwargs)  # type: ignore[misc]
+
+                return async_wrapper  # type: ignore[return-value]
+            else:
+
+                @wraps(func)
+                def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+                    return func(*args, **kwargs)
+
+                return wrapper
 
         return decorator
-
-
-class TrafficMonitoringMiddleware(BaseHTTPMiddleware):
-    """Middleware to queue TRAFFIC state messages for background vehicle data processing"""
-
-    async def dispatch(
-        self, request: Request, call_next: Callable[[Request], Awaitable[Response]]
-    ) -> Response:
-        # Skip queuing for health/metrics endpoints
-        if request.url.path not in ("/health", "/metrics"):
-            try:
-                VEHICLES_QUEUE.put_nowait(State.TRAFFIC)
-                logger.debug("Queued TRAFFIC state for background worker")
-            except Exception:
-                logger.debug("Vehicles queue full; skipping TRAFFIC enqueue")
-
-        response = await call_next(request)
-        return response

@@ -4,6 +4,7 @@ from asyncio import CancelledError
 from collections import Counter
 from datetime import UTC, datetime, timedelta
 from random import randint
+from types import TracebackType
 from typing import TYPE_CHECKING, Optional
 from zoneinfo import ZoneInfo
 
@@ -40,7 +41,13 @@ from pydantic import BaseModel, TypeAdapter, ValidationError
 from redis.asyncio.client import Redis
 from redis_cache import check_cache, write_cache
 from schedule_tracker import ScheduleEvent, VehicleRedisSchema, dummy_schedule_event
-from shared_types.shared_types import TaskType, TrackAssignment, TrackAssignmentType
+from shared_types.shared_types import (
+    LineRoute,
+    RouteShapes,
+    TaskType,
+    TrackAssignment,
+    TrackAssignmentType,
+)
 from tenacity import (
     before_log,
     before_sleep_log,
@@ -64,7 +71,7 @@ class LightStop(BaseModel):
     platform_prediction: Optional[str] = None
 
 
-def parse_shape_data(shapes: Shapes) -> list[list[tuple]]:
+def parse_shape_data(shapes: Shapes) -> LineRoute:
     ret = list[list[tuple]]()
     for shape in shapes.data:
         if (
@@ -85,8 +92,8 @@ def parse_shape_data(shapes: Shapes) -> list[list[tuple]]:
 )
 async def get_shapes(
     r_client: Redis, routes: list[str], session: ClientSession, tg: TaskGroup
-) -> dict[str, list[list[tuple]]]:
-    ret = dict[str, list[list[tuple]]]()
+) -> RouteShapes:
+    ret = RouteShapes(lines={})
     for route in routes:
         key = f"shape:{route}"
         cached = await check_cache(r_client, key)
@@ -104,7 +111,7 @@ async def get_shapes(
                 # 4 weeks
                 tg.start_soon(write_cache, r_client, key, body, 2419200)
         shapes = Shapes.model_validate_json(body, strict=False)
-        ret[route] = parse_shape_data(shapes)
+        ret.lines[route] = parse_shape_data(shapes)
     return ret
 
 
@@ -139,7 +146,9 @@ async def light_get_stop(
         except ValidationError as err:
             logger.error("unable to validate json", exc_info=err)
     ls = None
-    async with MBTAApi(stop_id=stop_id, watcher_type=TaskType.LIGHT_STOP) as watcher:
+    async with MBTAApi(
+        r_client, stop_id=stop_id, watcher_type=TaskType.LIGHT_STOP
+    ) as watcher:
         # avoid rate-limiting by spacing out requests
         await sleep(randint(1, 3))
         stop = await watcher.get_stop(session, stop_id, tg)
@@ -165,9 +174,11 @@ async def light_get_stop(
 
 
 async def light_get_alerts(
-    route_id: str, session: ClientSession
+    route_id: str, session: ClientSession, r_client: Redis
 ) -> Optional[list[AlertResource]]:
-    async with MBTAApi(route=route_id, watcher_type=TaskType.VEHICLES) as watcher:
+    async with MBTAApi(
+        r_client, route=route_id, watcher_type=TaskType.VEHICLES
+    ) as watcher:
         alerts = await watcher.get_alerts(session, route_id=route_id)
         if alerts:
             return alerts
@@ -241,6 +252,21 @@ class MBTAApi:
 
     async def __aenter__(self) -> "MBTAApi":
         return self
+
+    async def __aexit__(
+        self,
+        exc_type: Optional[BaseException],
+        exc_value: Optional[BaseException],
+        traceback: Optional[TracebackType],
+    ):
+        logging.info(f"Closing MBTAApi {self.watcher_type} {exc_type}")
+        await self.r_client.aclose()
+        if exc_value:
+            logger.error(
+                f"Error in MBTAApi {exc_type}\n{traceback}", exc_info=exc_value
+            )
+            return True
+        return False
 
     @staticmethod
     def determine_time(
@@ -371,7 +397,7 @@ class MBTAApi:
                         or self.watcher_type == TaskType.SCHEDULES
                     ):
                         await send_stream.send(dummy_schedule_event(type_and_id.id))
-                    else:
+                    elif self.route:
                         await send_stream.send(
                             VehicleRedisSchema(
                                 longitude=0,
@@ -557,6 +583,7 @@ class MBTAApi:
                                     tg.start_soon(
                                         self.track_predictor.store_historical_assignment,
                                         assignment,
+                                        tg,
                                     )
 
                                     # Validate previous predictions
@@ -567,6 +594,7 @@ class MBTAApi:
                                         trip_id,
                                         schedule_time,
                                         track_number,
+                                        tg,
                                     )
 
                                 except (ConnectionError, TimeoutError) as e:
@@ -628,7 +656,7 @@ class MBTAApi:
                         headsign=self.abbreviate(headsign),
                         id=item.id.replace("-", ":"),
                         stop=self.abbreviate(stop_name),
-                        transit_time_min=transit_time_min,
+                        transit_time_min=transit_time_min or 1,
                         trip_id=trip_id,
                         alerting=alerting,
                         bikes_allowed=bikes_allowed,
@@ -918,6 +946,7 @@ class MBTAApi:
 
 
 async def precache_track_predictions_runner(
+    r_client: Redis,
     routes: Optional[list[str]] = None,
     target_stations: Optional[list[str]] = None,
     interval_hours: int = 2,
@@ -936,7 +965,9 @@ async def precache_track_predictions_runner(
 
     while True:
         try:
-            async with MBTAApi(watcher_type=TaskType.TRACK_PREDICTIONS) as api:
+            async with MBTAApi(
+                r_client, watcher_type=TaskType.TRACK_PREDICTIONS
+            ) as api:
                 predictions_count = await api.precache_track_predictions(
                     routes=routes,
                     target_stations=target_stations,
@@ -1003,6 +1034,7 @@ async def watch_mbta_server_side_events(
     retry=retry_if_not_exception_type(CancelledError),
 )
 async def watch_static_schedule(
+    r_client: Redis,
     stop_id: str,
     route: str | None,
     direction: int | None,
@@ -1021,6 +1053,7 @@ async def watch_static_schedule(
         async with aiohttp.ClientSession(base_url=MBTA_V3_ENDPOINT) as session:
             if datetime.now().astimezone(UTC) > refresh_time:
                 async with MBTAApi(
+                    r_client,
                     stop_id=stop_id,
                     route=route,
                     direction_filter=direction,
@@ -1046,6 +1079,7 @@ async def watch_static_schedule(
     retry=retry_if_not_exception_type(CancelledError),
 )
 async def watch_vehicles(
+    r_client: Redis,
     send_stream: MemoryObjectSendStream[ScheduleEvent | VehicleRedisSchema],
     expiration_time: Optional[datetime],
     route_id: str,
@@ -1054,6 +1088,7 @@ async def watch_vehicles(
     mbta_api_requests.labels("vehicles").inc()
     headers = {"accept": "text/event-stream"}
     async with MBTAApi(
+        r_client,
         route=route_id,
         watcher_type=TaskType.VEHICLES,
         expiration_time=expiration_time,
@@ -1071,6 +1106,7 @@ async def watch_vehicles(
 
 
 async def watch_station(
+    r_client: Redis,
     stop_id: str,
     route: str | None,
     direction_filter: Optional[int],
@@ -1098,6 +1134,7 @@ async def watch_station(
 
     async with aiohttp.ClientSession(MBTA_V3_ENDPOINT) as session:
         async with MBTAApi(
+            r_client,
             stop_id,
             route,
             direction_filter,

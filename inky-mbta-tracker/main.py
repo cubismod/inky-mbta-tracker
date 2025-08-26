@@ -5,6 +5,7 @@ import re
 from datetime import UTC, datetime, timedelta
 from random import randint
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 import click
 from anyio import (
@@ -14,7 +15,6 @@ from anyio import (
 )
 from anyio.abc import TaskGroup
 from anyio.streams.memory import MemoryObjectSendStream
-from backup_scheduler import BackupScheduler
 from config import StopSetup, load_config
 from dotenv import load_dotenv
 from mbta_client import (
@@ -24,6 +24,7 @@ from mbta_client import (
     watch_vehicles,
 )
 from prometheus_client import start_http_server
+from redis.asyncio import Redis
 from redis.asyncio.connection import ConnectionPool
 from schedule_tracker import (
     ScheduleEvent,
@@ -33,6 +34,8 @@ from schedule_tracker import (
 from shared_types.schema_versioner import schema_versioner
 from shared_types.shared_types import TaskType
 from utils import get_redis
+
+from .redis_backup import RedisBackup
 
 load_dotenv()
 
@@ -119,6 +122,7 @@ class TaskTracker:
 
 # launches a departures tracking task, target should either be "schedule" or "predictions"
 def start_task(
+    r_client: Redis,
     target: TaskType,
     send_stream: MemoryObjectSendStream[ScheduleEvent | VehicleRedisSchema],
     tg: TaskGroup,
@@ -136,6 +140,7 @@ def start_task(
             if stop:
                 tg.start_soon(
                     watch_static_schedule,
+                    r_client,
                     stop.stop_id,
                     stop.route_filter,
                     direction_filter,
@@ -149,6 +154,7 @@ def start_task(
             if stop:
                 tg.start_soon(
                     watch_station,
+                    r_client,
                     stop.stop_id,
                     stop.route_filter,
                     direction_filter,
@@ -160,7 +166,17 @@ def start_task(
                     stop.route_substring_filter,
                 )
         case TaskType.VEHICLES:
-            tg.start_soon(watch_vehicles, send_stream, exp_time, route_id or "")
+            tg.start_soon(
+                watch_vehicles, r_client, send_stream, exp_time, route_id or ""
+            )
+
+
+def get_next_backup_time() -> datetime:
+    backup_time = os.getenv("IMT_REDIS_BACKUP_TIME", "03:00")
+    parsed_time = datetime.strptime(backup_time, "%H:%M").astimezone(
+        ZoneInfo("America/New_York")
+    )
+    return parsed_time
 
 
 async def __main__() -> None:
@@ -180,9 +196,12 @@ async def __main__() -> None:
     async with create_task_group() as tg:
         for stop in config.stops:
             if stop.schedule_only:
-                start_task(TaskType.SCHEDULES, send_stream, tg, stop)
+                start_task(
+                    get_redis(redis_pool), TaskType.SCHEDULES, send_stream, tg, stop
+                )
             else:
                 start_task(
+                    get_redis(redis_pool),
                     TaskType.SCHEDULE_PREDICTIONS,
                     send_stream,
                     tg,
@@ -191,6 +210,7 @@ async def __main__() -> None:
         if config.vehicles_by_route:
             for route_id in config.vehicles_by_route:
                 start_task(
+                    get_redis(redis_pool),
                     TaskType.VEHICLES,
                     send_stream,
                     tg,
@@ -198,39 +218,30 @@ async def __main__() -> None:
                     route_id,
                 )
 
-        # Run backup scheduler as native asyncio task for proper cancellation
-        # Parse backup time from env (default 03:00, America/New_York)
-        from datetime import time as dt_time
-
-        backup_time_str = os.getenv("IMT_REDIS_BACKUP_TIME", "03:00")
-        if isinstance(backup_time_str, str):
-            try:
-                hour, minute = map(int, backup_time_str.split(":"))
-                backup_time = dt_time(hour=hour, minute=minute)
-            except Exception:
-                logger.error(
-                    f"Invalid IMT_REDIS_BACKUP_TIME format: {backup_time_str}, using default 03:00"
-                )
-                backup_time = dt_time(hour=3, minute=0)
-        else:
-            backup_time = dt_time(hour=3, minute=0)
-
-        backup_scheduler = BackupScheduler(
-            tg, get_redis(redis_pool), backup_time=backup_time
-        )
-        tg.start_soon(backup_scheduler.run_scheduler, tg)
-
         # Start track prediction precaching if enabled
         if config.enable_track_predictions:
             tg.start_soon(
                 precache_track_predictions_runner,
+                get_redis(redis_pool),
                 config.track_prediction_routes,
                 config.track_prediction_stations,
                 config.track_prediction_interval_hours,
             )
 
         # consumer
-        await process_queue_async(receive_stream, tg)
+        tg.start_soon(process_queue_async, receive_stream, tg)
+
+        # Run backup scheduler as native asyncio task for proper cancellation
+        # Parse backup time from env (default 03:00, America/New_York)
+
+        next_backup = get_next_backup_time()
+        # cron/timed tasks
+        while True:
+            now = datetime.now(ZoneInfo("America/New_York"))
+            if now > next_backup:
+                redis_backup = RedisBackup(r_client=get_redis(redis_pool))
+                filename = await redis_backup.create_backup()
+                logger.info(f"Redis backup created at {filename}")
 
 
 @click.command()
