@@ -2,6 +2,7 @@ from datetime import UTC, datetime
 from typing import Generator
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import anyio
 import pytest
 from shared_types.shared_types import TrackAssignment, TrackAssignmentType
 from track_predictor.track_predictor import TrackPredictor
@@ -13,12 +14,11 @@ class TestTrackPredictor:
     @pytest.fixture
     def track_predictor(self) -> Generator[TrackPredictor, None, None]:
         """Create a TrackPredictor instance with mocked Redis."""
-        with patch("utils.get_redis"):
-            predictor = TrackPredictor()
-            predictor.redis = MagicMock()
-            # Configure async methods as AsyncMocks
-            predictor.redis.zrangebyscore = AsyncMock()
-            yield predictor
+        predictor = TrackPredictor(MagicMock())
+        predictor.redis = MagicMock()
+        # Configure async methods as AsyncMocks
+        predictor.redis.zrangebyscore = AsyncMock()
+        yield predictor
 
     @pytest.fixture
     def sample_assignment(self) -> TrackAssignment:
@@ -44,8 +44,7 @@ class TestEnhancedHeadsignSimilarity:
 
     @pytest.fixture
     def track_predictor(self) -> Generator[TrackPredictor, None, None]:
-        with patch("utils.get_redis"):
-            yield TrackPredictor()
+        yield TrackPredictor(MagicMock())
 
     def test_exact_match(self, track_predictor: TrackPredictor) -> None:
         """Test exact headsign match returns 1.0."""
@@ -132,8 +131,7 @@ class TestServiceType:
 
     @pytest.fixture
     def track_predictor(self) -> Generator[TrackPredictor, None, None]:
-        with patch("utils.get_redis"):
-            yield TrackPredictor()
+        yield TrackPredictor(MagicMock())
 
     def test_express_detection(self, track_predictor: TrackPredictor) -> None:
         """Test express service detection."""
@@ -169,8 +167,7 @@ class TestWeekendService:
 
     @pytest.fixture
     def track_predictor(self) -> Generator[TrackPredictor, None, None]:
-        with patch("utils.get_redis"):
-            yield TrackPredictor()
+        yield TrackPredictor(MagicMock())
 
     def test_weekend_detection(self, track_predictor: TrackPredictor) -> None:
         """Test weekend day detection."""
@@ -188,8 +185,7 @@ class TestConfidenceThresholds:
 
     @pytest.fixture
     def track_predictor(self) -> Generator[TrackPredictor, None, None]:
-        with patch("utils.get_redis"):
-            yield TrackPredictor()
+        yield TrackPredictor(MagicMock())
 
     def test_south_station_threshold(self, track_predictor: TrackPredictor) -> None:
         """Test South Station has lower threshold."""
@@ -217,12 +213,11 @@ class TestCrossRoutePatterns:
 
     @pytest.fixture
     def track_predictor(self) -> Generator[TrackPredictor, None, None]:
-        with patch("utils.get_redis"):
-            predictor = TrackPredictor()
-            predictor.redis = AsyncMock()
-            yield predictor
+        predictor = TrackPredictor(MagicMock())
+        predictor.redis = AsyncMock()
+        yield predictor
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio("asyncio")
     async def test_related_routes_included(
         self, track_predictor: TrackPredictor
     ) -> None:
@@ -259,7 +254,7 @@ class TestCrossRoutePatterns:
             "track_timeseries:place-sstat:CR-Framingham",
         ]
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio("asyncio")
     async def test_single_route_when_not_requested(
         self, track_predictor: TrackPredictor
     ) -> None:
@@ -301,12 +296,11 @@ class TestExpandedTimeWindows:
 
     @pytest.fixture
     def track_predictor(self) -> Generator[TrackPredictor, None, None]:
-        with patch("utils.get_redis"):
-            predictor = TrackPredictor()
-            predictor.redis = AsyncMock()
-            yield predictor
+        predictor = TrackPredictor(MagicMock())
+        predictor.redis = AsyncMock()
+        yield predictor
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio("asyncio")
     async def test_multiple_time_windows_in_patterns(
         self, track_predictor: TrackPredictor
     ) -> None:
@@ -338,13 +332,16 @@ class TestExpandedTimeWindows:
             patch.object(track_predictor, "_get_prediction_accuracy", return_value=0.7),
             patch("track_predictor.track_predictor.check_cache", return_value=None),
         ):
-            patterns = await track_predictor.analyze_patterns(
-                "place-sstat",
-                "CR-Providence",
-                "Providence",
-                0,
-                datetime(2024, 1, 15, 10, 15, tzinfo=UTC),  # 45 minutes later
-            )
+            async with anyio.create_task_group() as tg:
+                patterns = await track_predictor.analyze_patterns(
+                    "place-sstat",
+                    "CR-Providence",
+                    "Providence",
+                    0,
+                    datetime(2024, 1, 15, 10, 15, tzinfo=UTC),  # 45 minutes later
+                    tg,
+                )
+                tg.cancel_scope.cancel()
 
         # The assignment should match the 60-minute window but not the 30-minute window
         # This tests that the expanded time windows are working
