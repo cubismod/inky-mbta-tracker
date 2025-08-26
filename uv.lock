@@ -418,15 +418,6 @@ wheels = [
 ]
 
 [[package]]
-name = "inject"
-version = "5.3.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/3e/b6/762d2dac6b587698abde000dc0fe85dfe9cd469cbda8856699a84adee82a/inject-5.3.0.tar.gz", hash = "sha256:bc9db0fe05a42990dbdaf570db085c409bc8d1a9dea6d06143049476b922abba", size = 26482, upload-time = "2025-06-20T10:20:51.825Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/98/6e/b00ef8fe9a43aa3a6f5687b710832f0d876c0812bd0ce1c3af3e71bf7dd1/inject-5.3.0-py2.py3-none-any.whl", hash = "sha256:4758eb6c464d3e2badbbf65ac991c64752b05429d6af4c3c0e5b2765efaf7e73", size = 14349, upload-time = "2025-06-20T10:20:50.717Z" },
-]
-
-[[package]]
 name = "inky-mbta-tracker"
 version = "1.0.1"
 source = { editable = "." }
@@ -452,7 +443,6 @@ dependencies = [
     { name = "httpcore" },
     { name = "humanize" },
     { name = "idna" },
-    { name = "inject" },
     { name = "llm" },
     { name = "llm-ollama" },
     { name = "markupsafe" },
@@ -515,7 +505,6 @@ requires-dist = [
     { name = "httpcore", specifier = "==1.0.9" },
     { name = "humanize", specifier = "==4.13.0" },
     { name = "idna", specifier = "==3.10" },
-    { name = "inject", specifier = ">=5.3.0" },
     { name = "llm", specifier = ">=0.27.1" },
     { name = "llm-ollama", specifier = ">=0.13.0" },
     { name = "markupsafe", specifier = "==3.0.2" },

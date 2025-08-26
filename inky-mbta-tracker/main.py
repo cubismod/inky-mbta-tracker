@@ -32,12 +32,9 @@ from schedule_tracker import (
 )
 from shared_types.schema_versioner import schema_versioner
 from shared_types.shared_types import TaskType
+from utils import get_redis
 
 load_dotenv()
-
-RedisPool = ConnectionPool().from_url(
-    f"redis://:{os.environ.get('IMT_REDIS_PASSWORD', '')}@{os.environ.get('IMT_REDIS_ENDPOINT', '')}:{int(os.environ.get('IMT_REDIS_PORT', '6379'))}"
-)
 
 
 class APIKeyFilter(logging.Filter):
@@ -145,6 +142,7 @@ def start_task(
                     send_stream,
                     stop.transit_time_min,
                     stop.show_on_display,
+                    tg,
                     stop.route_substring_filter,
                 )
         case TaskType.SCHEDULE_PREDICTIONS:
@@ -158,15 +156,11 @@ def start_task(
                     stop.transit_time_min,
                     exp_time,
                     stop.show_on_display,
+                    tg,
                     stop.route_substring_filter,
                 )
         case TaskType.VEHICLES:
-            tg.start_soon(
-                watch_vehicles,
-                send_stream,
-                exp_time,
-                route_id or "",
-            )
+            tg.start_soon(watch_vehicles, send_stream, exp_time, route_id or "")
 
 
 async def __main__() -> None:
@@ -176,25 +170,19 @@ async def __main__() -> None:
         ScheduleEvent | VehicleRedisSchema
     ](max_buffer_size=5000)
 
-    # Use asyncio queue to feed async consumers
-    tasks: list[TaskTracker] = []
+    redis_pool = ConnectionPool().from_url(
+        f"redis://:{os.environ.get('IMT_REDIS_PASSWORD', '')}@{os.environ.get('IMT_REDIS_ENDPOINT', '')}:{int(os.environ.get('IMT_REDIS_PORT', '6379'))}"
+    )
 
-    await schema_versioner()
+    await schema_versioner(get_redis(redis_pool))
 
     start_http_server(int(os.getenv("IMT_PROM_PORT", "8000")))
     async with create_task_group() as tg:
         for stop in config.stops:
             if stop.schedule_only:
-                tg.start_soon(
-                    start_task,
-                    TaskType.SCHEDULES,
-                    send_stream,
-                    tg,
-                    stop,
-                )
+                start_task(TaskType.SCHEDULES, send_stream, tg, stop)
             else:
-                tg.start_soon(
-                    start_task,
+                start_task(
                     TaskType.SCHEDULE_PREDICTIONS,
                     send_stream,
                     tg,
@@ -202,8 +190,7 @@ async def __main__() -> None:
                 )
         if config.vehicles_by_route:
             for route_id in config.vehicles_by_route:
-                tg.start_soon(
-                    start_task,
+                start_task(
                     TaskType.VEHICLES,
                     send_stream,
                     tg,
@@ -228,8 +215,10 @@ async def __main__() -> None:
         else:
             backup_time = dt_time(hour=3, minute=0)
 
-        backup_scheduler = BackupScheduler(backup_time=backup_time)
-        tg.start_soon(backup_scheduler.run_scheduler)
+        backup_scheduler = BackupScheduler(
+            tg, get_redis(redis_pool), backup_time=backup_time
+        )
+        tg.start_soon(backup_scheduler.run_scheduler, tg)
 
         # Start track prediction precaching if enabled
         if config.enable_track_predictions:

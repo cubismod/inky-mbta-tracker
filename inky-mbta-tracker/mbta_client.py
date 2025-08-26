@@ -980,7 +980,8 @@ async def watch_mbta_server_side_events(
             try:
                 async for event in client:
                     _mbta_restarter(tg, refresh_time)
-                    await watcher.parse_live_api_response(
+                    tg.start_soon(
+                        watcher.parse_live_api_response,
                         event.data,
                         event.event,
                         send_stream,
@@ -1048,7 +1049,6 @@ async def watch_vehicles(
     send_stream: MemoryObjectSendStream[ScheduleEvent | VehicleRedisSchema],
     expiration_time: Optional[datetime],
     route_id: str,
-    tg: TaskGroup,
 ) -> None:
     endpoint = f"{MBTA_V3_ENDPOINT}/vehicles?fields[vehicle]=direction_id,latitude,longitude,speed,current_status,occupancy_status,carriages&filter[route]={route_id}&api_key={MBTA_AUTH}"
     mbta_api_requests.labels("vehicles").inc()
@@ -1109,15 +1109,15 @@ async def watch_station(
             tg.start_soon(watcher.save_own_stop, session, tg)
             if watcher.stop:
                 tracker_executions.labels(watcher.stop.data.attributes.name).inc()
-        tg.start_soon(
-            watch_mbta_server_side_events,
-            watcher,
-            endpoint,
-            headers,
-            send_stream,
-            session,
-            transit_time_min,
-        )
+            tg.start_soon(
+                watch_mbta_server_side_events,
+                watcher,
+                endpoint,
+                headers,
+                send_stream,
+                session,
+                transit_time_min,
+            )
 
 
 # takes a stop_id from the vehicle API and returns the station_id and if it is one of the stations that has track predictions
