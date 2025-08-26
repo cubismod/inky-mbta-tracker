@@ -27,7 +27,7 @@ async def get_shapes(request: Request, commons: GET_DI) -> Response:
             return Response(content=cached_data, media_type="application/json")
         if commons.tg:
             features = await get_shapes_features(
-                commons.config, commons.r_client, commons.tg
+                commons.config, commons.r_client, commons.tg, commons.session
             )
             result = {"type": "FeatureCollection", "features": features}
             commons.tg.start_soon(
@@ -64,7 +64,7 @@ async def get_shapes_json(request: Request, commons: GET_DI) -> Response:
 
         if commons.tg:
             features = await get_shapes_features(
-                commons.config, commons.r_client, commons.tg
+                commons.config, commons.r_client, commons.tg, commons.session
             )
             feature_collection = FeatureCollection(features)
             geojson_str = dumps(feature_collection, sort_keys=True)

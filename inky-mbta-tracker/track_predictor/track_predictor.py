@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import time
+from asyncio import CancelledError
 from collections import defaultdict
 from datetime import UTC, datetime, timedelta
 from typing import Any, Dict, List, Optional, TypedDict, cast
@@ -10,8 +11,7 @@ import aiohttp
 import shared_types.shared_types
 import textdistance
 from anyio.abc import TaskGroup
-from async_lru import alru_cache
-from consts import DAY, HOUR, INSTANCE_ID, MBTA_V3_ENDPOINT, MINUTE, WEEK, YEAR
+from consts import DAY, HOUR, INSTANCE_ID, MBTA_V3_ENDPOINT, WEEK, YEAR
 from exceptions import RateLimitExceeded
 from mbta_client import MBTAApi
 from mbta_responses import Schedules
@@ -38,6 +38,7 @@ from shared_types.shared_types import (
 from tenacity import (
     before_sleep_log,
     retry,
+    retry_if_not_exception_type,
     wait_exponential_jitter,
 )
 
@@ -639,7 +640,6 @@ class TrackPredictor:
             )
             return {}
 
-    @alru_cache(ttl=30 * MINUTE)
     async def predict_track(
         self,
         station_id: str,
@@ -1053,6 +1053,7 @@ class TrackPredictor:
     @retry(
         wait=wait_exponential_jitter(initial=2, jitter=5),
         before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
+        retry=retry_if_not_exception_type(CancelledError),
     )
     async def fetch_upcoming_departures(
         self,
@@ -1158,6 +1159,7 @@ class TrackPredictor:
 
     async def precache(
         self,
+        tg: TaskGroup,
         routes: Optional[List[str]] = None,
         target_stations: Optional[List[str]] = None,
     ) -> int:
@@ -1248,6 +1250,7 @@ class TrackPredictor:
                                     headsign="",  # Will be fetched in predict_track method
                                     direction_id=direction_id,
                                     scheduled_time=scheduled_time,
+                                    tg=tg,
                                 )
 
                                 if prediction:

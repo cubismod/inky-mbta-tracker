@@ -1,4 +1,5 @@
 import logging
+from asyncio import CancelledError
 from typing import Optional
 
 from prometheus import redis_commands, schema_key_counts
@@ -6,7 +7,12 @@ from pydantic import BaseModel, ValidationError
 from redis import ResponseError
 from redis.asyncio.client import Redis
 from redis_lock.asyncio import RedisLock
-from tenacity import retry, stop_after_attempt, wait_exponential
+from tenacity import (
+    retry,
+    retry_if_not_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 import shared_types.class_hashes as class_hashes
 
@@ -110,7 +116,11 @@ async def get_schema_version(redis: Redis, schema_key: str) -> Optional[RedisSch
 
 # this function is called each time an MBTAApi client is started and manages schema versioning by deleting keys associated with outdated schemas
 # the tracker is able to gracefully recreate missing keys using the MBTA API
-@retry(stop=stop_after_attempt(5), wait=wait_exponential(multiplier=1, min=4, max=15))
+@retry(
+    stop=stop_after_attempt(5),
+    wait=wait_exponential(multiplier=1, min=4, max=15),
+    retry=retry_if_not_exception_type(CancelledError),
+)
 async def schema_versioner(redis: Redis) -> None:
     for schema in SCHEMAS:
         schema_key = f"schema:{schema.id}"

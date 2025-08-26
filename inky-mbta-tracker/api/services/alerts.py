@@ -1,4 +1,5 @@
 import logging
+from asyncio import CancelledError
 from typing import List
 
 import aiohttp
@@ -21,7 +22,7 @@ from .core import logger
 @retry(
     wait=wait_exponential_jitter(initial=2, jitter=5),
     stop=stop_after_attempt(3),
-    retry=retry_if_not_exception_type((ValueError,)),
+    retry=retry_if_not_exception_type((ValueError, CancelledError)),
     before_sleep=before_sleep_log(logger, logging.DEBUG),
     before=before_log(logger, logging.DEBUG),
 )
