@@ -51,6 +51,53 @@ def _ensure_api_filter(logger: logging.Logger) -> None:
             handler.addFilter(APIKeyFilter())
 
 
+class ColorFormatter(logging.Formatter):
+    """ANSI color formatter for console logging.
+
+    Applies a color to the level name depending on the record level.
+    Only used when IMT_COLOR == 'true'.
+    """
+
+    RESET = "\033[0m"
+
+    @staticmethod
+    def _rgb(r: int, g: int, b: int) -> str:
+        """Return ANSI 24-bit color escape for the given RGB."""
+        return f"\033[38;2;{r};{g};{b}m"
+
+    # Catppuccin Mocha palette (https://catppuccin.com/palette)
+    # Selected accents per-level
+    _GREEN = _rgb.__func__(166, 227, 161)  # Green
+    _YELLOW = _rgb.__func__(249, 226, 175)  # Yellow
+    _RED = _rgb.__func__(243, 139, 168)  # Red
+    _BLUE = _rgb.__func__(137, 180, 250)  # Blue
+    _SAPPHIRE = _rgb.__func__(116, 199, 236)  # Sapphire
+    _MAROON = _rgb.__func__(235, 160, 172)  # Maroon
+
+    COLORS: dict[int, str] = {
+        logging.DEBUG: _SAPPHIRE,  # Debug → Sapphire
+        logging.INFO: _GREEN,  # Info → Green
+        logging.WARNING: _YELLOW,  # Warning → Yellow
+        logging.ERROR: _RED,  # Error → Red
+        logging.CRITICAL: _MAROON,  # Critical → Maroon (bold applied below)
+    }
+
+    def format(self, record: logging.LogRecord) -> str:  # noqa: D401
+        level_color = self.COLORS.get(record.levelno)
+        if level_color:
+            original_levelname = record.levelname
+            # Make CRITICAL bold
+            if record.levelno == logging.CRITICAL:
+                level_color = f"\033[1m{level_color}"
+            record.levelname = f"{level_color}{original_levelname}{self.RESET}"
+            try:
+                return super().format(record)
+            finally:
+                # Restore to avoid side effects in other handlers/formatters
+                record.levelname = original_levelname
+        return super().format(record)
+
+
 def _add_file_handler_if_configured(logger: logging.Logger, level: int) -> None:
     log_file = os.getenv("IMT_LOG_FILE")
     if not log_file:
@@ -103,6 +150,13 @@ def setup_logging() -> None:
 
     # Ensure API key filters are in place
     _ensure_api_filter(root)
+
+    # Optionally colorize console output
+    if os.getenv("IMT_COLOR", "false").lower() == "true":
+        for handler in root.handlers:
+            # Only colorize stream (console) handlers
+            if isinstance(handler, logging.StreamHandler):
+                handler.setFormatter(ColorFormatter("%(levelname)-8s %(message)s"))
 
     # Optionally add file handler
     _add_file_handler_if_configured(root, level)

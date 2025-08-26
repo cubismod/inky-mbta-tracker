@@ -362,6 +362,12 @@ class TestTracker:
         mock_redis = AsyncMock()
         mock_pipeline = AsyncMock()
         tracker.redis = mock_redis
+        # In cleanup(), tracker may call self.redis.pipeline() synchronously to create
+        # a new pipeline. Ensure our mock behaves like a sync factory to avoid
+        # un-awaited coroutine warnings.
+        from unittest.mock import MagicMock
+
+        mock_redis.pipeline = MagicMock(return_value=mock_pipeline)
 
         # Mock obsolete IDs from Redis
         obsolete_ids = [b"event-1", b"event-2"]
@@ -609,6 +615,18 @@ class TestProcessQueue:
 
         mock_runner_instance = MagicMock()
         mock_runner.return_value.__enter__.return_value = mock_runner_instance
+
+        # Avoid un-awaited coroutine warnings by consuming the coroutine passed to run()
+        def _consume(coro: object) -> None:
+            try:
+                # Close coroutine objects to suppress RuntimeWarning about un-awaited coroutines
+                close = getattr(coro, "close", None)
+                if callable(close):
+                    close()
+            except Exception:
+                pass
+
+        mock_runner_instance.run.side_effect = _consume
 
         queue = Queue[ScheduleEvent]()
 
