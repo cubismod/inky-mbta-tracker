@@ -8,6 +8,7 @@ from typing import Annotated, Self
 from anyio import AsyncContextManagerMixin, create_task_group
 from config import load_config
 from fastapi.params import Depends
+from logging_setup import setup_logging
 from redis.asyncio import Redis
 from track_predictor.track_predictor import TrackPredictor
 
@@ -16,10 +17,7 @@ from track_predictor.track_predictor import TrackPredictor
 # ----------------------------------------------------------------------------
 
 # This is intended as a separate entrypoint to be run as a separate container
-logging.basicConfig(
-    level=os.getenv("LOG_LEVEL", "INFO"),
-    format="%(levelname)-8s %(message)s",
-)
+setup_logging()
 logger = logging.getLogger(__name__)
 
 

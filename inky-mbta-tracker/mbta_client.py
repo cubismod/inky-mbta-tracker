@@ -199,7 +199,7 @@ class MBTAApi:
     route: Optional[str]
     direction_filter: Optional[int]
     routes: dict[str, RouteResource]
-    stop: Optional[Stop]
+    stop: Optional[Stop] = None
     schedule_only: bool = False
     facilities: Optional[Facilities]
     expiration_time: Optional[datetime]
@@ -226,7 +226,6 @@ class MBTAApi:
         self.routes = dict()
         self.expiration_time = expiration_time
         self.watcher_type = watcher_type
-
         self.r_client = r_client
         from track_predictor.track_predictor import TrackPredictor
 
@@ -260,7 +259,6 @@ class MBTAApi:
         traceback: Optional[TracebackType],
     ):
         logging.info(f"Closing MBTAApi {self.watcher_type} {exc_type}")
-        await self.r_client.aclose()
         if exc_value:
             logger.error(
                 f"Error in MBTAApi {exc_type}\n{traceback}", exc_info=exc_value
