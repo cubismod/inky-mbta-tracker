@@ -481,8 +481,7 @@ async def execute(
 
             await tracker.send_mqtt()
             try:
-                key_counts = await export_schema_key_counts(tracker.redis)
-                logger.debug(f"Schema key counts: {key_counts}")
+                await export_schema_key_counts(tracker.redis)
             except ResponseError as e:
                 logger.error("Failed to export schema key counts", exc_info=e)
 
@@ -546,7 +545,5 @@ async def process_queue_async(
                     await cleanup_pipeline.execute()
                     redis_commands.labels("execute").inc()
                     await tracker.send_mqtt()
-                    key_counts = await export_schema_key_counts(tracker.redis)
-                    logger.debug(f"Schema key counts: {key_counts}")
     except ResponseError as e:
         logger.error("Failed to export schema key counts", exc_info=e)

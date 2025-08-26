@@ -18,14 +18,13 @@ from mbta_client import (
     silver_line_lookup,
 )
 from mbta_responses import AlertResource
+from ollama_imt import OllamaClientIMT
 from prometheus import redis_commands
 from pydantic import ValidationError
 from redis.asyncio import Redis
 from schedule_tracker import VehicleRedisSchema
 from track_predictor.track_predictor import TrackPredictor
 from turfpy.measurement import bearing, distance
-
-from .ollama import OllamaClientIMT
 
 logger = logging.getLogger("geojson_utils")
 

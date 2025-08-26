@@ -35,6 +35,7 @@ from mbta_responses import (
     TypeAndID,
     Vehicle,
 )
+from ollama_imt import OllamaClientIMT
 from polyline import decode
 from prometheus import mbta_api_requests, tracker_executions
 from pydantic import BaseModel, TypeAdapter, ValidationError
@@ -502,9 +503,6 @@ class MBTAApi:
                 and item.relationships.route.data
                 and self.route_substring_filter not in item.relationships.route.data.id
             ):
-                logger.debug(
-                    f"Skipping event for route {item.relationships.route.data.id} because it doesn't match substring filter {self.route_substring_filter}"
-                )
                 return
             if schedule_time and schedule_time > datetime.now().astimezone(UTC):
                 await self.save_route(item, session)
@@ -644,9 +642,6 @@ class MBTAApi:
                                         exc_info=True,
                                     )
                     if self.stop and headsign == self.stop.data.attributes.name:
-                        logger.debug(
-                            f"Skipping event for route {route_id} {headsign} because it has the same stop and headsign as the current stop"
-                        )
                         return
                     event = ScheduleEvent(
                         action=event_type,
@@ -810,6 +805,13 @@ class MBTAApi:
                 body = await response.text()
                 mbta_api_requests.labels("alerts").inc()
                 alerts = Alerts.model_validate_json(strict=False, json_data=body)
+                for alert in alerts.data:
+                    # append an AI summary to the alert if available, otherwise queue one
+                    # to be appended with the next alerts refresh
+                    async with OllamaClientIMT(r_client=self.r_client) as ollama:
+                        resp = await ollama.fetch_cached_summary(alert)
+                        if resp:
+                            alert.ai_summary = resp
                 return alerts.data
             except ValidationError as err:
                 logger.error("Unable to parse alert", exc_info=err)
