@@ -17,10 +17,14 @@ from anyio.streams.memory import MemoryObjectReceiveStream
 from geojson import Feature, Point
 from paho.mqtt import MQTTException, publish
 from prometheus import (
-    queue_processed_item,
-    queue_size,
+    current_buffer_used,
+    max_buffer_size,
+    open_receive_streams,
+    open_send_streams,
     redis_commands,
     schedule_events,
+    tasks_waiting_receive,
+    tasks_waiting_send,
     vehicle_events,
     vehicle_speeds,
 )
@@ -445,15 +449,10 @@ async def execute(
     tracker: Tracker, queue: Queue[ScheduleEvent] | Queue[VehicleRedisSchema]
 ) -> None:
     pipeline = tracker.redis.pipeline()
-    queue_size.set(queue.qsize())
     while queue.qsize() != 0:
         try:
             item = queue.get()
             await tracker.process_queue_item(item, pipeline)
-            if isinstance(item, ScheduleEvent):
-                queue_processed_item.labels("schedule").inc()
-            if isinstance(item, VehicleRedisSchema):
-                queue_processed_item.labels("vehicle").inc()
         except QueueEmpty:
             break
     try:
@@ -534,11 +533,6 @@ async def process_queue_async(
         pipeline: Pipeline = tracker.redis.pipeline(transaction=False)
         try:
             for it in items:
-                if isinstance(it, ScheduleEvent):
-                    queue_processed_item.labels("schedule").inc()
-                else:
-                    queue_processed_item.labels("vehicle").inc()
-                # Process sequentially to mutate the shared pipeline deterministically
                 await tracker.process_queue_item(it, pipeline)
 
             # Housekeeping: prune expired entries in the same round trip
@@ -591,6 +585,21 @@ async def process_queue_async(
                         await cleanup_pipeline.execute()
                         redis_commands.labels("execute").inc()
                         await tracker.send_mqtt()
+
+                        stats = receive_stream.statistics()
+
+                        current_buffer_used.labels("main").set(
+                            stats.current_buffer_used
+                        )
+                        max_buffer_size.labels("main").set(stats.max_buffer_size)
+                        open_receive_streams.labels("main").set(
+                            stats.open_receive_streams
+                        )
+                        open_send_streams.labels("main").set(stats.open_send_streams)
+                        tasks_waiting_receive.labels("main").set(
+                            stats.tasks_waiting_receive
+                        )
+                        tasks_waiting_send.labels("main").set(stats.tasks_waiting_send)
                     last_mqtt_ts = now
                 except ResponseError:
                     logger.error("Error during MQTT/cleanup cycle", exc_info=True)
