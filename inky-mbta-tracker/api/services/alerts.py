@@ -16,7 +16,7 @@ from tenacity import (
     wait_exponential_jitter,
 )
 
-from .core import logger
+logger = logging.getLogger(__name__)
 
 
 @retry(

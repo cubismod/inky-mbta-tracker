@@ -14,6 +14,8 @@ from ..limits import limiter
 
 router = APIRouter()
 
+logger = logging.getLogger(__name__)
+
 
 @router.get(
     "/vehicles",
@@ -43,7 +45,7 @@ async def get_vehicles(request: Request, commons: GET_DI) -> Response:
         else:
             return Response(status_code=500)
     except (ConnectionError, TimeoutError):
-        logging.error("Error getting vehicles due to connection issue", exc_info=True)
+        logger.error("Error getting vehicles due to connection issue", exc_info=True)
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
@@ -111,7 +113,7 @@ async def get_vehicles_json(request: Request, commons: GET_DI) -> Response:
         else:
             return Response(status_code=500)
     except (ConnectionError, TimeoutError):
-        logging.error(
+        logger.error(
             "Error getting vehicles JSON due to connection issue", exc_info=True
         )
         raise HTTPException(status_code=500, detail="Internal server error")

@@ -19,6 +19,8 @@ from ..models import (
 
 router = APIRouter()
 
+logger = logging.getLogger(__name__)
+
 
 @router.post("/predictions")
 @limiter.limit("100/minute")
@@ -56,13 +58,13 @@ async def generate_track_prediction(
         return await _generate_prediction()
 
     except TimeoutError:
-        logging.error("Track prediction request timed out")
+        logger.error("Track prediction request timed out")
         return TrackPredictionResponse(success=False, prediction="Request timed out")
     except (ConnectionError, TimeoutError):
-        logging.error("Connection error generating prediction", exc_info=True)
+        logger.error("Connection error generating prediction", exc_info=True)
         raise HTTPException(status_code=500, detail="Internal server error")
     except ValidationError:
-        logging.error("Validation error generating prediction", exc_info=True)
+        logger.error("Validation error generating prediction", exc_info=True)
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
@@ -102,7 +104,7 @@ async def generate_chained_track_predictions(
             )
 
         except (ConnectionError, TimeoutError) as e:
-            logging.error(
+            logger.error(
                 "Error generating chained prediction due to connection issue",
                 exc_info=e,
             )
@@ -110,7 +112,7 @@ async def generate_chained_track_predictions(
                 success=False, prediction="Connection error occurred"
             )
         except ValidationError as e:
-            logging.error(
+            logger.error(
                 "Error generating chained prediction due to validation error",
                 exc_info=e,
             )
@@ -118,7 +120,7 @@ async def generate_chained_track_predictions(
                 success=False, prediction="Validation error occurred"
             )
         except (RuntimeError, ValueError, TypeError) as e:
-            logging.error("Unexpected error generating chained prediction", exc_info=e)
+            logger.error("Unexpected error generating chained prediction", exc_info=e)
             return TrackPredictionResponse(
                 success=False, prediction="Unexpected error occurred"
             )
@@ -151,10 +153,10 @@ async def get_prediction_stats(
                 success=False, stats="No stats available"
             )
     except (ConnectionError, TimeoutError):
-        logging.error("Connection error getting prediction stats", exc_info=True)
+        logger.error("Connection error getting prediction stats", exc_info=True)
         raise HTTPException(status_code=500, detail="Internal server error")
     except ValidationError:
-        logging.error("Validation error getting prediction stats", exc_info=True)
+        logger.error("Validation error getting prediction stats", exc_info=True)
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
@@ -178,8 +180,8 @@ async def get_historical_assignments(
         )
         return [assignment for assignment in assignments]
     except (ConnectionError, TimeoutError):
-        logging.error("Connection error getting historical data", exc_info=True)
+        logger.error("Connection error getting historical data", exc_info=True)
         raise HTTPException(status_code=500, detail="Internal server error")
     except ValidationError:
-        logging.error("Validation error getting historical data", exc_info=True)
+        logger.error("Validation error getting historical data", exc_info=True)
         raise HTTPException(status_code=500, detail="Internal server error")

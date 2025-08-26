@@ -11,6 +11,7 @@ from ..limits import limiter
 from ..services.alerts import fetch_alerts_with_retry
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 @router.get(
@@ -40,13 +41,13 @@ async def get_alerts(request: Request, commons: GET_DI) -> Response:
             )
         return Response(content=alerts_json, media_type="application/json")
     except (ConnectionError, TimeoutError):
-        logging.error("Error getting alerts due to connection issue", exc_info=True)
+        logger.error("Error getting alerts due to connection issue", exc_info=True)
         raise HTTPException(status_code=500, detail="Internal server error")
     except RedisError:
-        logging.error("Error getting alerts due to Redis error", exc_info=True)
+        logger.error("Error getting alerts due to Redis error", exc_info=True)
         raise HTTPException(status_code=500, detail="Internal server error")
     except ValidationError:
-        logging.error("Error getting alerts due to validation error", exc_info=True)
+        logger.error("Error getting alerts due to validation error", exc_info=True)
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
@@ -83,15 +84,11 @@ async def get_alerts_json(request: Request, commons: GET_DI) -> Response:
             headers={"Content-Disposition": "attachment; filename=alerts.json"},
         )
     except (ConnectionError, TimeoutError):
-        logging.error(
-            "Error getting alerts JSON due to connection issue", exc_info=True
-        )
+        logger.error("Error getting alerts JSON due to connection issue", exc_info=True)
         raise HTTPException(status_code=500, detail="Internal server error")
     except RedisError:
-        logging.error("Error getting alerts JSON due to Redis error", exc_info=True)
+        logger.error("Error getting alerts JSON due to Redis error", exc_info=True)
         raise HTTPException(status_code=500, detail="Internal server error")
     except ValidationError:
-        logging.error(
-            "Error getting alerts JSON due to validation error", exc_info=True
-        )
+        logger.error("Error getting alerts JSON due to validation error", exc_info=True)
         raise HTTPException(status_code=500, detail="Internal server error")

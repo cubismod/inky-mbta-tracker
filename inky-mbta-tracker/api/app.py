@@ -10,7 +10,6 @@ from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
 from .core import RATE_LIMITING_ENABLED
-from .endpoints.ai import router as ai_router
 from .endpoints.alerts import router as alerts_router
 
 # Routers
@@ -77,7 +76,6 @@ def create_app() -> FastAPI:
     app.include_router(vehicles_router)
     app.include_router(alerts_router)
     app.include_router(shapes_router)
-    app.include_router(ai_router)
 
     return app
 
