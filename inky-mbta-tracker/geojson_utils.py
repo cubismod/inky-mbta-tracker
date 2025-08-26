@@ -25,11 +25,13 @@ from schedule_tracker import VehicleRedisSchema
 from track_predictor.track_predictor import TrackPredictor
 from turfpy.measurement import bearing, distance
 
+from .ollama import OllamaClientIMT
+
 logger = logging.getLogger("geojson_utils")
 
 
 async def light_get_alerts_batch(
-    routes_str: str, session: ClientSession
+    routes_str: str, session: ClientSession, r_client: Redis
 ) -> Optional[list[AlertResource]]:
     """Get alerts for multiple routes in a single API call"""
     from mbta_client import MBTA_AUTH
@@ -72,6 +74,14 @@ async def light_get_alerts_batch(
             alerts_response = Alerts.model_validate(data)
             alerts_count = len(alerts_response.data) if alerts_response.data else 0
             logger.debug(f"Parsed {alerts_count} alerts from response")
+
+            for alert in alerts_response.data:
+                # append an AI summary to the alert if available, otherwise queue one
+                # to be appended with the next alerts refresh
+                async with OllamaClientIMT(r_client=r_client) as ollama:
+                    resp = await ollama.fetch_cached_summary(alert)
+                    if resp:
+                        alert.ai_summary = resp
 
             return alerts_response.data if alerts_response.data else []
     except ValidationError as err:
@@ -203,7 +213,7 @@ async def collect_alerts(config: Config, session: ClientSession) -> list[AlertRe
     return collected_alerts
 
 
-async def get_vehicle_features(redis_client: Redis, tg: TaskGroup) -> list[Feature]:
+async def get_vehicle_features(r_client: Redis, tg: TaskGroup) -> list[Feature]:
     """Extract vehicle features from Redis data"""
     features = dict[str, Feature]()
 
@@ -211,18 +221,18 @@ async def get_vehicle_features(redis_client: Redis, tg: TaskGroup) -> list[Featu
         # periodically clean up the set during overnight hours to avoid unnecessary redis calls
         delete_all_pos_data = False
         now = datetime.now().astimezone(ZoneInfo("US/Eastern"))
-        pos_data_count = await redis_client.scard("pos-data")  # type: ignore[misc]
+        pos_data_count = await r_client.scard("pos-data")  # type: ignore[misc]
         if pos_data_count > 500 and 4 > now.hour > 2:
             redis_commands.labels("scard").inc()
             delete_all_pos_data = True
 
-        vehicles = await redis_client.smembers("pos-data")  # type: ignore[misc]
+        vehicles = await r_client.smembers("pos-data")  # type: ignore[misc]
         redis_commands.labels("smembers").inc()
-        pl = redis_client.pipeline()
+        pl = r_client.pipeline()
 
         for vehicle in vehicles:
             if delete_all_pos_data:
-                await redis_client.srem("pos-data", vehicle)  # type: ignore[misc]
+                await r_client.srem("pos-data", vehicle)  # type: ignore[misc]
                 redis_commands.labels("srem").inc()
             dec_v = vehicle.decode("utf-8")
             if dec_v:
@@ -251,10 +261,9 @@ async def get_vehicle_features(redis_client: Redis, tg: TaskGroup) -> list[Featu
                     lat = None
                     route_icon = "rail"
                     stop_eta = None
-
                     if not vehicle_info.route.startswith("Amtrak"):
                         stop = await light_get_stop(
-                            redis_client, vehicle_info.stop, session, tg
+                            r_client, vehicle_info.stop, session, tg
                         )
                         platform_prediction = None
                         if stop:
@@ -277,7 +286,7 @@ async def get_vehicle_features(redis_client: Redis, tg: TaskGroup) -> list[Featu
                                 vehicle_info.route.startswith("CR")
                                 and has_track_predictions
                             ):
-                                track_predictor = TrackPredictor()
+                                track_predictor = TrackPredictor(r_client=r_client)
                                 prediction = await track_predictor.predict_track(
                                     station_id=station_id,
                                     route_id=vehicle_info.route,

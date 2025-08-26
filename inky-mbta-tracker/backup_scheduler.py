@@ -6,8 +6,8 @@ from zoneinfo import ZoneInfo
 from anyio import sleep
 from anyio.abc import TaskGroup
 from consts import HOUR
-from redis_backup import RedisBackup
 from redis.asyncio import Redis
+from redis_backup import RedisBackup
 
 logger = logging.getLogger(__name__)
 

@@ -7,7 +7,7 @@ from mbta_responses import Alerts
 from pydantic import ValidationError
 from redis.exceptions import RedisError
 
-from ..core import AI_SUMMARIZER, CONFIG, REDIS_CLIENT
+from ..core import CONFIG, REDIS_CLIENT
 from ..limits import limiter
 from ..services.alerts import fetch_alerts_with_retry
 
@@ -35,19 +35,6 @@ async def get_alerts(request: Request) -> Response:
         alerts_data = Alerts(data=alerts)
         alerts_json = alerts_data.model_dump_json(exclude_unset=True)
         await REDIS_CLIENT.setex(cache_key, ALERTS_CACHE_TTL, alerts_json)
-
-        if AI_SUMMARIZER and alerts:
-            try:
-                await AI_SUMMARIZER.queue_summary_job(
-                    alerts,
-                    priority=2,
-                    config={"include_route_info": True, "include_severity": True},
-                )
-            except Exception as e:
-                logging.warning(
-                    f"Failed to queue AI summary during alerts refresh: {e}"
-                )
-
         return Response(content=alerts_json, media_type="application/json")
     except (ConnectionError, TimeoutError):
         logging.error("Error getting alerts due to connection issue", exc_info=True)
@@ -83,19 +70,6 @@ async def get_alerts_json(request: Request) -> Response:
         alerts_data = Alerts(data=alerts)
         alerts_json = alerts_data.model_dump_json(exclude_unset=True)
         await REDIS_CLIENT.setex(cache_key, ALERTS_CACHE_TTL, alerts_json)
-
-        if AI_SUMMARIZER and alerts:
-            try:
-                await AI_SUMMARIZER.queue_summary_job(
-                    alerts,
-                    priority=2,
-                    config={"include_route_info": True, "include_severity": True},
-                )
-            except Exception as e:
-                logging.warning(
-                    f"Failed to queue AI summary during alerts JSON refresh: {e}"
-                )
-
         return Response(
             content=alerts_json,
             media_type="application/json",

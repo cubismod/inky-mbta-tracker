@@ -1,11 +1,13 @@
+import hashlib
+import logging
 import os
+import re
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator, Optional, Self, List
+from typing import AsyncGenerator, Optional, Self
 
 import llm
 from anyio import (
     AsyncContextManagerMixin,
-    Lock,
     create_memory_object_stream,
     create_task_group,
     open_file,
@@ -16,18 +18,26 @@ from llm.models import AsyncModel
 from mbta_responses import AlertResource
 from redis.asyncio import Redis
 from redis_cache import check_cache, write_cache
-from .config import OllamaConfig
-import hashlib
+from redis_lock.asyncio.async_lock import RedisLock
+
 from .consts import HOUR
-import logging
-import re
 
 logger = logging.getLogger(__name__)
 
 
-class Ollama(AsyncContextManagerMixin):
-    def __init__(self, config: OllamaConfig, r_client: Redis):
-        self.config = config
+class OllamaClientIMT(AsyncContextManagerMixin):
+    """Lightweight async helper for summarizing MBTA alerts.
+
+    Wraps an async `llm` model, provides a small background task mechanism,
+    and caches per-alert summaries in Redis.
+    """
+
+    def __init__(self, r_client: Redis):
+        """Initialize the helper.
+
+        Args:
+            r_client: Redis client used for read/write caching of summaries.
+        """
         self.model: Optional[AsyncModel] = None
         self._tg: Optional[TaskGroup] = None
         self._receive_stream: Optional[MemoryObjectReceiveStream[str]] = None
@@ -36,7 +46,12 @@ class Ollama(AsyncContextManagerMixin):
 
     @asynccontextmanager
     async def __asynccontextmanager__(self) -> AsyncGenerator[Self, None]:
-        self.model = llm.get_async_model(os.getenv("OLLAMA_MODEL", "llama2"))
+        """Set up the async model and a task group for background work.
+
+        Yields:
+            Self: Instance with an initialized model and task group.
+        """
+        self.model = llm.get_async_model(os.getenv("OLLAMA_MODEL", "qwen2.5:1.5b"))
         async with create_task_group() as tg:
             self._tg = tg
             self._send_stream, self._receive_stream = create_memory_object_stream[str]()
@@ -45,22 +60,68 @@ class Ollama(AsyncContextManagerMixin):
             finally:
                 self._tg = None
 
+    async def fetch_cached_summary(
+        self,
+        alert: AlertResource,
+        send_stream: Optional[MemoryObjectSendStream[str]] = None,
+        sentence_limit: int = 2,
+    ) -> Optional[str]:
+        key = self._alert_hash(alert)
+        cached = await check_cache(self.r_client, key)
+        if cached:
+            return cached
+        else:
+            await self.queue_summary(alert, send_stream, sentence_limit)
+
     async def queue_summary(
         self,
         alert: AlertResource,
-        lock: Lock,
-        send_stream: MemoryObjectSendStream[str],
+        send_stream: Optional[MemoryObjectSendStream[str]],
         sentence_limit: int = 2,
     ):
+        """Queue an alert summarization task if a TaskGroup is active.
+
+        Args:
+            alert: The MBTA alert to summarize.
+            lock: Shared lock to serialize model requests.
+            send_stream: Stream to send the final summary text to.
+            sentence_limit: Maximum sentences to request from the model.
+
+        Returns:
+            None
+        """
+        key = self._alert_hash(alert)
+        cached = await check_cache(self.r_client, key)
+        if cached and send_stream:
+            await send_stream.send(cached)
         if self._tg:
+            if send_stream:
+                # send a message to indicate the ID is queued to get a summary
+                await send_stream.send(f"{alert.id}")
             self._tg.start_soon(
-                self.summarize_alert, alert, lock, send_stream, sentence_limit
+                self.summarize_alert, alert, send_stream, sentence_limit
             )
 
     def _format_alert(self, alert: AlertResource) -> str:
+        """Format an alert into plain text for prompting the model.
+
+        Args:
+            alert: The alert to format.
+
+        Returns:
+            Plain text block with the alert's key fields.
+        """
         return f"Alert ID: {alert.id}\nDescription: {alert.attributes.header}\nSeverity: {self._severity_to_text(alert.attributes.severity)}\nTimeframe: {alert.attributes.timeframe}\nCreated At: {alert.attributes.created_at}\nUpdated At: {alert.attributes.updated_at}\nShort Description: {alert.attributes.short_header}"
 
     def _severity_to_text(self, severity: int) -> str:
+        """Convert a numeric severity into a human-readable label.
+
+        Args:
+            severity: Integer severity level from the alert.
+
+        Returns:
+            Human-friendly severity label.
+        """
         mapping = {
             1: "Minor",
             2: "Minor",
@@ -76,7 +137,15 @@ class Ollama(AsyncContextManagerMixin):
         return mapping.get(severity, f"Level {severity}")
 
     def _alert_hash(self, alert: AlertResource) -> str:
-        base = f"{alert.id}:{getattr(alert.attributes, 'header', '')}:{getattr(alert.attributes, 'severity', '')}:{getattr(alert.attributes, 'effect', '')}"
+        """Build a short, stable cache key for an alert.
+
+        Args:
+            alert: The alert to derive the cache key from.
+
+        Returns:
+            Hex digest prefix that changes when key fields change.
+        """
+        base = f"ai_alerts:{alert.id}:{getattr(alert.attributes, 'header', '')}:{getattr(alert.attributes, 'severity', '')}:{getattr(alert.attributes, 'effect', '')}"
 
         return hashlib.sha256(base.encode()).hexdigest()[:16]
 
@@ -84,17 +153,13 @@ class Ollama(AsyncContextManagerMixin):
         self,
         summary: str,
     ) -> str:
-        """
-        Clean up direct responses from the model and remove conversational phrases using regex.
-        Optionally validate similarity to original input.
+        """Remove conversational prefaces and artifacts from the model output.
 
         Args:
-            summary: The AI-generated summary text to clean
-            original_input: Original input text for similarity validation (optional)
-            min_similarity: Minimum similarity threshold for validation (0.0 to 1.0)
+            summary: The AI-generated text to clean.
 
         Returns:
-            Cleaned summary text, or error message if similarity validation fails
+            Cleaned summary text, or the original text if unchanged.
         """
         if not summary or len(summary.strip()) == 0:
             return summary
@@ -263,17 +328,24 @@ class Ollama(AsyncContextManagerMixin):
     async def summarize_alert(
         self,
         alert: AlertResource,
-        lock: Lock,
-        send_stream: MemoryObjectSendStream[str],
+        send_stream: Optional[MemoryObjectSendStream[str]] = None,
         sentence_limit: int = 2,
     ) -> None:
-        key = self._alert_hash(alert)
-        cached = await check_cache(self.r_client, key)
-        if cached:
-            await send_stream.send(cached)
-            return
+        """Summarize one alert, using Redis for caching.
+
+        Args:
+            alert: The MBTA alert to summarize.
+            send_stream: Stream to send the result to.
+            sentence_limit: Maximum number of sentences to request.
+
+        Returns:
+            None
+        """
         if self.model:
-            async with lock:
+            key = self._alert_hash(alert)
+            async with RedisLock(
+                self.r_client, "ollama_lock", blocking_timeout=120, expire_timeout=90
+            ):
                 async with await open_file(
                     "../fragments/agent-prompt.txt"
                 ) as prompt_file:
@@ -285,3 +357,5 @@ class Ollama(AsyncContextManagerMixin):
                 resp_text = await response.text()
                 cleaned_text = self._clean_model_response(resp_text)
                 await write_cache(self.r_client, key, cleaned_text, 1 * HOUR)
+                if send_stream:
+                    await send_stream.send(cleaned_text)
