@@ -89,6 +89,7 @@ def parse_shape_data(shapes: Shapes) -> LineRoute:
 @retry(
     wait=wait_exponential_jitter(initial=2, jitter=5),
     before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
+    retry=retry_if_not_exception_type(CancelledError),
 )
 async def get_shapes(
     r_client: Redis, routes: list[str], session: ClientSession, tg: TaskGroup
@@ -621,6 +622,7 @@ class MBTAApi:
                                             headsign=headsign,
                                             direction_id=item.attributes.direction_id,
                                             scheduled_time=schedule_time,
+                                            tg=tg,
                                         )
 
                                     if prediction:
@@ -724,6 +726,7 @@ class MBTAApi:
     @retry(
         wait=wait_exponential_jitter(initial=2, jitter=5),
         before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
+        retry=retry_if_not_exception_type(CancelledError),
     )
     async def get_trip(
         self, trip_id: str, session: ClientSession, tg: TaskGroup
@@ -756,6 +759,7 @@ class MBTAApi:
     @retry(
         wait=wait_exponential_jitter(initial=2, jitter=5),
         before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
+        retry=retry_if_not_exception_type(CancelledError),
     )
     async def save_route(
         self, prediction: PredictionResource | ScheduleResource, session: ClientSession
@@ -781,6 +785,7 @@ class MBTAApi:
     @retry(
         wait=wait_exponential_jitter(initial=2, jitter=5),
         before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
+        retry=retry_if_not_exception_type(CancelledError),
     )
     async def get_alerts(
         self,
@@ -814,6 +819,7 @@ class MBTAApi:
     @retry(
         wait=wait_exponential_jitter(initial=2, jitter=5),
         before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
+        retry=retry_if_not_exception_type(CancelledError),
     )
     async def save_schedule(
         self,
@@ -869,6 +875,7 @@ class MBTAApi:
     @retry(
         wait=wait_exponential_jitter(initial=2, jitter=5),
         before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
+        retry=retry_if_not_exception_type(CancelledError),
     )
     async def get_stop(
         self, session: ClientSession, stop_id: str, tg: TaskGroup
@@ -921,6 +928,7 @@ class MBTAApi:
 
     async def precache_track_predictions(
         self,
+        tg: TaskGroup,
         routes: Optional[list[str]] = None,
         target_stations: Optional[list[str]] = None,
     ) -> int:
@@ -936,7 +944,7 @@ class MBTAApi:
         """
         if self.track_predictor:
             return await self.track_predictor.precache(
-                routes=routes, target_stations=target_stations
+                routes=routes, target_stations=target_stations, tg=tg
             )
         else:
             logger.warning("Track predictor not available for precaching")
@@ -945,6 +953,7 @@ class MBTAApi:
 
 async def precache_track_predictions_runner(
     r_client: Redis,
+    tg: TaskGroup,
     routes: Optional[list[str]] = None,
     target_stations: Optional[list[str]] = None,
     interval_hours: int = 2,
@@ -967,6 +976,7 @@ async def precache_track_predictions_runner(
                 r_client, watcher_type=TaskType.TRACK_PREDICTIONS
             ) as api:
                 predictions_count = await api.precache_track_predictions(
+                    tg=tg,
                     routes=routes,
                     target_stations=target_stations,
                 )
@@ -993,6 +1003,7 @@ def _mbta_restarter(tg: TaskGroup, refresh_time: datetime) -> None:
     wait=wait_exponential_jitter(initial=2, jitter=5),
     before=before_log(logger, logging.INFO),
     before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
+    retry=retry_if_not_exception_type(CancelledError),
 )
 async def watch_mbta_server_side_events(
     watcher: MBTAApi,
@@ -1144,8 +1155,7 @@ async def watch_station(
             tg.start_soon(watcher.save_own_stop, session, tg)
             if watcher.stop:
                 tracker_executions.labels(watcher.stop.data.attributes.name).inc()
-            tg.start_soon(
-                watch_mbta_server_side_events,
+            await watch_mbta_server_side_events(
                 watcher,
                 endpoint,
                 headers,

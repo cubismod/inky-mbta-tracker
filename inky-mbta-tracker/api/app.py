@@ -1,5 +1,8 @@
 import os
+from contextlib import asynccontextmanager
 
+import aiohttp
+from consts import MBTA_V3_ENDPOINT
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from prometheus_fastapi_instrumentator import Instrumentator
@@ -20,6 +23,14 @@ from .middleware import HeaderLoggingMiddleware
 
 
 def create_app() -> FastAPI:
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        app.state.session = aiohttp.ClientSession(base_url=MBTA_V3_ENDPOINT)
+        try:
+            yield
+        finally:
+            await app.state.session.close()
+
     app = FastAPI(
         title="MBTA Transit Data API",
         description=(
@@ -35,6 +46,7 @@ def create_app() -> FastAPI:
             "docExpansion": "none",
             "tryItOutEnabled": True,
         },
+        lifespan=lifespan,
     )
 
     if RATE_LIMITING_ENABLED:

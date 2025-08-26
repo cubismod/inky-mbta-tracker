@@ -1,8 +1,7 @@
 import logging
 
-import aiohttp
 from api.core import GET_DI
-from consts import ALERTS_CACHE_TTL, MBTA_V3_ENDPOINT
+from consts import ALERTS_CACHE_TTL
 from fastapi import APIRouter, HTTPException, Request, Response
 from mbta_responses import Alerts
 from pydantic import ValidationError
@@ -29,10 +28,9 @@ async def get_alerts(request: Request, commons: GET_DI) -> Response:
         if cached_data:
             return Response(content=cached_data, media_type="application/json")
 
-        async with aiohttp.ClientSession(base_url=MBTA_V3_ENDPOINT) as session:
-            alerts = await fetch_alerts_with_retry(
-                commons.config, session, commons.r_client
-            )
+        alerts = await fetch_alerts_with_retry(
+            commons.config, commons.session, commons.r_client
+        )
 
         alerts_data = Alerts(data=alerts)
         alerts_json = alerts_data.model_dump_json(exclude_unset=True)
@@ -70,10 +68,9 @@ async def get_alerts_json(request: Request, commons: GET_DI) -> Response:
                 headers={"Content-Disposition": "attachment; filename=alerts.json"},
             )
 
-        async with aiohttp.ClientSession(base_url=MBTA_V3_ENDPOINT) as session:
-            alerts = await fetch_alerts_with_retry(
-                commons.config, session, commons.r_client
-            )
+        alerts = await fetch_alerts_with_retry(
+            commons.config, commons.session, commons.r_client
+        )
         alerts_data = Alerts(data=alerts)
         alerts_json = alerts_data.model_dump_json(exclude_unset=True)
         if commons.tg:

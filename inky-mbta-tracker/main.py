@@ -174,6 +174,7 @@ async def __main__() -> None:
             tg.start_soon(
                 precache_track_predictions_runner,
                 get_redis(redis_pool),
+                tg,
                 config.track_prediction_routes,
                 config.track_prediction_stations,
                 config.track_prediction_interval_hours,

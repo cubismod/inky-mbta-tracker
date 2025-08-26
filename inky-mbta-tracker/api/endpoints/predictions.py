@@ -36,21 +36,22 @@ async def generate_track_prediction(
                     success=False,
                     prediction="Predictions are not available for this station",
                 )
-            prediction = await commons.track_predictor.predict_track(
-                station_id=station_id_resolved,
-                route_id=prediction_request.route_id,
-                trip_id=prediction_request.trip_id,
-                headsign=prediction_request.headsign,
-                direction_id=prediction_request.direction_id,
-                scheduled_time=prediction_request.scheduled_time,
-            )
-
-            if prediction:
-                return TrackPredictionResponse(success=True, prediction=prediction)
-            else:
-                return TrackPredictionResponse(
-                    success=False, prediction="No prediction could be generated"
+            if commons.tg:
+                prediction = await commons.track_predictor.predict_track(
+                    station_id=station_id_resolved,
+                    route_id=prediction_request.route_id,
+                    trip_id=prediction_request.trip_id,
+                    headsign=prediction_request.headsign,
+                    direction_id=prediction_request.direction_id,
+                    scheduled_time=prediction_request.scheduled_time,
+                    tg=commons.tg,
                 )
+
+                if prediction:
+                    return TrackPredictionResponse(success=True, prediction=prediction)
+            return TrackPredictionResponse(
+                success=False, prediction="No prediction could be generated"
+            )
 
         return await _generate_prediction()
 
@@ -83,21 +84,22 @@ async def generate_chained_track_predictions(
                     prediction="Predictions are not available for this station",
                 )
 
-            prediction = await commons.track_predictor.predict_track(
-                station_id=station_id,
-                route_id=pred_request.route_id,
-                trip_id=pred_request.trip_id,
-                headsign=pred_request.headsign,
-                direction_id=pred_request.direction_id,
-                scheduled_time=pred_request.scheduled_time,
-            )
-
-            if prediction:
-                return TrackPredictionResponse(success=True, prediction=prediction)
-            else:
-                return TrackPredictionResponse(
-                    success=False, prediction="No prediction could be generated"
+            if commons.tg:
+                prediction = await commons.track_predictor.predict_track(
+                    station_id=station_id,
+                    route_id=pred_request.route_id,
+                    trip_id=pred_request.trip_id,
+                    headsign=pred_request.headsign,
+                    direction_id=pred_request.direction_id,
+                    scheduled_time=pred_request.scheduled_time,
+                    tg=commons.tg,
                 )
+
+                if prediction:
+                    return TrackPredictionResponse(success=True, prediction=prediction)
+            return TrackPredictionResponse(
+                success=False, prediction="No prediction could be generated"
+            )
 
         except (ConnectionError, TimeoutError) as e:
             logging.error(

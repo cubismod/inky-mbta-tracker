@@ -293,9 +293,10 @@ async def get_vehicle_features(r_client: Redis, tg: TaskGroup) -> list[Feature]:
                                     station_id=station_id,
                                     route_id=vehicle_info.route,
                                     trip_id=f"{vehicle_info.route}:{vehicle_info.id}",
-                                    headsign=vehicle_info.headsign,
+                                    headsign=vehicle_info.headsign or "",
                                     direction_id=vehicle_info.direction_id,
                                     scheduled_time=vehicle_info.update_time,
+                                    tg=tg,
                                 )
                                 if prediction:
                                     platform_prediction = f"{prediction.track_number} ({round(prediction.confidence_score * 100)}% confidence)"
@@ -346,24 +347,21 @@ async def get_vehicle_features(r_client: Redis, tg: TaskGroup) -> list[Feature]:
 
 
 async def get_shapes_features(
-    config: Config, redis_client: Redis, tg: TaskGroup
+    config: Config, redis_client: Redis, tg: TaskGroup, session: ClientSession
 ) -> list[Feature]:
     """Get route shapes as GeoJSON features"""
     lines = list()
     if config.vehicles_by_route:
-        async with aiohttp.ClientSession(base_url=MBTA_V3_ENDPOINT) as session:
-            shapes = await get_shapes(
-                redis_client, config.vehicles_by_route, session, tg
-            )
-            if shapes:
-                for k, v in shapes.lines:
-                    for line in v:
-                        if k.startswith("74") or k.startswith("75"):
-                            k = silver_line_lookup(k)
-                        lines.append(
-                            Feature(
-                                geometry=LineString(coordinates=line),
-                                properties={"route": k},
-                            )
+        shapes = await get_shapes(redis_client, config.vehicles_by_route, session, tg)
+        if shapes:
+            for k, v in shapes.lines:
+                for line in v:
+                    if k.startswith("74") or k.startswith("75"):
+                        k = silver_line_lookup(k)
+                    lines.append(
+                        Feature(
+                            geometry=LineString(coordinates=line),
+                            properties={"route": k},
                         )
+                    )
     return lines

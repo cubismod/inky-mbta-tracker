@@ -5,8 +5,10 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from typing import Annotated, Self
 
+import aiohttp
 from anyio import AsyncContextManagerMixin, create_task_group
 from config import load_config
+from fastapi import Request
 from fastapi.params import Depends
 from logging_setup import setup_logging
 from redis.asyncio import Redis
@@ -22,6 +24,9 @@ logger = logging.getLogger(__name__)
 
 
 class DIParams(AsyncContextManagerMixin):
+    def __init__(self, session: aiohttp.ClientSession) -> None:
+        self.session = session
+
     @asynccontextmanager
     async def __asynccontextmanager__(self) -> AsyncGenerator[Self, None]:
         async with create_task_group() as tg:
@@ -38,8 +43,8 @@ class DIParams(AsyncContextManagerMixin):
                 self.tg = None
 
 
-async def get_di():
-    async with DIParams() as di:
+async def get_di(request: Request):
+    async with DIParams(request.app.state.session) as di:
         yield di
 
 
