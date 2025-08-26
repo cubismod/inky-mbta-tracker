@@ -12,6 +12,8 @@ from ..limits import limiter
 
 router = APIRouter()
 
+logger = logging.getLogger(__name__)
+
 
 @router.get(
     "/shapes",
@@ -37,10 +39,10 @@ async def get_shapes(request: Request, commons: GET_DI) -> Response:
         else:
             return Response()
     except (ConnectionError, TimeoutError):
-        logging.error("Error getting shapes due to connection issue", exc_info=True)
+        logger.error("Error getting shapes due to connection issue", exc_info=True)
         raise HTTPException(status_code=500, detail="Internal server error")
     except ValidationError:
-        logging.error("Error getting shapes due to validation error", exc_info=True)
+        logger.error("Error getting shapes due to validation error", exc_info=True)
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
@@ -79,12 +81,8 @@ async def get_shapes_json(request: Request, commons: GET_DI) -> Response:
         else:
             return Response(status_code=500)
     except (ConnectionError, TimeoutError):
-        logging.error(
-            "Error getting shapes JSON due to connection issue", exc_info=True
-        )
+        logger.error("Error getting shapes JSON due to connection issue", exc_info=True)
         raise HTTPException(status_code=500, detail="Internal server error")
     except ValidationError:
-        logging.error(
-            "Error getting shapes JSON due to validation error", exc_info=True
-        )
+        logger.error("Error getting shapes JSON due to validation error", exc_info=True)
         raise HTTPException(status_code=500, detail="Internal server error")
