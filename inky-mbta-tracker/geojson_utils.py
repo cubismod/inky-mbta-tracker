@@ -123,7 +123,9 @@ def calculate_bearing(start: Point, end: Point) -> float:
     return bearing(Feature(geometry=start), Feature(geometry=end))
 
 
-async def collect_alerts(config: Config, session: ClientSession) -> list[AlertResource]:
+async def collect_alerts(
+    config: Config, session: ClientSession, r_client: Redis
+) -> list[AlertResource]:
     """Collect alerts for the routes specified in the config"""
     logger.debug(f"Collecting alerts for routes: {config.vehicles_by_route}")
 
@@ -147,7 +149,7 @@ async def collect_alerts(config: Config, session: ClientSession) -> list[AlertRe
                 f"Fetching alerts for batch {batch_num}/{len(route_batches)}: {routes_str}"
             )
 
-            al = await light_get_alerts_batch(routes_str, session)
+            al = await light_get_alerts_batch(routes_str, session, r_client)
             if al:
                 logger.debug(
                     f"Batch {batch_num}: Received {len(al)} alerts from MBTA API"
@@ -354,7 +356,7 @@ async def get_shapes_features(
                 redis_client, config.vehicles_by_route, session, tg
             )
             if shapes:
-                for k, v in shapes.items():
+                for k, v in shapes.lines:
                     for line in v:
                         if k.startswith("74") or k.startswith("75"):
                             k = silver_line_lookup(k)

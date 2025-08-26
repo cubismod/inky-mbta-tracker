@@ -7,7 +7,7 @@ from geojson import FeatureCollection, dumps
 from geojson_utils import get_shapes_features
 from pydantic import ValidationError
 
-from ..core import CONFIG, REDIS_CLIENT
+from ..core import GET_DI
 from ..limits import limiter
 
 router = APIRouter()
@@ -19,17 +19,23 @@ router = APIRouter()
     description="Get route shapes as GeoJSON FeatureCollection.",
 )
 @limiter.limit("70/minute")
-async def get_shapes(request: Request) -> Response:
+async def get_shapes(request: Request, commons: GET_DI) -> Response:
     try:
         cache_key = "api:shapes"
-        cached_data = await REDIS_CLIENT.get(cache_key)
+        cached_data = await commons.r_client.get(cache_key)
         if cached_data:
             return Response(content=cached_data, media_type="application/json")
-
-        features = await get_shapes_features(CONFIG, REDIS_CLIENT)
-        result = {"type": "FeatureCollection", "features": features}
-        await REDIS_CLIENT.setex(cache_key, SHAPES_CACHE_TTL, json.dumps(result))
-        return Response(content=json.dumps(result), media_type="application/json")
+        if commons.tg:
+            features = await get_shapes_features(
+                commons.config, commons.r_client, commons.tg
+            )
+            result = {"type": "FeatureCollection", "features": features}
+            commons.tg.start_soon(
+                commons.r_client.setex, cache_key, SHAPES_CACHE_TTL, json.dumps(result)
+            )
+            return Response(content=json.dumps(result), media_type="application/json")
+        else:
+            return Response()
     except (ConnectionError, TimeoutError):
         logging.error("Error getting shapes due to connection issue", exc_info=True)
         raise HTTPException(status_code=500, detail="Internal server error")
@@ -45,10 +51,10 @@ async def get_shapes(request: Request) -> Response:
     response_class=Response,
 )
 @limiter.limit("70/minute")
-async def get_shapes_json(request: Request) -> Response:
+async def get_shapes_json(request: Request, commons: GET_DI) -> Response:
     try:
         cache_key = "api:shapes:json"
-        cached_data = await REDIS_CLIENT.get(cache_key)
+        cached_data = await commons.r_client.get(cache_key)
         if cached_data:
             return Response(
                 content=cached_data,
@@ -56,15 +62,22 @@ async def get_shapes_json(request: Request) -> Response:
                 headers={"Content-Disposition": "attachment; filename=shapes.json"},
             )
 
-        features = await get_shapes_features(CONFIG, REDIS_CLIENT)
-        feature_collection = FeatureCollection(features)
-        geojson_str = dumps(feature_collection, sort_keys=True)
-        await REDIS_CLIENT.setex(cache_key, SHAPES_CACHE_TTL, geojson_str)
-        return Response(
-            content=geojson_str,
-            media_type="application/json",
-            headers={"Content-Disposition": "attachment; filename=shapes.json"},
-        )
+        if commons.tg:
+            features = await get_shapes_features(
+                commons.config, commons.r_client, commons.tg
+            )
+            feature_collection = FeatureCollection(features)
+            geojson_str = dumps(feature_collection, sort_keys=True)
+            commons.tg.start_soon(
+                commons.r_client.setex, cache_key, SHAPES_CACHE_TTL, geojson_str
+            )
+            return Response(
+                content=geojson_str,
+                media_type="application/json",
+                headers={"Content-Disposition": "attachment; filename=shapes.json"},
+            )
+        else:
+            return Response(status_code=500)
     except (ConnectionError, TimeoutError):
         logging.error(
             "Error getting shapes JSON due to connection issue", exc_info=True

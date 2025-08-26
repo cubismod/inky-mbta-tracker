@@ -2,11 +2,12 @@ import logging
 from datetime import datetime, timedelta
 from typing import List
 
+from api.core import GET_DI
 from fastapi import APIRouter, HTTPException, Query, Request
 from mbta_client import determine_station_id
 from pydantic import ValidationError
+from shared_types.shared_types import TrackAssignment
 
-from ..core import TRACK_PREDICTOR
 from ..limits import limiter
 from ..models import (
     ChainedPredictionsRequest,
@@ -22,7 +23,7 @@ router = APIRouter()
 @router.post("/predictions")
 @limiter.limit("100/minute")
 async def generate_track_prediction(
-    request: Request, prediction_request: PredictionRequest
+    request: Request, prediction_request: PredictionRequest, commons: GET_DI
 ) -> TrackPredictionResponse:
     try:
 
@@ -35,7 +36,7 @@ async def generate_track_prediction(
                     success=False,
                     prediction="Predictions are not available for this station",
                 )
-            prediction = await TRACK_PREDICTOR.predict_track(
+            prediction = await commons.track_predictor.predict_track(
                 station_id=station_id_resolved,
                 route_id=prediction_request.route_id,
                 trip_id=prediction_request.trip_id,
@@ -67,7 +68,7 @@ async def generate_track_prediction(
 @router.post("/chained-predictions")
 @limiter.limit("50/minute")
 async def generate_chained_track_predictions(
-    request: Request, chained_request: ChainedPredictionsRequest
+    request: Request, chained_request: ChainedPredictionsRequest, commons: GET_DI
 ) -> ChainedPredictionsResponse:
     async def process_single_prediction(
         pred_request: PredictionRequest,
@@ -82,7 +83,7 @@ async def generate_chained_track_predictions(
                     prediction="Predictions are not available for this station",
                 )
 
-            prediction = await TRACK_PREDICTOR.predict_track(
+            prediction = await commons.track_predictor.predict_track(
                 station_id=station_id,
                 route_id=pred_request.route_id,
                 trip_id=pred_request.trip_id,
@@ -131,7 +132,7 @@ async def generate_chained_track_predictions(
 @router.get("/stats/{station_id}/{route_id}")
 @limiter.limit("50/minute")
 async def get_prediction_stats(
-    request: Request, station_id: str, route_id: str
+    request: Request, station_id: str, route_id: str, commons: GET_DI
 ) -> TrackPredictionStatsResponse:
     try:
         station_id, has_track_predictions = determine_station_id(station_id)
@@ -140,7 +141,7 @@ async def get_prediction_stats(
                 success=False,
                 stats="Prediction stats are not available for this station",
             )
-        stats = await TRACK_PREDICTOR.get_prediction_stats(station_id, route_id)
+        stats = await commons.track_predictor.get_prediction_stats(station_id, route_id)
         if stats:
             return TrackPredictionStatsResponse(success=True, stats=stats)
         else:
@@ -161,15 +162,16 @@ async def get_historical_assignments(
     request: Request,
     station_id: str,
     route_id: str,
+    commons: GET_DI,
     days: int = Query(30, description="Number of days to look back"),
-) -> List:
+) -> List[TrackAssignment]:
     try:
         end_date = datetime.now()
         start_date = end_date - timedelta(days=days)
         station_id, has_track_predictions = determine_station_id(station_id)
         if not has_track_predictions:
             return []
-        assignments = await TRACK_PREDICTOR.get_historical_assignments(
+        assignments = await commons.track_predictor.get_historical_assignments(
             station_id, route_id, start_date, end_date
         )
         return [assignment for assignment in assignments]

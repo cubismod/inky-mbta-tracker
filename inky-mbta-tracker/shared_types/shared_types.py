@@ -1,6 +1,6 @@
 from datetime import datetime
 from enum import Enum
-from typing import Optional
+from typing import Dict, List, Optional, Tuple
 
 from pydantic import BaseModel
 
@@ -135,3 +135,12 @@ class IndividualSummaryCacheEntry(BaseModel):
     generated_at: datetime
     format: str
     ttl: int = 3600  # 1 hour default TTL
+
+
+type ShapeTuple = Tuple[float, float]
+
+type LineRoute = List[List[ShapeTuple]]
+
+
+class RouteShapes(BaseModel):
+    lines: Dict[str, LineRoute]
