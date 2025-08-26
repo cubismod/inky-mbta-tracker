@@ -122,12 +122,35 @@ def start_task(
             )
 
 
-def get_next_backup_time() -> datetime:
+def get_next_backup_time(now: Optional[datetime] = None) -> datetime:
+    """Return the next datetime (America/New_York) to run the Redis backup.
+
+    Uses the time of day from env var IMT_REDIS_BACKUP_TIME (HH:MM), defaults to 03:00.
+    If the time today has already passed, schedule for the same time tomorrow.
+    """
+    tz = ZoneInfo("America/New_York")
+    if now is None:
+        now = datetime.now(tz)
+    else:
+        # Ensure timezone-aware in target TZ
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=tz)
+        else:
+            now = now.astimezone(tz)
+
     backup_time = os.getenv("IMT_REDIS_BACKUP_TIME", "03:00")
-    parsed_time = datetime.strptime(backup_time, "%H:%M").astimezone(
-        ZoneInfo("America/New_York")
-    )
-    return parsed_time
+    hour, minute = (0, 0)
+    try:
+        hour_str, minute_str = backup_time.split(":", 1)
+        hour, minute = int(hour_str), int(minute_str)
+    except Exception:
+        # Fallback to 03:00 on parse error
+        hour, minute = 3, 0
+
+    candidate = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if candidate <= now:
+        candidate = candidate + timedelta(days=1)
+    return candidate
 
 
 async def __main__() -> None:
@@ -190,10 +213,15 @@ async def __main__() -> None:
         # cron/timed tasks
         while True:
             now = datetime.now(ZoneInfo("America/New_York"))
-            if now > next_backup:
+            if now >= next_backup:
                 redis_backup = RedisBackup(r_client=get_redis(redis_pool))
                 filename = await redis_backup.create_backup()
                 logger.info(f"Redis backup created at {filename}")
+                # schedule next run for the next day at the configured time
+                next_backup = get_next_backup_time(now)
+            # sleep until next check; if far away, sleep the whole duration
+            sleep_seconds = max(1, int((next_backup - now).total_seconds()))
+            await asyncio.sleep(min(sleep_seconds, 60))
 
 
 @click.command()

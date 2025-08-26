@@ -169,8 +169,6 @@ async def export_schema_key_counts(redis: Redis) -> dict[str, int]:
 
             key_counts[schema.id] = total_keys
             schema_key_counts.labels(schema_id=schema.id).set(total_keys)
-            logger.debug(f"Schema {schema.id}: {total_keys} keys")
-
     except ResponseError as e:
         logger.error("Error counting keys", exc_info=e)
     finally:
