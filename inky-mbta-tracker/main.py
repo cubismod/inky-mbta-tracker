@@ -16,6 +16,7 @@ from anyio.abc import TaskGroup
 from anyio.streams.memory import MemoryObjectSendStream
 from config import StopSetup, load_config
 from dotenv import load_dotenv
+from geojson_utils import background_refresh
 from logging_setup import setup_logging
 from mbta_client import (
     precache_track_predictions_runner,
@@ -206,6 +207,8 @@ async def __main__() -> None:
         # consumer
         tg.start_soon(process_queue_async, receive_stream, tg)
 
+        tg.start_soon(background_refresh, get_redis(redis_pool), tg)
+
         # Run backup scheduler as native asyncio task for proper cancellation
         # Parse backup time from env (default 03:00, America/New_York)
 
@@ -230,6 +233,8 @@ def run_main(api_server: bool) -> None:
     if api_server:
         import api_server as server
 
-        run(server.run_main)
+        # Run Uvicorn synchronously; avoid anyio.run here to prevent
+        # event loop/signal handling conflicts with the server.
+        server.run_main()
     else:
         run(__main__, backend="asyncio", backend_options={"use_uvloop": True})

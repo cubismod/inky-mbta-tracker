@@ -9,7 +9,7 @@ from geojson_utils import get_vehicle_features
 from starlette.responses import StreamingResponse
 from utils import get_vehicles_data
 
-from ..core import GET_DI, SSE_ENABLED
+from ..core import GET_DI, SSE_ENABLED, DIParams
 from ..limits import limiter
 
 router = APIRouter()
@@ -50,22 +50,42 @@ async def get_vehicles(request: Request, commons: GET_DI) -> Response:
 
 
 @router.get(
-    "/vehicles.sse",
+    "/vehicles/stream",
     summary="Stream Vehicle Positions",
     description="Server-sent events stream of vehicle positions",
 )
 @limiter.limit("70/minute")
-async def get_vehicles_sse(request: Request, commons: GET_DI) -> StreamingResponse:
+async def get_vehicles_sse(request: Request) -> StreamingResponse:
     if not SSE_ENABLED:
         raise HTTPException(status_code=503, detail="SSE streaming disabled")
 
     async def event_generator() -> AsyncGenerator[str, None]:
-        while True:
-            if await request.is_disconnected():
-                break
-            if commons.tg:
-                data = await get_vehicles_data(commons.r_client, commons.tg)
-                yield f"data: {json.dumps(data)}\n\n"
+        # light throttle to avoid tight loop pegging CPU
+        from anyio import sleep
+
+        # send an initial comment to establish the stream quickly
+        yield ": stream-start\n\n"
+
+        # Keep the dependency context open for the duration of the stream
+        async with DIParams(request.app.state.session) as commons:
+            while True:
+                if await request.is_disconnected():
+                    break
+                if commons.tg:
+                    try:
+                        data = await get_vehicles_data(commons.r_client, commons.tg)
+                        yield f"data: {json.dumps(data)}\n\n"
+                    except Exception:
+                        # do not break the stream on transient errors
+                        logger.error("Error producing SSE vehicles data", exc_info=True)
+                        # comment as heartbeat so client keeps connection
+                        yield ": error fetching data\n\n"
+                else:
+                    # no task group available; emit heartbeat so clients keep connection
+                    yield ": tg-unavailable\n\n"
+
+                # throttle update frequency
+                await sleep(1.0)
 
     headers = {
         "Cache-Control": "no-cache",
