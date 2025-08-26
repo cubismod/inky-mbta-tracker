@@ -1,5 +1,5 @@
 import json
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -21,7 +21,7 @@ async def test_get_vehicles_data_cache_hit() -> None:
     mock_redis.get.return_value = json.dumps(cached)
 
     tg = DummyTG()
-    res = await get_vehicles_data(mock_redis, tg)  # type: ignore[arg-type]
+    res = await get_vehicles_data(cast(Any, mock_redis), cast(Any, tg))
 
     assert res == cached
     # Should not schedule a setex when using cached response
@@ -46,7 +46,7 @@ async def test_get_vehicles_data_cache_miss_schedules_setex() -> None:
         mock_json.dumps.side_effect = dumps
 
         tg = DummyTG()
-        res = await get_vehicles_data(mock_redis, tg)  # type: ignore[arg-type]
+        res = await get_vehicles_data(cast(Any, mock_redis), cast(Any, tg))
 
         assert res == {"type": "FeatureCollection", "features": []}
         mock_features.assert_called_once()

@@ -1,8 +1,9 @@
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from aiohttp import ClientSession
 from geojson import Feature, Point
 from geojson_utils import (
     calculate_bearing,
@@ -34,7 +35,7 @@ class MockSession:
         self._data = data
         self.calls: list[str] = []
 
-    def get(self, endpoint: str) -> MockResp:  # type: ignore[override]
+    def get(self, endpoint: str) -> Any:  # return Any to appease type checking
         self.calls.append(endpoint)
         return MockResp(self._status, self._data)
 
@@ -86,7 +87,9 @@ async def test_light_get_alerts_batch_success(mock_ollama: MagicMock) -> None:
     mock_ollama.return_value = ollama_ctx
 
     # Act
-    alerts = await light_get_alerts_batch("Red,Blue", session, r_client)
+    alerts = await light_get_alerts_batch(
+        "Red,Blue", cast(ClientSession, session), r_client
+    )
 
     # Assert
     assert alerts is not None
@@ -99,7 +102,7 @@ async def test_light_get_alerts_batch_success(mock_ollama: MagicMock) -> None:
 async def test_light_get_alerts_batch_rate_limited_returns_none() -> None:
     session = MockSession(429, build_alert_payload(True))
     r_client = AsyncMock()
-    alerts = await light_get_alerts_batch("Red", session, r_client)
+    alerts = await light_get_alerts_batch("Red", cast(ClientSession, session), r_client)
     assert alerts is None
 
 
@@ -107,7 +110,7 @@ async def test_light_get_alerts_batch_rate_limited_returns_none() -> None:
 async def test_light_get_alerts_batch_non_200_returns_none() -> None:
     session = MockSession(500, build_alert_payload(True))
     r_client = AsyncMock()
-    alerts = await light_get_alerts_batch("Red", session, r_client)
+    alerts = await light_get_alerts_batch("Red", cast(ClientSession, session), r_client)
     assert alerts is None
 
 
@@ -115,7 +118,7 @@ async def test_light_get_alerts_batch_non_200_returns_none() -> None:
 async def test_light_get_alerts_batch_invalid_shape_returns_none() -> None:
     session = MockSession(200, build_alert_payload(False))
     r_client = AsyncMock()
-    alerts = await light_get_alerts_batch("Red", session, r_client)
+    alerts = await light_get_alerts_batch("Red", cast(ClientSession, session), r_client)
     assert alerts is None
 
 
@@ -123,7 +126,7 @@ async def test_light_get_alerts_batch_invalid_shape_returns_none() -> None:
 async def test_light_get_alerts_batch_missing_data_returns_none() -> None:
     session = MockSession(200, {"foo": 1})
     r_client = AsyncMock()
-    alerts = await light_get_alerts_batch("Red", session, r_client)
+    alerts = await light_get_alerts_batch("Red", cast(ClientSession, session), r_client)
     assert alerts is None
 
 
@@ -131,24 +134,24 @@ async def test_light_get_alerts_batch_missing_data_returns_none() -> None:
 async def test_light_get_alerts_batch_data_not_list_returns_none() -> None:
     session = MockSession(200, {"data": {"not": "a list"}})
     r_client = AsyncMock()
-    alerts = await light_get_alerts_batch("Red", session, r_client)
+    alerts = await light_get_alerts_batch("Red", cast(ClientSession, session), r_client)
     assert alerts is None
 
 
 def test_lookup_vehicle_color_mapping() -> None:
-    base = dict(
-        action="add",
-        current_status="",
-        direction_id=0,
-        latitude=0.0,
-        longitude=0.0,
-        update_time=datetime.now(UTC),
-        id="v",
-        route="",
-    )
-
     def mk(route: str) -> VehicleRedisSchema:
-        return VehicleRedisSchema(**base | {"route": route})
+        return VehicleRedisSchema(
+            action="add",
+            id="v",
+            current_status="",
+            direction_id=0,
+            latitude=0.0,
+            longitude=0.0,
+            speed=None,
+            stop=None,
+            route=route,
+            update_time=datetime.now(UTC),
+        )
 
     assert lookup_vehicle_color(mk("Amtrak NE Corridor")) == "#18567D"
     assert lookup_vehicle_color(mk("Green-B")) == "#008150"

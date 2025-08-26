@@ -1,4 +1,5 @@
 from datetime import UTC
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import anyio
@@ -21,6 +22,7 @@ from mbta_responses import (
     Vehicle,
     VehicleAttributes,
 )
+from redis.asyncio.client import Redis as RedisClient
 from shared_types.shared_types import TaskType
 
 
@@ -144,7 +146,7 @@ class TestLightStop:
 
 class TestMBTAApi:
     def test_init_default_values(self) -> None:
-        api = MBTAApi(MagicMock())
+        api = MBTAApi(cast(RedisClient, MagicMock()))
         assert api.stop_id is None
         assert api.route is None
         assert api.direction_filter is None
@@ -155,7 +157,7 @@ class TestMBTAApi:
 
     def test_init_with_parameters(self) -> None:
         api = MBTAApi(
-            MagicMock(),
+            cast(RedisClient, MagicMock()),
             stop_id="place-davis",
             route="Red",
             direction_filter=1,

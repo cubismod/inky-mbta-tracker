@@ -1,9 +1,10 @@
 from datetime import UTC, datetime
-from typing import Generator
+from typing import Generator, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import anyio
 import pytest
+from redis.asyncio import Redis as AsyncRedis
 from shared_types.shared_types import TrackAssignment, TrackAssignmentType
 from track_predictor.track_predictor import TrackPredictor
 
@@ -14,7 +15,7 @@ class TestTrackPredictor:
     @pytest.fixture
     def track_predictor(self) -> Generator[TrackPredictor, None, None]:
         """Create a TrackPredictor instance with mocked Redis."""
-        predictor = TrackPredictor(MagicMock())
+        predictor = TrackPredictor(cast(AsyncRedis, MagicMock()))
         predictor.redis = MagicMock()
         # Configure async methods as AsyncMocks
         predictor.redis.zrangebyscore = AsyncMock()
@@ -44,7 +45,7 @@ class TestEnhancedHeadsignSimilarity:
 
     @pytest.fixture
     def track_predictor(self) -> Generator[TrackPredictor, None, None]:
-        yield TrackPredictor(MagicMock())
+        yield TrackPredictor(cast(AsyncRedis, MagicMock()))
 
     def test_exact_match(self, track_predictor: TrackPredictor) -> None:
         """Test exact headsign match returns 1.0."""
@@ -131,7 +132,7 @@ class TestServiceType:
 
     @pytest.fixture
     def track_predictor(self) -> Generator[TrackPredictor, None, None]:
-        yield TrackPredictor(MagicMock())
+        yield TrackPredictor(cast(AsyncRedis, MagicMock()))
 
     def test_express_detection(self, track_predictor: TrackPredictor) -> None:
         """Test express service detection."""
@@ -213,7 +214,7 @@ class TestCrossRoutePatterns:
 
     @pytest.fixture
     def track_predictor(self) -> Generator[TrackPredictor, None, None]:
-        predictor = TrackPredictor(MagicMock())
+        predictor = TrackPredictor(cast(AsyncRedis, MagicMock()))
         predictor.redis = AsyncMock()
         yield predictor
 
@@ -296,7 +297,7 @@ class TestExpandedTimeWindows:
 
     @pytest.fixture
     def track_predictor(self) -> Generator[TrackPredictor, None, None]:
-        predictor = TrackPredictor(MagicMock())
+        predictor = TrackPredictor(cast(AsyncRedis, MagicMock()))
         predictor.redis = AsyncMock()
         yield predictor
 
