@@ -604,8 +604,8 @@ class OllamaClientIMT(AsyncContextManagerMixin):
             async with RedisLock(
                 self.r_client,
                 "ollama_lock",
-                blocking_timeout=10 * MINUTE,
-                expire_timeout=8 * MINUTE,
+                blocking_timeout=20 * MINUTE,
+                expire_timeout=MINUTE,
             ):
                 # this call can wait around for a while and the event may have already been cached in the waiting time
                 # so we try to return a cached value if available once we have the lock
