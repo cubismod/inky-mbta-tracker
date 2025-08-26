@@ -1,12 +1,13 @@
 import logging
 import os
 import random
-from queue import Queue
+from asyncio.queues import Queue
 
-from ai_summarizer import AISummarizer
-from config import load_config
+from config import Config, load_config
+from pydantic.main import BaseModel
+from redis.asyncio import Redis
 from track_predictor.track_predictor import TrackPredictor
-from utils import get_redis
+from vehicles_background_worker import State
 
 # ----------------------------------------------------------------------------
 # CONFIGURATION AND GLOBALS
@@ -19,25 +20,30 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Global constants and instances
-from vehicles_background_worker import State  # re-export type for Queue
 
-VEHICLES_QUEUE: "Queue[State]" = Queue()
-REDIS_CLIENT = get_redis()
-CONFIG = load_config()
-TRACK_PREDICTOR = TrackPredictor()
-AI_SUMMARIZER = AISummarizer(CONFIG.ollama) if CONFIG.ollama.enabled else None
+class ParamReturn(BaseModel):
+    vehicles_queue: Queue[State]
+    r_client: Redis
+    config: Config
+    track_predictor: TrackPredictor
+
+
+async def common_parameters():
+    r_client = Redis().from_url(
+        f"redis://:{os.environ.get('IMT_REDIS_PASSWORD', '')}@{os.environ.get('IMT_REDIS_ENDPOINT', '')}:{int(os.environ.get('IMT_REDIS_PORT', '6379'))}"
+    )
+    return ParamReturn(
+        config=load_config(),
+        r_client=r_client,
+        track_predictor=TrackPredictor(r_client),
+        vehicles_queue=Queue[State](),
+    )
 
 # API timeout/config flags
 API_REQUEST_TIMEOUT = int(os.environ.get("IMT_API_REQUEST_TIMEOUT", "30"))  # seconds
 TRACK_PREDICTION_TIMEOUT = int(os.environ.get("IMT_TRACK_PREDICTION_TIMEOUT", "15"))
 RATE_LIMITING_ENABLED = os.getenv("IMT_RATE_LIMITING_ENABLED", "true").lower() == "true"
 SSE_ENABLED = os.getenv("IMT_SSE_ENABLED", "true").lower() == "true"
-
-# Helper used by lifespan for random waits
-MINUTE = 60
-HOUR = 60 * MINUTE
-
 
 # Random helper (used in lifespan tasks)
 def rand_sleep(min_seconds: int, max_seconds: int) -> int:
