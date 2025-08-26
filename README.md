@@ -23,6 +23,7 @@ AUTH_TOKEN=<MBTA_API_TOKEN> # https://www.mbta.com/developers/v3-api
 
 # Application Configuration
 IMT_CONFIG=./config.json # optional to specify a different config file
+IMT_LOG_FILE=./logs/inky.log # optional to also log to a file
 
 # Redis Configuration (works for local dev w/ docker-compose)
 IMT_REDIS_ENDPOINT=127.0.0.1

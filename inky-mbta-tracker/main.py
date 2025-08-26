@@ -1,7 +1,6 @@
 import asyncio
 import logging
 import os
-import re
 from datetime import UTC, datetime, timedelta
 from random import randint
 from typing import Optional
@@ -17,6 +16,7 @@ from anyio.abc import TaskGroup
 from anyio.streams.memory import MemoryObjectSendStream
 from config import StopSetup, load_config
 from dotenv import load_dotenv
+from logging_setup import setup_logging
 from mbta_client import (
     precache_track_predictions_runner,
     watch_static_schedule,
@@ -26,6 +26,7 @@ from mbta_client import (
 from prometheus_client import start_http_server
 from redis.asyncio import Redis
 from redis.asyncio.connection import ConnectionPool
+from redis_backup import RedisBackup
 from schedule_tracker import (
     ScheduleEvent,
     VehicleRedisSchema,
@@ -35,58 +36,8 @@ from shared_types.schema_versioner import schema_versioner
 from shared_types.shared_types import TaskType
 from utils import get_redis
 
-from .redis_backup import RedisBackup
-
 load_dotenv()
-
-
-class APIKeyFilter(logging.Filter):
-    """Filter to remove API keys from log messages."""
-
-    def __init__(self, name: str = "", mask: str = "[REDACTED]") -> None:
-        super().__init__(name)
-        self.mask = mask
-        self.patterns = [
-            re.compile(r"api_key=([^&\s]+)", re.IGNORECASE),
-            re.compile(r"Bearer\s+([^\s]+)", re.IGNORECASE),
-            re.compile(r'AUTH_TOKEN[\'"]?\s*[:=]\s*[\'"]?([^\'"\s&]+)', re.IGNORECASE),
-        ]
-
-    def filter(self, record: logging.LogRecord) -> bool:
-        if hasattr(record, "msg") and record.msg:
-            record.msg = self._sanitize_message(str(record.msg))
-
-        if hasattr(record, "args") and record.args:
-            sanitized_args: list[object] = []
-            for arg in record.args:
-                if isinstance(arg, str):
-                    sanitized_args.append(self._sanitize_message(arg))
-                else:
-                    sanitized_args.append(arg)
-            record.args = tuple(sanitized_args)
-
-        return True
-
-    def _sanitize_message(self, message: str) -> str:
-        for pattern in self.patterns:
-            message = pattern.sub(
-                lambda m: m.group(0).replace(m.group(1), self.mask), message
-            )
-        return message
-
-
-logging.basicConfig(
-    level=os.getenv("LOG_LEVEL", "INFO"),
-    format="%(levelname)-8s %(message)s",
-)
-
-# Add API key filter to all loggers
-api_filter = APIKeyFilter()
-logging.getLogger().addFilter(api_filter)
-
-# Also add to all existing handlers
-for handler in logging.getLogger().handlers:
-    handler.addFilter(api_filter)
+setup_logging()
 
 logger = logging.getLogger(__name__)
 
