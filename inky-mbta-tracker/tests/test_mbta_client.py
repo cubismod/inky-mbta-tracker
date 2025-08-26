@@ -1,7 +1,7 @@
 from datetime import UTC
-from queue import Queue
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import anyio
 import pytest
 from mbta_client import (
     LightStop,
@@ -21,8 +21,7 @@ from mbta_responses import (
     Vehicle,
     VehicleAttributes,
 )
-from shared_types.shared_types import ScheduleEvent, TaskType, VehicleRedisSchema
-from utils import thread_runner
+from shared_types.shared_types import TaskType
 
 
 class TestSilverLineLookup:
@@ -145,7 +144,7 @@ class TestLightStop:
 
 class TestMBTAApi:
     def test_init_default_values(self) -> None:
-        api = MBTAApi()
+        api = MBTAApi(MagicMock())
         assert api.stop_id is None
         assert api.route is None
         assert api.direction_filter is None
@@ -156,6 +155,7 @@ class TestMBTAApi:
 
     def test_init_with_parameters(self) -> None:
         api = MBTAApi(
+            MagicMock(),
             stop_id="place-davis",
             route="Red",
             direction_filter=1,
@@ -227,7 +227,6 @@ class TestMBTAApi:
                 current_status="IN_TRANSIT_TO",
                 latitude=42.3601,
                 longitude=-71.0589,
-                revenue="REVENUE",
                 carriages=[
                     CarriageStatus(
                         label="Car1", occupancy_status="MANY_SEATS_AVAILABLE"
@@ -264,56 +263,11 @@ class TestMBTAApi:
         assert status == ""
 
 
-class TestThreadRunner:
-    @patch("utils.Runner")
-    def test_thread_runner_schedules(self, mock_runner: MagicMock) -> None:
-        mock_instance = MagicMock()
-        mock_runner.return_value.__enter__.return_value = mock_instance
-
-        queue = Queue[ScheduleEvent | VehicleRedisSchema]()
-        thread_runner(
-            target=TaskType.SCHEDULES,
-            queue=queue,
-            stop_id="place-davis",
-            route="Red",
-            direction_filter=1,
-            transit_time_min=5,
-        )
-
-        mock_instance.run.assert_called_once()
-
-    @patch("utils.Runner")
-    def test_thread_runner_predictions(self, mock_runner: MagicMock) -> None:
-        mock_instance = MagicMock()
-        mock_runner.return_value.__enter__.return_value = mock_instance
-
-        queue = Queue[ScheduleEvent | VehicleRedisSchema]()
-        thread_runner(
-            target=TaskType.SCHEDULE_PREDICTIONS,
-            queue=queue,
-            stop_id="place-davis",
-            route="Red",
-            direction_filter=1,
-            transit_time_min=5,
-        )
-
-        mock_instance.run.assert_called_once()
-
-    @patch("utils.Runner")
-    def test_thread_runner_vehicles(self, mock_runner: MagicMock) -> None:
-        mock_instance = MagicMock()
-        mock_runner.return_value.__enter__.return_value = mock_instance
-
-        queue = Queue[ScheduleEvent | VehicleRedisSchema]()
-        thread_runner(target=TaskType.VEHICLES, queue=queue, route="Red")
-
-        mock_instance.run.assert_called_once()
-
-
-@pytest.mark.asyncio
+@pytest.mark.anyio("asyncio")
 class TestLightGetStop:
     @patch("mbta_client.check_cache")
     @patch("mbta_client.write_cache")
+    @pytest.mark.anyio("asyncio")
     async def test_light_get_stop_cached(
         self, mock_write_cache: MagicMock, mock_check_cache: MagicMock
     ) -> None:
@@ -323,7 +277,9 @@ class TestLightGetStop:
         cached_data = '{"stop_id": "Davis", "long": -71.1218, "lat": 42.3967}'
         mock_check_cache.return_value = cached_data
 
-        result = await light_get_stop(mock_redis, "place-davis", mock_session)
+        async with anyio.create_task_group() as tg:
+            result = await light_get_stop(mock_redis, "place-davis", mock_session, tg)
+            tg.cancel_scope.cancel()
 
         assert result is not None
         assert result.stop_id == "Davis"
@@ -335,6 +291,7 @@ class TestLightGetStop:
 
     @patch("mbta_client.check_cache")
     @patch("mbta_client.MBTAApi")
+    @pytest.mark.anyio("asyncio")
     async def test_light_get_stop_not_cached(
         self, mock_mbta_api: MagicMock, mock_check_cache: MagicMock
     ) -> None:
@@ -347,24 +304,27 @@ class TestLightGetStop:
         mock_mbta_api.return_value.__aenter__.return_value = mock_watcher
         mock_watcher.get_stop.return_value = None
 
-        result = await light_get_stop(mock_redis, "place-davis", mock_session)
+        async with anyio.create_task_group() as tg:
+            result = await light_get_stop(mock_redis, "place-davis", mock_session, tg)
+            tg.cancel_scope.cancel()
 
         assert result is None
         mock_check_cache.assert_called_once()
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio("asyncio")
 class TestLightGetAlerts:
     @patch("mbta_client.MBTAApi")
     async def test_light_get_alerts_success(self, mock_mbta_api: MagicMock) -> None:
         mock_session = AsyncMock()
+        mock_redis = AsyncMock()
 
         mock_watcher = AsyncMock()
         mock_mbta_api.return_value.__aenter__.return_value = mock_watcher
         mock_alerts = [MagicMock()]
         mock_watcher.get_alerts.return_value = mock_alerts
 
-        result = await light_get_alerts("Red", mock_session)
+        result = await light_get_alerts("Red", mock_session, mock_redis)
 
         assert result == mock_alerts
         mock_watcher.get_alerts.assert_called_once_with(mock_session, route_id="Red")
@@ -372,12 +332,13 @@ class TestLightGetAlerts:
     @patch("mbta_client.MBTAApi")
     async def test_light_get_alerts_none(self, mock_mbta_api: MagicMock) -> None:
         mock_session = AsyncMock()
+        mock_redis = AsyncMock()
 
         mock_watcher = AsyncMock()
         mock_mbta_api.return_value.__aenter__.return_value = mock_watcher
         mock_watcher.get_alerts.return_value = None
 
-        result = await light_get_alerts("Red", mock_session)
+        result = await light_get_alerts("Red", mock_session, mock_redis)
 
         assert result is None
 
