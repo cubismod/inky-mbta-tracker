@@ -16,7 +16,7 @@ from anyio import (
 )
 from anyio.abc import TaskGroup
 from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
-from consts import HOUR, MINUTE
+from consts import DAY, MINUTE
 from llm.models import AsyncModel
 from mbta_responses import AlertResource
 from redis.asyncio import Redis
@@ -384,8 +384,9 @@ class OllamaClientIMT(AsyncContextManagerMixin):
         Returns:
             Hex digest prefix that changes when key fields change.
         """
-        base = f"{alert.id}:{getattr(alert.attributes, 'header', '')}:{getattr(alert.attributes, 'severity', '')}:{getattr(alert.attributes, 'effect', '')}"
-
+        base = (
+            f"{alert.id}:{alert.attributes.short_header}:{alert.attributes.updated_at}"
+        )
         return f"ai_summary:{hashlib.sha256(base.encode()).hexdigest()[:16]}"
 
     def _clean_model_response(
@@ -622,7 +623,7 @@ class OllamaClientIMT(AsyncContextManagerMixin):
                     )
                     resp_text = await response.text()
                     cleaned_text = self._clean_model_response(resp_text)
-                    await write_cache(self.r_client, key, cleaned_text, 5 * HOUR)
+                    await write_cache(self.r_client, key, cleaned_text, DAY)
                     if send_stream:
                         await send_stream.send(cleaned_text)
                     end = datetime.now()
