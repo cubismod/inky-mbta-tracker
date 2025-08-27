@@ -487,7 +487,7 @@ async def execute(
 
 
 @retry(
-    wait=wait_random_exponential(multiplier=1, min=1),
+    wait=wait_random_exponential(multiplier=1, min=1, max=60),
     before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
 )
 def process_queue(queue: Queue[ScheduleEvent]) -> None:
