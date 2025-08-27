@@ -622,7 +622,7 @@ class OllamaClientIMT(AsyncContextManagerMixin):
                     )
                     resp_text = await response.text()
                     cleaned_text = self._clean_model_response(resp_text)
-                    await write_cache(self.r_client, key, cleaned_text, 1 * HOUR)
+                    await write_cache(self.r_client, key, cleaned_text, 5 * HOUR)
                     if send_stream:
                         await send_stream.send(cleaned_text)
                     end = datetime.now()
