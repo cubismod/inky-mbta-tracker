@@ -387,7 +387,7 @@ class OllamaClientIMT(AsyncContextManagerMixin):
         base = (
             f"{alert.id}:{alert.attributes.short_header}:{alert.attributes.updated_at}"
         )
-        return f"ai_summary:{hashlib.sha256(base.encode()).hexdigest()[:16]}"
+        return f"ai_summary:{hashlib.sha256(base.encode()).hexdigest()[:64]}"
 
     def _clean_model_response(
         self,
