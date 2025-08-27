@@ -5,7 +5,6 @@ import re
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import AsyncGenerator, Optional, Self
-from zoneinfo import ZoneInfo
 
 import llm
 from anyio import (
@@ -617,7 +616,7 @@ class OllamaClientIMT(AsyncContextManagerMixin):
                 ) as prompt_file:
                     start = datetime.now()
                     agent_prompt = await prompt_file.read()
-                    prompt_str = f"Summarize this alert in {sentence_limit} sentences.\nThe current time is {datetime.now().astimezone(ZoneInfo('America/New_York')).strftime('%Y-%m-%d %H:%M:%S')}\n{self._format_alert(alert)}"
+                    prompt_str = f"Summarize this alert in {sentence_limit} sentences.\n{self._format_alert(alert)}"
                     response = await self.model.prompt(
                         fragments=[agent_prompt], prompt=prompt_str
                     )
