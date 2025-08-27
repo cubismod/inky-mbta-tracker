@@ -630,4 +630,4 @@ class OllamaClientIMT(AsyncContextManagerMixin):
                     logger.info(
                         f"Ollama generated a response in {(end - start).seconds}s"
                     )
-                    logger.info(f"Response:\n{cleaned_text}")
+                    logger.info(f"Response: {cleaned_text}")
