@@ -74,17 +74,10 @@ def build_alert_payload(
 
 
 @pytest.mark.anyio("asyncio")
-@patch("geojson_utils.OllamaClientIMT")
-async def test_light_get_alerts_batch_success(mock_ollama: MagicMock) -> None:
+async def test_light_get_alerts_batch_success() -> None:
     # Arrange a session that returns valid alert payload
     session = MockSession(200, build_alert_payload(True))
     r_client = AsyncMock()
-
-    # Mock Ollama client to attach summary
-    ollama_ctx = AsyncMock()
-    ollama_ctx.__aenter__.return_value = ollama_ctx
-    ollama_ctx.fetch_cached_summary = AsyncMock(return_value="summary")
-    mock_ollama.return_value = ollama_ctx
 
     # Act
     alerts = await light_get_alerts_batch(
@@ -94,7 +87,6 @@ async def test_light_get_alerts_batch_success(mock_ollama: MagicMock) -> None:
     # Assert
     assert alerts is not None
     assert len(alerts) == 1
-    assert alerts[0].ai_summary == "summary"
     assert "alerts?filter[route]=Red,Blue" in session.calls[0]
 
 
