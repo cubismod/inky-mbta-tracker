@@ -18,7 +18,6 @@ from mbta_client import (
     silver_line_lookup,
 )
 from mbta_responses import AlertResource
-from ollama_imt import OllamaClientIMT
 from prometheus import redis_commands
 from pydantic import ValidationError
 from redis.asyncio import Redis
@@ -73,15 +72,6 @@ async def light_get_alerts_batch(
             alerts_response = Alerts.model_validate(data)
             alerts_count = len(alerts_response.data) if alerts_response.data else 0
             logger.debug(f"Parsed {alerts_count} alerts from response")
-
-            for alert in alerts_response.data:
-                # append an AI summary to the alert if available, otherwise queue one
-                # to be appended with the next alerts refresh
-                async with OllamaClientIMT(r_client=r_client) as ollama:
-                    resp = await ollama.fetch_cached_summary(alert)
-                    if resp:
-                        alert.ai_summary = resp
-
             return alerts_response.data if alerts_response.data else []
     except ValidationError as err:
         logger.error("Unable to validate alerts response", exc_info=err)
