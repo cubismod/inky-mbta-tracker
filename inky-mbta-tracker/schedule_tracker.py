@@ -7,19 +7,24 @@ import time
 from asyncio import QueueEmpty, Runner
 from datetime import UTC, datetime, timedelta
 from queue import Queue
-from typing import Optional, Union
+from typing import Optional
 from zoneinfo import ZoneInfo
 
+import anyio
 import humanize
+from anyio.abc import TaskGroup
+from anyio.streams.memory import MemoryObjectReceiveStream
 from geojson import Feature, Point
 from paho.mqtt import MQTTException, publish
 from prometheus import (
-    coalesced_events_dropped,
-    queue_backpressure_ratio,
-    queue_processed_item,
-    queue_size,
+    current_buffer_used,
+    max_buffer_size,
+    open_receive_streams,
+    open_send_streams,
     redis_commands,
     schedule_events,
+    tasks_waiting_receive,
+    tasks_waiting_send,
     vehicle_events,
     vehicle_speeds,
 )
@@ -444,15 +449,10 @@ async def execute(
     tracker: Tracker, queue: Queue[ScheduleEvent] | Queue[VehicleRedisSchema]
 ) -> None:
     pipeline = tracker.redis.pipeline()
-    queue_size.set(queue.qsize())
     while queue.qsize() != 0:
         try:
             item = queue.get()
             await tracker.process_queue_item(item, pipeline)
-            if isinstance(item, ScheduleEvent):
-                queue_processed_item.labels("schedule").inc()
-            if isinstance(item, VehicleRedisSchema):
-                queue_processed_item.labels("vehicle").inc()
         except QueueEmpty:
             break
     try:
@@ -481,14 +481,13 @@ async def execute(
 
             await tracker.send_mqtt()
             try:
-                key_counts = await export_schema_key_counts(tracker.redis)
-                logger.debug(f"Schema key counts: {key_counts}")
+                await export_schema_key_counts(tracker.redis)
             except ResponseError as e:
                 logger.error("Failed to export schema key counts", exc_info=e)
 
 
 @retry(
-    wait=wait_random_exponential(multiplier=1, min=1),
+    wait=wait_random_exponential(multiplier=1, min=1, max=60),
     before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
 )
 def process_queue(queue: Queue[ScheduleEvent]) -> None:
@@ -510,193 +509,99 @@ def process_queue(queue: Queue[ScheduleEvent]) -> None:
 
 
 async def process_queue_async(
-    queue: "asyncio.Queue[Union[ScheduleEvent, VehicleRedisSchema]]",
+    receive_stream: MemoryObjectReceiveStream[ScheduleEvent | VehicleRedisSchema],
+    tg: TaskGroup,
 ) -> None:
-    """Async consumer that batches events into Redis pipelines.
+    """Async consumer that micro-batches stream items into Redis pipelines.
 
-    Processes up to a batch size or times out after a short interval
-    to keep latency low while maximizing pipeline efficiency.
+    Improves throughput and correctness by:
+    - Building a single pipeline per batch (transaction=False)
+    - Processing items sequentially to avoid pipeline race conditions
+    - Flushing on size or latency thresholds
+    - Throttling MQTT/cleanup to a minimum interval
     """
     tracker = Tracker()
-    BASE_BATCH = int(os.getenv("IMT_PIPELINE_BATCH", "200"))
-    BASE_TIMEOUT_SEC = float(os.getenv("IMT_PIPELINE_TIMEOUT_SEC", "0.2"))
-    # Backpressure logging configuration
-    HIGH_RATIO = float(os.getenv("IMT_QUEUE_BACKPRESSURE_RATIO", "0.8"))
-    SUSTAIN_SEC = float(os.getenv("IMT_QUEUE_BACKPRESSURE_SUSTAIN_SEC", "5"))
-    RELOG_SEC = float(os.getenv("IMT_QUEUE_BACKPRESSURE_RELOG_SEC", "60"))
-    high_since: float | None = None
-    last_log: float = 0.0
 
-    async def flush(pipeline: Pipeline) -> None:
+    batch_max_items = int(os.getenv("IMT_QUEUE_BATCH_SIZE", "256"))
+    batch_latency_ms = int(os.getenv("IMT_QUEUE_BATCH_LATENCY_MS", "50"))
+    mqtt_min_interval = int(os.getenv("IMT_MQTT_MIN_INTERVAL_SEC", "5"))
+    last_mqtt_ts = 0.0
+
+    async def flush_batch(items: list[ScheduleEvent | VehicleRedisSchema]) -> None:
+        if not items:
+            return
+        pipeline: Pipeline = tracker.redis.pipeline(transaction=False)
         try:
+            for it in items:
+                await tracker.process_queue_item(it, pipeline)
+
+            # Housekeeping: prune expired entries in the same round trip
+            pipeline.zremrangebyscore("time", "-inf", str(datetime.now().timestamp()))
+            redis_commands.labels("zremrangebyscore").inc()
+
             await pipeline.execute()
             redis_commands.labels("execute").inc()
-            await tracker.redis.zremrangebyscore(
-                "time", "-inf", str(datetime.now().timestamp())
-            )
-            redis_commands.labels("zremrangebyscore").inc()
         except ResponseError as err:
-            logger.error("Unable to communicate with Redis", exc_info=err)
+            logger.error(
+                "Unable to communicate with Redis during batch flush", exc_info=err
+            )
+        except Exception:
+            logger.error("Unexpected error during batch flush", exc_info=True)
 
-    try:
-        while True:
-            # Adaptive batch and timeout based on queue depth
-            qdepth = queue.qsize()
-            qmax = getattr(queue, "maxsize", 0) or 5000
-            depth_ratio = min(1.0, max(0.0, qdepth / qmax))
-            queue_backpressure_ratio.set(depth_ratio)
-            batch_limit = int(BASE_BATCH * (1 + 4 * depth_ratio))  # up to 5x
-            flush_timeout = max(0.02, BASE_TIMEOUT_SEC * (1 - 0.8 * depth_ratio))
+    # Main consumer loop: receive, then drain to form a batch
+    while True:
+        try:
+            # Block for the first item to start a batch
+            first = await receive_stream.receive()
+            batch: list[ScheduleEvent | VehicleRedisSchema] = [first]
 
-            pipeline = tracker.redis.pipeline(transaction=False)
-            processed = 0
-            queue_size.set(qdepth)
-
-            # Backpressure detection and rate-limited logging
-            now = time.monotonic()
-            qmax_int = int(qmax)
-            if qdepth >= int(qmax_int * HIGH_RATIO):
-                if high_since is None:
-                    high_since = now
-                if (now - high_since) >= SUSTAIN_SEC and (now - last_log) >= RELOG_SEC:
-                    pct = (qdepth / qmax_int) * 100 if qmax_int else 0
-                    logger.warning(
-                        f"Queue backpressure: depth={qdepth}/{qmax_int} ({pct:.1f}%). "
-                        f"Consumers may be saturated; consider increasing IMT_PROCESS_QUEUE_THREADS or tuning batching."
-                    )
-                    last_log = now
-            else:
-                high_since = None
-
-            # Ensure at least one item or timeout
-            # Coalescing buffers: by event id, and by trip key for schedules
-            sched_buf: dict[str, ScheduleEvent] = {}
-            sched_trip_buf: dict[tuple[str, str], ScheduleEvent] = {}
-            veh_buf: dict[str, VehicleRedisSchema] = {}
-
-            try:
-                item = await asyncio.wait_for(queue.get(), timeout=flush_timeout)
-                if isinstance(item, ScheduleEvent):
-                    queue_processed_item.labels("schedule").inc()
-                    # Only coalesce by trip when we have sufficient context
-                    if item.trip_id and item.stop:
-                        key = (item.trip_id, item.stop)
-                        if key in sched_trip_buf:
-                            coalesced_events_dropped.labels(
-                                item_type="schedule", coalesce_by="trip"
-                            ).inc()
-                        sched_trip_buf[key] = item
-                    else:
-                        if item.id in sched_buf:
-                            coalesced_events_dropped.labels(
-                                item_type="schedule", coalesce_by="id"
-                            ).inc()
-                        sched_buf[item.id] = item
-                else:
-                    queue_processed_item.labels("vehicle").inc()
-                    if item.id in veh_buf:
-                        coalesced_events_dropped.labels(
-                            item_type="vehicle", coalesce_by="id"
-                        ).inc()
-                    veh_buf[item.id] = item
-                processed += 1
-                queue.task_done()
-            except asyncio.TimeoutError:
-                # No items ready; small pause to yield
-                await asyncio.sleep(0.01)
-            except QueueEmpty:
-                pass
-
-            # Drain without blocking up to the adaptive limit
-            while processed < batch_limit:
-                try:
-                    item2 = queue.get_nowait()
-                except QueueEmpty:
+            # Compute deadline for latency-bounded batching
+            deadline = anyio.current_time() + (batch_latency_ms / 1000.0)
+            while len(batch) < batch_max_items:
+                remaining = deadline - anyio.current_time()
+                if remaining <= 0:
                     break
-                if isinstance(item2, ScheduleEvent):
-                    queue_processed_item.labels("schedule").inc()
-                    if item2.trip_id and item2.stop:
-                        key2 = (item2.trip_id, item2.stop)
-                        if key2 in sched_trip_buf:
-                            coalesced_events_dropped.labels(
-                                item_type="schedule", coalesce_by="trip"
-                            ).inc()
-                        sched_trip_buf[key2] = item2
-                    else:
-                        if item2.id in sched_buf:
-                            coalesced_events_dropped.labels(
-                                item_type="schedule", coalesce_by="id"
-                            ).inc()
-                        sched_buf[item2.id] = item2
-                else:
-                    queue_processed_item.labels("vehicle").inc()
-                    if item2.id in veh_buf:
-                        coalesced_events_dropped.labels(
-                            item_type="vehicle", coalesce_by="id"
-                        ).inc()
-                    veh_buf[item2.id] = item2
-                processed += 1
-                queue.task_done()
+                # Try to pull more items until either batch is full or latency budget expires
+                with anyio.move_on_after(remaining):
+                    nxt = await receive_stream.receive()
+                    batch.append(nxt)
+                    continue
+                break
 
-                # Cooperative yield every 100 items to avoid starving producers
-                if (processed % 100) == 0:
-                    await asyncio.sleep(0)
+            await flush_batch(batch)
 
-            if processed == 0:
-                # Nothing batched; continue loop
-                continue
-
-            # Apply coalesced items to the pipeline then flush
-            # First, schedule events that didn't have trip info (or removals)
-            for s_ev in sched_buf.values():
-                await tracker.process_queue_item(s_ev, pipeline)
-            # Then, the last-seen event per (trip_id, stop) key
-            for st_ev in sched_trip_buf.values():
-                await tracker.process_queue_item(st_ev, pipeline)
-            for v_ev in veh_buf.values():
-                await tracker.process_queue_item(v_ev, pipeline)
-
-            # Flush pipeline and perform maintenance
-            await flush(pipeline)
-
-            # Occasionally: distributed cleanup + MQTT publish
-            if random.randint(0, 10) < 3:
-                async with RedisLock(
-                    tracker.redis, "send_mqtt", blocking_timeout=15, expire_timeout=20
-                ):
-                    cleanup_pipeline = tracker.redis.pipeline(transaction=False)
-                    await tracker.cleanup(cleanup_pipeline)
-                    try:
+            # Throttle MQTT/cleanup by time rather than per-item randomness
+            now = time.time()
+            if now - last_mqtt_ts >= mqtt_min_interval:
+                try:
+                    async with RedisLock(
+                        tracker.redis,
+                        "send_mqtt",
+                        blocking_timeout=5,
+                        expire_timeout=10,
+                    ):
+                        cleanup_pipeline = tracker.redis.pipeline(transaction=False)
+                        await tracker.cleanup(cleanup_pipeline)
                         await cleanup_pipeline.execute()
                         redis_commands.labels("execute").inc()
-                    except ResponseError as err:
-                        logger.error("Unable to execute cleanup pipeline", exc_info=err)
+                        await tracker.send_mqtt()
 
-                    await tracker.send_mqtt()
-                    try:
-                        key_counts = await export_schema_key_counts(tracker.redis)
-                        logger.debug(f"Schema key counts: {key_counts}")
-                    except ResponseError as e:
-                        logger.error("Failed to export schema key counts", exc_info=e)
-    except asyncio.CancelledError:
-        # Best-effort final flush: process any currently coalesced items if present
-        try:
-            # Attempt a small drain without blocking to clear immediate backlog
-            pipeline = tracker.redis.pipeline(transaction=False)
-            drained = 0
-            while drained < 1000:  # cap final drain to avoid long shutdowns
-                try:
-                    item = queue.get_nowait()
-                except QueueEmpty:
-                    break
-                if isinstance(item, ScheduleEvent):
-                    await tracker.process_queue_item(item, pipeline)
-                else:
-                    await tracker.process_queue_item(item, pipeline)
-                drained += 1
-                queue.task_done()
-            if drained > 0:
-                await pipeline.execute()
-                redis_commands.labels("execute").inc()
-        finally:
-            raise
+                        stats = receive_stream.statistics()
+
+                        current_buffer_used.labels("main").set(
+                            stats.current_buffer_used
+                        )
+                        max_buffer_size.labels("main").set(stats.max_buffer_size)
+                        open_receive_streams.labels("main").set(
+                            stats.open_receive_streams
+                        )
+                        open_send_streams.labels("main").set(stats.open_send_streams)
+                        tasks_waiting_receive.labels("main").set(
+                            stats.tasks_waiting_receive
+                        )
+                        tasks_waiting_send.labels("main").set(stats.tasks_waiting_send)
+                    last_mqtt_ts = now
+                except ResponseError:
+                    logger.error("Error during MQTT/cleanup cycle", exc_info=True)
+        except Exception:
+            logger.error("Failed in queue consumer loop", exc_info=True)

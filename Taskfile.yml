@@ -3,10 +3,13 @@ version: '3'
 dotenv: ['.env']
 
 tasks:
+  pyright:
+    cmds:
+     - uv run pyright
   check:
     cmds:
       - uv run ruff check inky-mbta-tracker
-      - uv run mypy
+      - task: pyright
   fix:
     cmds:
       - uv run ruff check --fix inky-mbta-tracker
@@ -31,6 +34,9 @@ tasks:
     cmds:
       - uv run compute_class_hashes.py
       - uv run ruff format inky-mbta-tracker/shared_types/class_hashes.py
+  clear-logs:
+    cmds:
+      - rm *.log
   test:
     cmds:
       - uv run pytest

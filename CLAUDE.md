@@ -9,7 +9,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `task run` - Start the main MBTA tracker application
 - `task prediction-api` - Start the track prediction API server
 - `task test` - Run pytest test suite
-- `task check` - Run linting (ruff) and type checking (mypy)
+- `task check` - Run linting (ruff) and type checking (pyright)
 - `task fix` - Auto-fix ruff linting issues
 - `task format` - Format code with ruff
 - `task compute-class-hashes` - Update class hashes for schema versioning
@@ -20,7 +20,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `uv run inky-mbta-tracker --prediction-api` - Run prediction API directly
 - `uv run pytest` - Run tests directly
 - `uv run ruff check inky-mbta-tracker` - Lint check
-- `uv run mypy` - Type check
+- `uv run pyright` - Type check
 
 ## Architecture
 
@@ -90,7 +90,7 @@ Each time you modify the code please run `task format`, `task fix`, and `task ch
 ### Code Style
 
 - Uses ruff for linting and formatting (line length: 88)
-- MyPy for type checking with strict settings
+- Pyright for type checking with strict-ish settings
 - Python 3.13+ required
 - Black-compatible formatting style
 
