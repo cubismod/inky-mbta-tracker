@@ -35,10 +35,7 @@ async def get_alerts(request: Request, commons: GET_DI) -> Response:
 
         alerts_data = Alerts(data=alerts)
         alerts_json = alerts_data.model_dump_json(exclude_unset=True)
-        if commons.tg:
-            commons.tg.start_soon(
-                commons.r_client.setex, cache_key, ALERTS_CACHE_TTL, alerts_json
-            )
+        await commons.r_client.setex(cache_key, ALERTS_CACHE_TTL, alerts_json)
         return Response(content=alerts_json, media_type="application/json")
     except (ConnectionError, TimeoutError):
         logger.error("Error getting alerts due to connection issue", exc_info=True)
@@ -74,10 +71,7 @@ async def get_alerts_json(request: Request, commons: GET_DI) -> Response:
         )
         alerts_data = Alerts(data=alerts)
         alerts_json = alerts_data.model_dump_json(exclude_unset=True)
-        if commons.tg:
-            commons.tg.start_soon(
-                commons.r_client.setex, cache_key, ALERTS_CACHE_TTL, alerts_json
-            )
+        await commons.r_client.setex(cache_key, ALERTS_CACHE_TTL, alerts_json)
         return Response(
             content=alerts_json,
             media_type="application/json",

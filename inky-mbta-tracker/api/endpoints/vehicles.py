@@ -32,18 +32,14 @@ async def get_vehicles(request: Request, commons: GET_DI) -> Response:
         if cached_data:
             return Response(content=cached_data, media_type="application/json")
 
-        if commons.tg:
-            features = await get_vehicle_features(commons.r_client, commons.tg)
-            result = {"type": "FeatureCollection", "features": features}
-            commons.tg.start_soon(
-                commons.r_client.setex,
-                cache_key,
-                VEHICLES_CACHE_TTL,
-                json.dumps(result),
-            )
-            return Response(content=json.dumps(result), media_type="application/json")
-        else:
-            return Response(status_code=500)
+        features = await get_vehicle_features(commons.r_client, commons.tg)
+        result = {"type": "FeatureCollection", "features": features}
+        await commons.r_client.setex(
+            cache_key,
+            VEHICLES_CACHE_TTL,
+            json.dumps(result),
+        )
+        return Response(content=json.dumps(result), media_type="application/json")
     except (ConnectionError, TimeoutError):
         logger.error("Error getting vehicles due to connection issue", exc_info=True)
         raise HTTPException(status_code=500, detail="Internal server error")
@@ -73,7 +69,7 @@ async def get_vehicles_sse(request: Request) -> StreamingResponse:
                     break
                 if commons.tg:
                     try:
-                        data = await get_vehicles_data(commons.r_client, commons.tg)
+                        data = await get_vehicles_data(commons.r_client)
                         yield f"data: {json.dumps(data)}\n\n"
                     except Exception:
                         # do not break the stream on transient errors
@@ -119,12 +115,11 @@ async def get_vehicles_json(request: Request, commons: GET_DI) -> Response:
             )
 
         if commons.tg:
-            features = await get_vehicle_features(commons.r_client, commons.tg)
+            features = await get_vehicle_features(commons.r_client)
             feature_collection = FeatureCollection(features)
             geojson_str = dumps(feature_collection, sort_keys=True)
-            commons.tg.start_soon(
-                commons.r_client.setex, cache_key, VEHICLES_CACHE_TTL, geojson_str
-            )
+            await commons.r_client.setex(cache_key, VEHICLES_CACHE_TTL, geojson_str)
+
             return Response(
                 content=geojson_str,
                 media_type="application/json",
