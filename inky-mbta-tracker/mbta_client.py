@@ -93,7 +93,10 @@ def parse_shape_data(shapes: Shapes) -> LineRoute:
     retry=retry_if_not_exception_type(CancelledError),
 )
 async def get_shapes(
-    r_client: Redis, routes: list[str], session: ClientSession, tg: TaskGroup
+    r_client: Redis,
+    routes: list[str],
+    session: ClientSession,
+    tg: Optional[TaskGroup] = None,
 ) -> RouteShapes:
     ret = RouteShapes(lines={})
     for route in routes:
@@ -111,7 +114,10 @@ async def get_shapes(
                 body = await response.text()
                 mbta_api_requests.labels("shapes").inc()
                 # 4 weeks
-                tg.start_soon(write_cache, r_client, key, body, 2419200)
+                if tg:
+                    tg.start_soon(write_cache, r_client, key, body, 2419200)
+                else:
+                    await write_cache(r_client, key, body, 2419200)
         shapes = Shapes.model_validate_json(body, strict=False)
         ret.lines[route] = parse_shape_data(shapes)
     return ret
@@ -137,7 +143,10 @@ def silver_line_lookup(route_id: str) -> str:
 
 # retrieves a rail/bus stop from Redis & returns the stop ID with optional coordinates
 async def light_get_stop(
-    r_client: Redis, stop_id: str, session: ClientSession, tg: TaskGroup
+    r_client: Redis,
+    stop_id: str,
+    session: ClientSession,
+    tg: Optional[TaskGroup] = None,
 ) -> Optional[LightStop]:
     key = f"stop:{stop_id}:light"
     cached = await check_cache(r_client, key)
@@ -165,13 +174,18 @@ async def light_get_stop(
                 lat=stop[0].data.attributes.latitude,
             )
         if ls:
-            tg.start_soon(
-                write_cache,
-                r_client,
-                key,
-                ls.model_dump_json(),
-                randint(FOUR_WEEKS, TWO_MONTHS),
-            )
+            if tg:
+                tg.start_soon(
+                    write_cache,
+                    r_client,
+                    key,
+                    ls.model_dump_json(),
+                    randint(FOUR_WEEKS, TWO_MONTHS),
+                )
+            else:
+                await write_cache(
+                    r_client, key, ls.model_dump_json(), randint(FOUR_WEEKS, TWO_MONTHS)
+                )
     return ls
 
 
@@ -888,7 +902,7 @@ class MBTAApi:
         retry=retry_if_not_exception_type(CancelledError),
     )
     async def get_stop(
-        self, session: ClientSession, stop_id: str, tg: TaskGroup
+        self, session: ClientSession, stop_id: str, tg: Optional[TaskGroup] = None
     ) -> tuple[Optional[Stop], Optional[Facilities]]:
         key = f"stop:{stop_id}:full"
         stop = None
@@ -925,15 +939,25 @@ class MBTAApi:
                 except ValidationError as err:
                     logger.error("Unable to parse facility", exc_info=err)
             if stop:
-                tg.start_soon(
-                    write_cache,
-                    self.r_client,
-                    key,
-                    StopAndFacilities(
-                        stop=stop, facilities=facilities
-                    ).model_dump_json(),
-                    randint(TWO_MONTHS, YEAR),
-                )
+                if tg:
+                    tg.start_soon(
+                        write_cache,
+                        self.r_client,
+                        key,
+                        StopAndFacilities(
+                            stop=stop, facilities=facilities
+                        ).model_dump_json(),
+                        randint(TWO_MONTHS, YEAR),
+                    )
+                else:
+                    await write_cache(
+                        self.r_client,
+                        key,
+                        StopAndFacilities(
+                            stop=stop, facilities=facilities
+                        ).model_dump_json(),
+                        randint(TWO_MONTHS, YEAR),
+                    )
         return stop, facilities
 
     async def precache_track_predictions(

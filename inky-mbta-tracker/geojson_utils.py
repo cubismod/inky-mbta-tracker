@@ -12,7 +12,6 @@ from config import Config
 from consts import MBTA_V3_ENDPOINT
 from geojson import Feature, LineString, Point
 from mbta_client import (
-    determine_station_id,
     get_shapes,
     light_get_stop,
     silver_line_lookup,
@@ -22,7 +21,6 @@ from prometheus import redis_commands
 from pydantic import ValidationError
 from redis.asyncio import Redis
 from schedule_tracker import VehicleRedisSchema
-from track_predictor.track_predictor import TrackPredictor
 from turfpy.measurement import bearing, distance
 
 logger = logging.getLogger("geojson_utils")
@@ -204,7 +202,9 @@ async def collect_alerts(
     return collected_alerts
 
 
-async def get_vehicle_features(r_client: Redis, tg: TaskGroup) -> list[Feature]:
+async def get_vehicle_features(
+    r_client: Redis, tg: Optional[TaskGroup] = None
+) -> list[Feature]:
     """Extract vehicle features from Redis data"""
     features = dict[str, Feature]()
 
@@ -254,7 +254,7 @@ async def get_vehicle_features(r_client: Redis, tg: TaskGroup) -> list[Feature]:
                     stop_eta = None
                     if not vehicle_info.route.startswith("Amtrak"):
                         stop = await light_get_stop(
-                            r_client, vehicle_info.stop, session, tg
+                            r_client, vehicle_info.stop, session
                         )
                         platform_prediction = None
                         if stop:
@@ -270,25 +270,25 @@ async def get_vehicle_features(r_client: Redis, tg: TaskGroup) -> list[Feature]:
                                         Feature(geometry=point),
                                         vehicle_info.speed,
                                     )
-                            station_id, has_track_predictions = determine_station_id(
-                                stop_id
-                            )
-                            if (
-                                vehicle_info.route.startswith("CR")
-                                and has_track_predictions
-                            ):
-                                track_predictor = TrackPredictor(r_client=r_client)
-                                prediction = await track_predictor.predict_track(
-                                    station_id=station_id,
-                                    route_id=vehicle_info.route,
-                                    trip_id=f"{vehicle_info.route}:{vehicle_info.id}",
-                                    headsign=vehicle_info.headsign or "",
-                                    direction_id=vehicle_info.direction_id,
-                                    scheduled_time=vehicle_info.update_time,
-                                    tg=tg,
-                                )
-                                if prediction:
-                                    platform_prediction = f"{prediction.track_number} ({round(prediction.confidence_score * 100)}% confidence)"
+                            # station_id, has_track_predictions = determine_station_id(
+                            #     stop_id
+                            # )
+                            # if (
+                            #     vehicle_info.route.startswith("CR")
+                            #     and has_track_predictions
+                            # ):
+                            #     track_predictor = TrackPredictor(r_client=r_client)
+                            #     prediction = await track_predictor.predict_track(
+                            #         station_id=station_id,
+                            #         route_id=vehicle_info.route,
+                            #         trip_id=f"{vehicle_info.route}:{vehicle_info.id}",
+                            #         headsign=vehicle_info.headsign or "",
+                            #         direction_id=vehicle_info.direction_id,
+                            #         scheduled_time=vehicle_info.update_time,
+                            #         tg=tg,
+                            #     )
+                            #     if prediction:
+                            #         platform_prediction = f"{prediction.track_number} ({round(prediction.confidence_score * 100)}% confidence)"
                     else:
                         route_icon = "rail_amtrak"
                         stop_id = vehicle_info.stop
@@ -336,12 +336,12 @@ async def get_vehicle_features(r_client: Redis, tg: TaskGroup) -> list[Feature]:
 
 
 async def get_shapes_features(
-    config: Config, redis_client: Redis, tg: TaskGroup, session: ClientSession
+    config: Config, redis_client: Redis, tg: Optional[TaskGroup], session: ClientSession
 ) -> list[Feature]:
     """Get route shapes as GeoJSON features"""
     lines = list()
     if config.vehicles_by_route:
-        shapes = await get_shapes(redis_client, config.vehicles_by_route, session, tg)
+        shapes = await get_shapes(redis_client, config.vehicles_by_route, session, None)
         if shapes:
             # Iterate over the mapping of route -> list of line coordinate sequences
             for k, v in shapes.lines.items():
