@@ -46,32 +46,6 @@ MIN_TASK_RESTART_MINS = 45
 MAX_TASK_RESTART_MINS = 120
 
 
-class TaskTracker:
-    event_type: TaskType
-    task: asyncio.Task[None]
-    expiration_time: Optional[datetime]
-    stop: Optional[StopSetup]
-    route_id: Optional[str]
-
-    """
-    Wrapper around a common task that is running as an asyncio Task.
-    """
-
-    def __init__(
-        self,
-        task: asyncio.Task[None],
-        event_type: TaskType,
-        expiration_time: Optional[datetime] = None,
-        stop: Optional[StopSetup] = None,
-        route_id: Optional[str] = None,
-    ):
-        self.task = task
-        self.expiration_time = expiration_time
-        self.stop = stop
-        self.route_id = route_id
-        self.event_type = event_type
-
-
 # launches a departures tracking task, target should either be "schedule" or "predictions"
 def start_task(
     r_client: Redis,
