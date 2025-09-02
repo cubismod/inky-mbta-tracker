@@ -2,7 +2,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Dict, List, Optional, Tuple
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class ScheduleEvent(BaseModel):
@@ -104,6 +104,17 @@ class TaskType(Enum):
     VEHICLES_BACKGROUND_WORKER = 8
 
 
+class MBTAServiceType(Enum):
+    BUS_WEEKDAY = 0
+    BUS_WEEKEND = 1
+    RAPID_WEEKDAY = 2  # includes silver line
+    RAPID_LATE = 3  # late night hours on fridays & saturdays
+    RAPID_WEEKEND = 4
+    COMMUTER_WEEKDAY = 5
+    COMMUTER_WEEKEND = 6
+    NO_SERVICE = 9
+
+
 class SummarizationResponse(BaseModel):
     """Response model for alert summarization"""
 
@@ -143,3 +154,25 @@ type LineRoute = List[List[ShapeTuple]]
 
 class RouteShapes(BaseModel):
     lines: Dict[str, LineRoute]
+
+
+class PrometheusServerSideMetric(BaseModel):
+    name: str = Field(alias="__name__")
+    id: str
+    instance: str
+    job: str
+
+
+class PrometheusResult(BaseModel):
+    metric: PrometheusServerSideMetric
+    value: Tuple[float, str]
+
+
+class PrometheusData(BaseModel):
+    result_type: str = Field(alias="resultType")
+    result: Optional[List[PrometheusResult]] = None
+
+
+class PrometheusAPIResponse(BaseModel):
+    status: bool
+    data: PrometheusData
