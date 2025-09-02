@@ -390,14 +390,15 @@ class MBTAApi:
                     )
                     if prom_resp:
                         results = prom_resp.data.result
-                        for result in results:
-                            if result.value[0] <= 0.001:
-                                if not failtime:
-                                    failtime = now + timedelta(
-                                        seconds=hc_fail_threshold
-                                    )
-                            else:
-                                failtime = None
+                        if results:
+                            for result in results:
+                                if result.value[0] <= 0.001:
+                                    if not failtime:
+                                        failtime = now + timedelta(
+                                            seconds=hc_fail_threshold
+                                        )
+                                else:
+                                    failtime = None
                 await sleep(randint(60, 180))
 
     async def get_headsign(
