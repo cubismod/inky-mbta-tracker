@@ -380,9 +380,7 @@ class MBTAApi:
                 or "Mattapan" in self.route
             ):
                 hc_fail_threshold = 5 * 60
-        async with aiohttp.ClientSession(
-            os.getenv("IMT_PROMETHEUS_ENDPOINT")
-        ) as session:
+        async with aiohttp.ClientSession() as session:
             logger.debug("started hc monitoring")
             while True:
                 await sleep(randint(60, 180))

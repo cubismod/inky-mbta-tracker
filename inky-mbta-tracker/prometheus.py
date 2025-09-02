@@ -1,4 +1,5 @@
 import logging
+import os
 from typing import Optional
 
 import aiohttp
@@ -117,7 +118,9 @@ async def query_server_side_events(
     prom_query = f'mbta_server_side_events:rate5m{{job="{job}",id="{id}"}}'
     try:
         resp = await session.get(
-            "/api/v1/query", params={"query": prom_query}, timeout=AIOHTTP_TIMEOUT
+            f"{os.getenv('IMT_PROMETHEUS_ENDPOINT')}/api/v1/query",
+            params={"query": prom_query},
+            timeout=AIOHTTP_TIMEOUT,
         )
         resp_json = await resp.json()
         logger.debug(resp_json)
