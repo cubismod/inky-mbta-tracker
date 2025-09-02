@@ -14,7 +14,7 @@ from aiosseclient import aiosseclient
 from anyio import create_task_group, sleep
 from anyio.abc import TaskGroup
 from anyio.streams.memory import MemoryObjectSendStream
-from consts import DAY, FOUR_WEEKS, MBTA_V3_ENDPOINT, TWO_MONTHS, YEAR
+from consts import DAY, FOUR_WEEKS, HOUR, MBTA_V3_ENDPOINT, TWO_MONTHS, YEAR
 from exceptions import RateLimitExceeded
 from mbta_responses import (
     AlertResource,
@@ -37,7 +37,12 @@ from mbta_responses import (
 )
 from ollama_imt import OllamaClientIMT
 from polyline import decode
-from prometheus import mbta_api_requests, server_side_events, tracker_executions
+from prometheus import (
+    mbta_api_requests,
+    query_server_side_events,
+    server_side_events,
+    tracker_executions,
+)
 from pydantic import BaseModel, TypeAdapter, ValidationError
 from redis.asyncio.client import Redis
 from redis_cache import check_cache, write_cache
@@ -294,7 +299,106 @@ class MBTAApi:
             return None
 
     def gen_unique_id(self):
-        return f"{self.watcher_type}{self.stop_id}{self.route}"
+        return f"{self.watcher_type}{self.stop_id or ''}{self.route or ''}".lower()
+
+    def get_service_status(self) -> bool:
+        """
+        Determines the service status of a route based on the current time and route type.
+        Uses https://cdn.mbta.com/sites/default/files/media/route_pdfs/SUB-S4-P4-C.pdf as a reference
+        """
+        ny_tz = ZoneInfo("America/New_York")
+        now = datetime.now(ny_tz)
+        weekday = now.isoweekday()
+        service_start = "05:30"
+        service_end = "23:30"
+        if self.route:
+            if "Red" in self.route:
+                service_start = "05:15"
+                service_end = "01:30"
+                if weekday == 5 or weekday == 6:
+                    service_end = "02:30"
+                if weekday == 7:
+                    service_start = "05:45"
+            if "Orange" in self.route:
+                service_start = "05:15"
+                service_end = "00:30"
+                if weekday == 5 or weekday == 6:
+                    service_end = "01:29"
+                if weekday == 7:
+                    service_start = "06:00"
+            if "Green" in self.route:
+                service_start = "04:45"
+                service_end = "00:57"
+                if weekday == 5 or weekday == 6:
+                    service_end = "01:53"
+                if weekday == 7:
+                    service_start = "05:15"
+                    service_end = "05:55"
+            if "Blue" in self.route:
+                service_start = "05:08"
+                service_end = "00:52"
+                if weekday == 5 or weekday == 6:
+                    service_end = "01:51"
+                if weekday == 7:
+                    service_start = "06:00"
+                    service_end = "00:52"
+            if "SL" in silver_line_lookup(self.route):
+                service_start = "04:21"
+                service_end = "01:18"
+                if weekday == 5 or weekday == 6:
+                    service_end = "02:16"
+                if weekday == 7:
+                    service_start = "05:36"
+                    service_end = "01:19"
+
+        service_start_time = datetime.strptime(service_start, "%H:%M").astimezone(ny_tz)
+        service_end_time = datetime.strptime(service_end, "%H:%M").astimezone(ny_tz)
+
+        if service_start_time.time() <= now.time() <= service_end_time.time():
+            logger.debug("in service")
+            return True
+        return False
+
+    async def _monitor_health(self, tg: TaskGroup) -> None:
+        hc_fail_threshold = 2 * HOUR
+        ny_tz = ZoneInfo("America/New_York")
+        failtime: Optional[datetime] = None
+        if self.route:
+            if (
+                "Red" in self.route
+                or "Orange" in self.route
+                or "Blue" in self.route
+                or "Green" in self.route
+                or "Mattapan" in self.route
+            ):
+                hc_fail_threshold = 5 * 60
+        async with aiohttp.ClientSession(
+            os.getenv("IMT_PROMETHEUS_ENDPOINT")
+        ) as session:
+            logger.debug("started hc monitoring")
+            while True:
+                now = datetime.now(ny_tz)
+                if failtime and now >= failtime:
+                    logger.info("Refreshing MBTA server side events")
+                    tg.cancel_scope.cancel()
+                    return
+                if self.get_service_status():
+                    prom_resp = await query_server_side_events(
+                        session,
+                        os.getenv("IMT_PROMETHEUS_JOB", "imt"),
+                        self.gen_unique_id(),
+                    )
+                    if prom_resp:
+                        results = prom_resp.data.result
+                        for result in results:
+                            if result.value[0] <= 0.001:
+                                if not failtime:
+                                    failtime = now + timedelta(
+                                        seconds=hc_fail_threshold
+                                    )
+                            else:
+                                failtime = None
+                await sleep(randint(60, 180))
 
     async def get_headsign(
         self, trip_id: str, session: ClientSession, tg: TaskGroup
@@ -1029,13 +1133,6 @@ async def precache_track_predictions_runner(
         await sleep(interval_hours * 3600)
 
 
-def _mbta_restarter(tg: TaskGroup, refresh_time: datetime) -> None:
-    if datetime.now().astimezone(UTC) > refresh_time:
-        refresh_time = datetime.now().astimezone(UTC) + timedelta(hours=randint(2, 6))
-        logger.info("Refreshing MBTA server side events")
-        tg.cancel_scope.cancel()
-
-
 @retry(
     wait=wait_exponential_jitter(initial=2, jitter=5, max=60),
     before=before_log(logger, logging.INFO),
@@ -1051,12 +1148,12 @@ async def watch_mbta_server_side_events(
     transit_time_min: int,
 ) -> None:
     while True:
-        refresh_time = datetime.now().astimezone(UTC) + timedelta(hours=randint(2, 6))
         async with create_task_group() as tg:
             client = aiosseclient(endpoint, headers=headers)
+            if os.getenv("IMT_PROMETHEUS_ENDPOINT"):
+                tg.start_soon(watcher._monitor_health, tg)
             try:
                 async for event in client:
-                    _mbta_restarter(tg, refresh_time)
                     server_side_events.labels(watcher.gen_unique_id()).inc()
                     tg.start_soon(
                         watcher.parse_live_api_response,

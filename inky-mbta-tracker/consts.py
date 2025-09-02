@@ -1,5 +1,7 @@
 import uuid
 
+import aiohttp
+
 MBTA_V3_ENDPOINT = "https://api-v3.mbta.com"
 FOUR_WEEKS = 2419200
 TWO_MONTHS = 5256000
@@ -14,3 +16,5 @@ INSTANCE_ID = uuid.uuid4()
 VEHICLES_CACHE_TTL = 3  # seconds
 ALERTS_CACHE_TTL = 10 * MINUTE  # 10 minutes
 SHAPES_CACHE_TTL = 2 * WEEK  # 2 weeks
+
+AIOHTTP_TIMEOUT = aiohttp.ClientTimeout(total=10)
