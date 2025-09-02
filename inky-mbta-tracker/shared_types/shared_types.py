@@ -165,14 +165,13 @@ class PrometheusServerSideMetric(BaseModel):
 
 class PrometheusResult(BaseModel):
     metric: PrometheusServerSideMetric
-    value: Tuple[float, str]
+    value: List[float | str]
 
 
 class PrometheusData(BaseModel):
-    result_type: str = Field(alias="resultType")
     result: Optional[List[PrometheusResult]] = None
 
 
 class PrometheusAPIResponse(BaseModel):
-    status: bool
+    status: str
     data: PrometheusData

@@ -5,13 +5,13 @@ import time
 from asyncio import CancelledError
 from collections import defaultdict
 from datetime import UTC, datetime, timedelta
-from typing import Any, Dict, List, Optional, TypedDict, cast
+from typing import Any, Dict, List, Optional, TypedDict
 
 import aiohttp
 import shared_types.shared_types
 import textdistance
 from anyio.abc import TaskGroup
-from consts import DAY, HOUR, INSTANCE_ID, MBTA_V3_ENDPOINT, WEEK, YEAR
+from consts import DAY, INSTANCE_ID, MBTA_V3_ENDPOINT, MONTH, WEEK, YEAR
 from exceptions import RateLimitExceeded
 from mbta_client import MBTAApi
 from mbta_responses import Schedules
@@ -20,7 +20,6 @@ from prometheus import (
     mbta_api_requests,
     redis_commands,
     track_historical_assignments_stored,
-    track_negative_cache_hits,
     track_pattern_analysis_duration,
     track_prediction_confidence,
     track_predictions_cached,
@@ -370,23 +369,6 @@ class TrackPredictor:
         try:
             start_time = time.time()
 
-            # Check negative cache for this pattern
-            negative_cache_key = f"no_prediction:{station_id}:{route_id}:{scheduled_time.date()}:{scheduled_time.hour}"
-            cached_result = await check_cache(
-                cast(object, self.redis), negative_cache_key
-            )
-            if cached_result:
-                track_negative_cache_hits.labels(
-                    station_id=station_id,
-                    route_id=route_id,
-                    cache_reason=cached_result,
-                    instance=INSTANCE_ID,
-                ).inc()
-                logger.debug(
-                    f"Negative cache hit for station_id={station_id}, route_id={route_id}, hour={scheduled_time.hour}, reason={cached_result}"
-                )
-                return {}
-
             # Look back 3 months for historical data
             start_date = scheduled_time - timedelta(days=90)
             end_date = scheduled_time
@@ -399,14 +381,6 @@ class TrackPredictor:
             if not assignments:
                 logger.debug(
                     f"No historical assignments found for station_id={station_id}, route_id={route_id}, trip_id={trip_headsign}, direction_id={direction_id}, scheduled_time={scheduled_time}"
-                )
-                # Cache negative result for 1 hour to avoid repeated calculations
-                tg.start_soon(
-                    write_cache,
-                    self.redis,
-                    negative_cache_key,
-                    "no_data",
-                    1 * HOUR,
                 )
                 return {}
 
@@ -610,15 +584,6 @@ class TrackPredictor:
                 f"No patterns found for station_id={station_id}, route_id={route_id}, trip_id={trip_headsign}, direction_id={direction_id}, scheduled_time={scheduled_time}"
             )
 
-            # Cache negative result for 1 hour to avoid repeated calculations
-            tg.start_soon(
-                write_cache,
-                self.redis,
-                negative_cache_key,
-                "no_patterns",
-                1 * HOUR,
-            )
-
             # Record analysis duration even for no patterns
             duration = time.time() - start_time
             track_pattern_analysis_duration.labels(
@@ -669,26 +634,8 @@ class TrackPredictor:
             if not route_id.startswith("CR"):
                 return None
 
-            # Check if this is a negative cache hit first
-            negative_cache_key = f"no_prediction:{station_id}:{route_id}:{scheduled_time.date()}:{scheduled_time.hour}"
-            cached_result = await check_cache(
-                cast(object, self.redis), negative_cache_key
-            )
-            if cached_result:
-                track_negative_cache_hits.labels(
-                    station_id=station_id,
-                    route_id=route_id,
-                    cache_reason=cached_result,
-                    instance=INSTANCE_ID,
-                ).inc()
-                logger.debug(
-                    f"Negative cache hit for station_id={station_id}, route_id={route_id}, hour={scheduled_time.hour}, reason={cached_result}"
-                )
-                return None
-
-            # If not, maybe we have a cached prediction
             cache_key = f"track_prediction:{station_id}:{route_id}:{trip_id}:{scheduled_time.date()}"
-            cached_prediction = await check_cache(cast(object, self.redis), cache_key)
+            cached_prediction = await check_cache(self.redis, cache_key)
             if cached_prediction:
                 track_predictions_cached.labels(
                     station_id=station_id, route_id=route_id, instance=INSTANCE_ID
@@ -742,6 +689,21 @@ class TrackPredictor:
                             instance=INSTANCE_ID,
                         ).set(1.0)
 
+                        track_number = prediction.track_number
+                        track_confidence = prediction.confidence_score
+                        logger.info(
+                            f"Generated track prediction: {route_id} {scheduled_time.strftime('%H:%M')} {headsign} -> {track_number}"
+                            f"(confidence: {track_confidence:.2f})"
+                        )
+
+                        tg.start_soon(
+                            write_cache,
+                            self.redis,
+                            cache_key,
+                            prediction.model_dump_json(),
+                            2 * MONTH,
+                        )
+
                         return prediction
 
             patterns = await self.analyze_patterns(
@@ -765,16 +727,6 @@ class TrackPredictor:
             if confidence < confidence_threshold or not best_track.isdigit():
                 logger.debug(
                     f"No prediction made for station_id={station_id}, route_id={route_id}, trip_id={trip_id}, headsign={headsign}, direction_id={direction_id}, scheduled_time={scheduled_time}, confidence={confidence}, threshold={confidence_threshold}"
-                )
-
-                # Cache negative result for low confidence predictions
-                negative_cache_key = f"no_prediction:{station_id}:{route_id}:{scheduled_time.date()}:{scheduled_time.hour}"
-                tg.start_soon(
-                    write_cache,
-                    self.redis,
-                    negative_cache_key,
-                    "low_confidence",
-                    1 * HOUR,
                 )
                 return None
 
@@ -912,14 +864,14 @@ class TrackPredictor:
         try:
             # Check if this prediction has already been validated
             validation_key = f"track_validation:{station_id}:{route_id}:{trip_id}:{scheduled_time.date()}"
-            if await check_cache(cast(object, self.redis), validation_key):
+            if await check_cache(self.redis, validation_key):
                 logger.debug(
                     f"Prediction already validated for {station_id} {route_id} {trip_id} on {scheduled_time.date()}"
                 )
                 return
 
             key = f"track_prediction:{station_id}:{route_id}:{trip_id}:{scheduled_time.date()}"
-            prediction_data = await check_cache(cast(object, self.redis), key)
+            prediction_data = await check_cache(self.redis, key)
 
             if not prediction_data:
                 return
@@ -977,7 +929,7 @@ class TrackPredictor:
         """Update prediction statistics."""
         try:
             stats_key = f"track_stats:{station_id}:{route_id}"
-            stats_data = await check_cache(cast(object, self.redis), stats_key)
+            stats_data = await check_cache(self.redis, stats_key)
 
             if stats_data:
                 stats = TrackPredictionStats.model_validate_json(stats_data)
@@ -1031,7 +983,7 @@ class TrackPredictor:
         """Get prediction statistics for a station and route."""
         try:
             stats_key = f"track_stats:{station_id}:{route_id}"
-            stats_data = await check_cache(cast(object, self.redis), stats_key)
+            stats_data = await check_cache(self.redis, stats_key)
 
             if stats_data:
                 return TrackPredictionStats.model_validate_json(stats_data)
@@ -1084,10 +1036,7 @@ class TrackPredictor:
         # Fetch schedules for all stations in a single API call
         stations_str = ",".join(station_ids)
 
-        current_time = target_date.strftime("%H:%M")
-        eight_hours_later = (target_date + timedelta(hours=8)).strftime("%H:%M")
-
-        endpoint = f"{MBTA_V3_ENDPOINT}/schedules?filter[stop]={stations_str}&filter[route]={route_id}&filter[date]={date_str}&sort=departure_time&include=trip&api_key={auth_token}&filter[min_time]={current_time}&filter[max_time]={eight_hours_later}"
+        endpoint = f"{MBTA_V3_ENDPOINT}/schedules?filter[stop]={stations_str}&filter[route]={route_id}&filter[date]={date_str}&sort=departure_time&include=trip&api_key={auth_token}"
 
         try:
             async with session.get(endpoint) as response:
@@ -1152,7 +1101,7 @@ class TrackPredictor:
             )
             return []
 
-        logger.info(
+        logger.debug(
             f"Found {len(upcoming_departures)} upcoming departures for route {route_id} across {len(station_ids)} stations"
         )
         return upcoming_departures
@@ -1214,7 +1163,7 @@ class TrackPredictor:
                 async def process_route(route_id: str) -> int:
                     """Process a single route and return number of predictions cached."""
                     route_predictions_cached = 0
-                    logger.info(f"Precaching predictions for route {route_id}")
+                    logger.debug(f"Precaching predictions for route {route_id}")
 
                     try:
                         # Fetch upcoming departures with actual scheduled times
