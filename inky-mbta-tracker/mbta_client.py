@@ -407,7 +407,14 @@ class MBTAApi:
                                                 seconds=hc_fail_threshold
                                             )
                                             logger.warning(
-                                                f"Detected a potentially stuck SSE worker, will restart at {failtime.isoformat()}"
+                                                (
+                                                    "Detected a potentially stuck SSE worker "
+                                                    f"for watcher={self.watcher_type} "
+                                                    f"route={self.route or 'N/A'} "
+                                                    f"stop_id={self.stop_id or 'N/A'} "
+                                                    f"id={self.gen_unique_id()} — will restart at "
+                                                    f"{failtime.strftime('%Y-%m-%d %I:%M:%S %p %Z')}"
+                                                )
                                             )
                                 else:
                                     failtime = None
