@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 
 import aiohttp
 from aiohttp import ClientSession
+from aiohttp.client_exceptions import ClientPayloadError
 from aiosseclient import aiosseclient
 from anyio import create_task_group, sleep
 from anyio.abc import TaskGroup
@@ -262,11 +263,11 @@ class MBTAApi:
             or schedule_only
             or route_substring_filter
         ):
-            logger.info(
+            logger.debug(
                 f"init MBTAApi {self.watcher_type} with {stop_id=} {route=} {direction_filter=} {expiration_time=} {schedule_only=} {route_substring_filter=}"
             )
         else:
-            logger.info(f"init MBTAApi {self.watcher_type}")
+            logger.debug(f"init MBTAApi {self.watcher_type}")
 
         self.schedule_only = schedule_only
 
@@ -279,7 +280,7 @@ class MBTAApi:
         exc_value: Optional[BaseException],
         traceback: Optional[TracebackType],
     ):
-        logging.info(f"Closing MBTAApi {self.watcher_type} {exc_type}")
+        logging.debug(f"Closing MBTAApi {self.watcher_type} {exc_type}")
         if exc_value:
             logger.error(
                 f"Error in MBTAApi {exc_type}\n{traceback}", exc_info=exc_value
@@ -351,10 +352,17 @@ class MBTAApi:
                     service_start = "05:36"
                     service_end = "01:19"
 
-        service_start_time = datetime.strptime(service_start, "%H:%M").astimezone(ny_tz)
-        service_end_time = datetime.strptime(service_end, "%H:%M").astimezone(ny_tz)
+        service_start_time = (
+            datetime.strptime(service_start, "%H:%M").astimezone(ny_tz).time()
+        )
+        service_end_time = (
+            datetime.strptime(service_end, "%H:%M").astimezone(ny_tz).time()
+        )
 
-        if service_start_time.time() <= now.time() <= service_end_time.time():
+        if now.time() <= service_end_time:
+            return True
+
+        if now.time() <= service_end_time or now.time() >= service_start_time:
             logger.debug("in service")
             return True
         return False
@@ -377,6 +385,7 @@ class MBTAApi:
         ) as session:
             logger.debug("started hc monitoring")
             while True:
+                await sleep(randint(60, 180))
                 now = datetime.now(ny_tz)
                 if failtime and now >= failtime:
                     logger.info("Refreshing MBTA server side events")
@@ -392,14 +401,17 @@ class MBTAApi:
                         results = prom_resp.data.result
                         if results:
                             for result in results:
-                                if result.value[0] <= 0.001:
+                                val = result.value[0]
+                                if isinstance(val, float) and val <= 0.001:
                                     if not failtime:
                                         failtime = now + timedelta(
                                             seconds=hc_fail_threshold
                                         )
+                                        logger.warning(
+                                            f"Detected a potentially stuck SSE worker, will restart at {failtime.isoformat()}"
+                                        )
                                 else:
                                     failtime = None
-                await sleep(randint(60, 180))
 
     async def get_headsign(
         self, trip_id: str, session: ClientSession, tg: TaskGroup
@@ -735,24 +747,16 @@ class MBTAApi:
                             ):
                                 try:
                                     if self.track_predictor:
-                                        prediction = await self.track_predictor.predict_track(
-                                            station_id=station_id,
-                                            route_id=route_id,
-                                            trip_id=trip_id,
-                                            headsign=headsign,
-                                            direction_id=item.attributes.direction_id,
-                                            scheduled_time=schedule_time,
-                                            tg=tg,
+                                        tg.start_soon(
+                                            self.track_predictor.predict_track,
+                                            station_id,
+                                            route_id,
+                                            trip_id,
+                                            headsign,
+                                            item.attributes.direction_id,
+                                            schedule_time,
+                                            tg,
                                         )
-
-                                    if prediction:
-                                        track_number = prediction.track_number
-                                        track_confidence = prediction.confidence_score
-                                        logger.info(
-                                            f"Generated track prediction: {route_id} {headsign} -> {track_number}"
-                                            f"(confidence: {track_confidence:.2f})"
-                                        )
-
                                 except (ConnectionError, TimeoutError) as e:
                                     logger.error(
                                         f"Failed to generate track prediction due to connection issue: {e}",
@@ -1068,7 +1072,7 @@ class MBTAApi:
                     )
         return stop, facilities
 
-    async def precache_track_predictions(
+    async def _precache_track_predictions(
         self,
         tg: TaskGroup,
         routes: Optional[list[str]] = None,
@@ -1098,7 +1102,7 @@ async def precache_track_predictions_runner(
     tg: TaskGroup,
     routes: Optional[list[str]] = None,
     target_stations: Optional[list[str]] = None,
-    interval_hours: int = 2,
+    interval_hours: int = 8,
 ) -> None:
     """
     Run track prediction precaching at regular intervals.
@@ -1117,12 +1121,11 @@ async def precache_track_predictions_runner(
             async with MBTAApi(
                 r_client, watcher_type=TaskType.TRACK_PREDICTIONS
             ) as api:
-                predictions_count = await api.precache_track_predictions(
+                await api._precache_track_predictions(
                     tg=tg,
                     routes=routes,
                     target_stations=target_stations,
                 )
-                logger.info(f"Precached {predictions_count} track predictions")
 
         except CancelledError:
             logger.info("Track prediction precache runner cancelled")
@@ -1131,7 +1134,7 @@ async def precache_track_predictions_runner(
             logger.error("Error in track prediction precaching runner", exc_info=e)
 
         # Wait for the specified interval
-        await sleep(interval_hours * 3600)
+        await sleep(interval_hours * HOUR)
 
 
 @retry(
@@ -1165,6 +1168,8 @@ async def watch_mbta_server_side_events(
                         session,
                         tg,
                     )
+            except ClientPayloadError as err:
+                logging.error("Error processing response", exc_info=err)
             except GeneratorExit as e:
                 logger.error(
                     "GeneratorExit in watch_mbta_server_side_events", exc_info=e

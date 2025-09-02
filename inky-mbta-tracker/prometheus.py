@@ -121,7 +121,7 @@ async def query_server_side_events(
         )
         resp_json = await resp.json()
         logger.debug(resp_json)
-        prom_resp = PrometheusAPIResponse.model_validate_json(resp_json)
+        prom_resp = PrometheusAPIResponse.model_validate(resp_json)
         logger.debug(f"Prometheus response: {prom_resp.model_dump_json()}")
         return prom_resp
 
