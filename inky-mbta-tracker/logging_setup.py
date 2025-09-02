@@ -1,6 +1,8 @@
+import json
 import logging
 import os
 import re
+from datetime import UTC, datetime
 
 
 class APIKeyFilter(logging.Filter):
@@ -114,7 +116,84 @@ class ColorFormatter(logging.Formatter):
         return super().format(record)
 
 
-def _add_file_handler_if_configured(logger: logging.Logger, level: int) -> None:
+class JSONFormatter(logging.Formatter):
+    """Structured JSON formatter.
+
+    Produces a single-line JSON object per record with stable keys.
+    """
+
+    _EXCLUDE_DEFAULT_KEYS: set[str] = {
+        "name",
+        "msg",
+        "args",
+        "levelname",
+        "levelno",
+        "pathname",
+        "filename",
+        "module",
+        "exc_info",
+        "exc_text",
+        "stack_info",
+        "lineno",
+        "funcName",
+        "created",
+        "msecs",
+        "relativeCreated",
+        "thread",
+        "threadName",
+        "processName",
+        "process",
+        "asctime",
+    }
+
+    def format(self, record: logging.LogRecord) -> str:  # noqa: D401
+        # Base fields
+        payload: dict[str, object] = {
+            "time": datetime.fromtimestamp(record.created, UTC).isoformat(),
+            "level": record.levelname,
+            "logger": record.name,
+            "message": self._stringify_message(record),
+            "file": getattr(record, "filename", None),
+            "line": record.lineno,
+            "function": getattr(record, "funcName", None),
+        }
+
+        # Extra fields (anything custom passed via logger.extra)
+        for key, value in record.__dict__.items():
+            if key not in self._EXCLUDE_DEFAULT_KEYS and not key.startswith("_"):
+                try:
+                    json.dumps(value)
+                    payload[key] = value
+                except Exception:
+                    payload[key] = str(value)
+
+        # Exception information
+        if record.exc_info:
+            try:
+                payload["exc_type"] = (
+                    record.exc_info[0].__name__ if record.exc_info[0] else None
+                )
+                payload["exc_message"] = (
+                    str(record.exc_info[1]) if record.exc_info[1] else None
+                )
+                payload["stack"] = self.formatException(record.exc_info)
+            except Exception:
+                payload["stack"] = "<unavailable>"
+
+        return json.dumps(payload, ensure_ascii=False)
+
+    @staticmethod
+    def _stringify_message(record: logging.LogRecord) -> str:
+        try:
+            msg = record.getMessage()  # respects %-formatting with args
+        except Exception:
+            msg = str(record.msg)
+        return msg
+
+
+def _add_file_handler_if_configured(
+    logger: logging.Logger, level: int, use_json: bool
+) -> None:
     log_file = os.getenv("IMT_LOG_FILE")
     if not log_file:
         return
@@ -137,10 +216,14 @@ def _add_file_handler_if_configured(logger: logging.Logger, level: int) -> None:
             os.makedirs(log_dir, exist_ok=True)
         fh = logging.FileHandler(log_file)
         fh.setLevel(level)
-        # Include filename and line number for easier debugging
-        fh.setFormatter(
-            logging.Formatter("%(levelname)-8s %(filename)s:%(lineno)d %(message)s")
-        )
+        # Formatter depends on JSON mode
+        if use_json:
+            fh.setFormatter(JSONFormatter())
+        else:
+            # Include filename and line number for easier debugging
+            fh.setFormatter(
+                logging.Formatter("%(levelname)-8s %(filename)s:%(lineno)d %(message)s")
+            )
         fh.addFilter(APIKeyFilter())
         logger.addHandler(fh)
     except Exception as err:  # pragma: no cover - defensive only
@@ -156,16 +239,27 @@ def setup_logging() -> None:
     """
     root = logging.getLogger()
 
-    # Determine level from env
-    level_name = os.getenv("LOG_LEVEL", "INFO").upper()
+    # Determine level from env (prefer IMT_LOG_LEVEL, fallback to LOG_LEVEL)
+    level_name = os.getenv("IMT_LOG_LEVEL") or os.getenv("LOG_LEVEL", "INFO")
+    level_name = level_name.upper()
     level = getattr(logging, level_name, logging.INFO)
+
+    use_json = os.getenv("IMT_LOG_JSON", "false").lower() == "true"
 
     # If no handlers configured yet, initialize console logging
     if not root.handlers:
-        # Include filename and line number in console output as well
-        logging.basicConfig(
-            level=level, format="%(levelname)-8s %(filename)s:%(lineno)d %(message)s"
-        )
+        if use_json:
+            logging.basicConfig(level=level)
+            # Set JSON formatter on the default stream handler
+            for handler in root.handlers:
+                if isinstance(handler, logging.StreamHandler):
+                    handler.setFormatter(JSONFormatter())
+        else:
+            # Include filename and line number in console output as well
+            logging.basicConfig(
+                level=level,
+                format="%(levelname)-8s %(filename)s:%(lineno)d %(message)s",
+            )
     else:
         root.setLevel(level)
         # Keep existing handlers; do not re-add stream handler
@@ -173,8 +267,13 @@ def setup_logging() -> None:
     # Ensure API key filters are in place
     _ensure_api_filter(root)
 
-    # Optionally colorize console output
-    if os.getenv("IMT_COLOR", "false").lower() == "true":
+    # If JSON mode is enabled and handlers pre-exist, ensure they use JSON format
+    if use_json:
+        for handler in root.handlers:
+            handler.setFormatter(JSONFormatter())
+
+    # Optionally colorize console output (disabled if JSON)
+    if not use_json and os.getenv("IMT_COLOR", "false").lower() == "true":
         for handler in root.handlers:
             # Only colorize stream (console) handlers
             if isinstance(handler, logging.StreamHandler):
@@ -186,4 +285,4 @@ def setup_logging() -> None:
                 )
 
     # Optionally add file handler
-    _add_file_handler_if_configured(root, level)
+    _add_file_handler_if_configured(root, level, use_json)
