@@ -399,15 +399,16 @@ class MBTAApi:
                         results = prom_resp.data.result
                         if results:
                             for result in results:
-                                val = result.value[0]
-                                if isinstance(val, float) and val <= 0.001:
-                                    if not failtime:
-                                        failtime = now + timedelta(
-                                            seconds=hc_fail_threshold
-                                        )
-                                        logger.warning(
-                                            f"Detected a potentially stuck SSE worker, will restart at {failtime.isoformat()}"
-                                        )
+                                if len(result.value) > 0:
+                                    val = float(result.value[1])
+                                    if val <= 0.001:
+                                        if not failtime:
+                                            failtime = now + timedelta(
+                                                seconds=hc_fail_threshold
+                                            )
+                                            logger.warning(
+                                                f"Detected a potentially stuck SSE worker, will restart at {failtime.isoformat()}"
+                                            )
                                 else:
                                     failtime = None
 
