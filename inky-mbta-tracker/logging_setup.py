@@ -86,15 +86,31 @@ class ColorFormatter(logging.Formatter):
         level_color = self.COLORS.get(record.levelno)
         if level_color:
             original_levelname = record.levelname
+            original_filename = getattr(record, "filename", None)
             # Make CRITICAL bold
             if record.levelno == logging.CRITICAL:
                 level_color = f"\033[1m{level_color}"
             record.levelname = f"{level_color}{original_levelname}{self.RESET}"
+            # Colorize filename to help scan sources quickly
+            if original_filename is not None:
+                record.filename = f"{self._BLUE}{original_filename}{self.RESET}"
             try:
-                return super().format(record)
+                formatted = super().format(record)
+                # Colorize line number by replacing the "filename:lineno" segment
+                if original_filename is not None:
+                    colored_filename = f"{self._BLUE}{original_filename}{self.RESET}"
+                    colored_lineno = f"{self._SAPPHIRE}{record.lineno}{self.RESET}"
+                    needle = f"{colored_filename}:{record.lineno}"
+                    if needle in formatted:
+                        formatted = formatted.replace(
+                            needle, f"{colored_filename}:{colored_lineno}", 1
+                        )
+                return formatted
             finally:
                 # Restore to avoid side effects in other handlers/formatters
                 record.levelname = original_levelname
+                if original_filename is not None:
+                    record.filename = original_filename
         return super().format(record)
 
 
@@ -121,7 +137,10 @@ def _add_file_handler_if_configured(logger: logging.Logger, level: int) -> None:
             os.makedirs(log_dir, exist_ok=True)
         fh = logging.FileHandler(log_file)
         fh.setLevel(level)
-        fh.setFormatter(logging.Formatter("%(levelname)-8s %(message)s"))
+        # Include filename and line number for easier debugging
+        fh.setFormatter(
+            logging.Formatter("%(levelname)-8s %(filename)s:%(lineno)d %(message)s")
+        )
         fh.addFilter(APIKeyFilter())
         logger.addHandler(fh)
     except Exception as err:  # pragma: no cover - defensive only
@@ -143,7 +162,10 @@ def setup_logging() -> None:
 
     # If no handlers configured yet, initialize console logging
     if not root.handlers:
-        logging.basicConfig(level=level, format="%(levelname)-8s %(message)s")
+        # Include filename and line number in console output as well
+        logging.basicConfig(
+            level=level, format="%(levelname)-8s %(filename)s:%(lineno)d %(message)s"
+        )
     else:
         root.setLevel(level)
         # Keep existing handlers; do not re-add stream handler
@@ -156,7 +178,12 @@ def setup_logging() -> None:
         for handler in root.handlers:
             # Only colorize stream (console) handlers
             if isinstance(handler, logging.StreamHandler):
-                handler.setFormatter(ColorFormatter("%(levelname)-8s %(message)s"))
+                # Use %(lineno)s so we can inject colorized string safely
+                handler.setFormatter(
+                    ColorFormatter(
+                        "%(levelname)-8s %(filename)s:%(lineno)s %(message)s"
+                    )
+                )
 
     # Optionally add file handler
     _add_file_handler_if_configured(root, level)

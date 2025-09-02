@@ -25,6 +25,11 @@ from redis_lock.asyncio.async_lock import RedisLock
 
 logger = logging.getLogger(__name__)
 
+# Suppress noisy logs from LLM/HTTP clients used by this module
+for _noisy in ("httpx", "httpcore", "llm", "ollama"):
+    _log = logging.getLogger(_noisy)
+    _log.setLevel(logging.WARNING)
+
 
 def strip_think_sections(text: str) -> str:
     """Remove any `<think>...</think>` sections from model output.
