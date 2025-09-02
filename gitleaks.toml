@@ -1,2 +1,0 @@
-[allowlist]
-paths = ["inky-mbta-tracker/shared_types/class_hashes.py"]
