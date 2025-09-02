@@ -96,3 +96,7 @@ tasks_waiting_send = Gauge(
     "number of tasks blocked on MemoryObjectSendStream.send()",
     ["name"],
 )
+
+server_side_events = Counter(
+    "imt_server_side_events", "Number of server-side events", ["id"]
+)

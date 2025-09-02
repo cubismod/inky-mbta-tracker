@@ -37,7 +37,7 @@ from mbta_responses import (
 )
 from ollama_imt import OllamaClientIMT
 from polyline import decode
-from prometheus import mbta_api_requests, tracker_executions
+from prometheus import mbta_api_requests, server_side_events, tracker_executions
 from pydantic import BaseModel, TypeAdapter, ValidationError
 from redis.asyncio.client import Redis
 from redis_cache import check_cache, write_cache
@@ -292,6 +292,9 @@ class MBTAApi:
             return datetime.fromisoformat(attributes.departure_time).astimezone(UTC)
         else:
             return None
+
+    def gen_unique_id(self):
+        return f"{self.watcher_type}{self.stop_id}{self.route}"
 
     async def get_headsign(
         self, trip_id: str, session: ClientSession, tg: TaskGroup
@@ -1054,6 +1057,7 @@ async def watch_mbta_server_side_events(
             try:
                 async for event in client:
                     _mbta_restarter(tg, refresh_time)
+                    server_side_events.labels(watcher.gen_unique_id()).inc()
                     tg.start_soon(
                         watcher.parse_live_api_response,
                         event.data,
