@@ -387,6 +387,9 @@ class MBTAApi:
                 await sleep(randint(60, 180))
                 now = datetime.now(ny_tz)
                 if failtime and now >= failtime:
+                    # Add randomized backoff to avoid thundering-herd restarts
+                    backoff_seconds = randint(10, 60)
+                    await sleep(backoff_seconds)
                     logger.info("Refreshing MBTA server side events")
                     tg.cancel_scope.cancel()
                     return
