@@ -380,13 +380,13 @@ class MBTAApi:
                 or "Mattapan" in self.route
                 or self.route.startswith("7")
             ):
-                hc_fail_threshold = 5 * 60
+                hc_fail_threshold = 60
             if "CR" in self.route:
                 hc_fail_threshold = HOUR + (randint(0, 120) * 60)
         async with aiohttp.ClientSession() as session:
             logger.debug("started hc monitoring")
             while True:
-                await sleep(randint(60, 180))
+                await sleep(randint(20, 90))
                 now = datetime.now(ny_tz)
                 if failtime and now >= failtime:
                     logger.info("Refreshing MBTA server side events")
