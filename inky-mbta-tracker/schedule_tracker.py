@@ -1,4 +1,3 @@
-import asyncio
 import logging
 import os
 import random
@@ -12,6 +11,7 @@ from zoneinfo import ZoneInfo
 
 import anyio
 import humanize
+from anyio import to_thread
 from anyio.abc import TaskGroup
 from anyio.streams.memory import MemoryObjectReceiveStream
 from geojson import Feature, Point
@@ -402,13 +402,16 @@ class Tracker:
 
             if len(msgs) > 0:
                 try:
-                    # Offload blocking MQTT publish to a thread to avoid blocking the event loop
-                    await asyncio.to_thread(
+                    # Offload blocking MQTT publish using anyio thread helpers
+                    await to_thread.run_sync(
                         publish.multiple,
                         msgs,  # type: ignore
-                        hostname=os.getenv("IMT_MQTT_HOST", ""),
-                        port=int(os.getenv("IMT_MQTT_PORT", "1883")),
-                        auth={
+                        os.getenv("IMT_MQTT_HOST", ""),
+                        int(os.getenv("IMT_MQTT_PORT", "1883")),
+                        "",
+                        60,
+                        None,
+                        {
                             "username": os.getenv("IMT_MQTT_USER", ""),
                             "password": os.getenv("IMT_MQTT_PASS", ""),
                         },

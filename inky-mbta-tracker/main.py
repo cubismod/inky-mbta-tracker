@@ -1,4 +1,3 @@
-import asyncio
 import logging
 import os
 from datetime import UTC, datetime, timedelta
@@ -8,11 +7,7 @@ from zoneinfo import ZoneInfo
 
 import aiohttp
 import click
-from anyio import (
-    create_memory_object_stream,
-    create_task_group,
-    run,
-)
+from anyio import create_memory_object_stream, create_task_group, run, sleep
 from anyio.abc import TaskGroup
 from anyio.streams.memory import MemoryObjectSendStream
 from config import StopSetup, load_config
@@ -196,9 +191,6 @@ async def __main__() -> None:
 
             tg.start_soon(background_refresh, get_redis(redis_pool), tg)
 
-            # Run backup scheduler as native asyncio task for proper cancellation
-            # Parse backup time from env (default 03:00, America/New_York)
-
             next_backup = get_next_backup_time()
             # cron/timed tasks
             while True:
@@ -211,7 +203,7 @@ async def __main__() -> None:
                     next_backup = get_next_backup_time(now)
                 # sleep until next check; if far away, sleep the whole duration
                 sleep_seconds = max(1, int((next_backup - now).total_seconds()))
-                await asyncio.sleep(min(sleep_seconds, 60))
+                await sleep(min(sleep_seconds, 60))
 
 
 @click.command()

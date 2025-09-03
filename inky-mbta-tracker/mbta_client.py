@@ -285,7 +285,12 @@ class MBTAApi:
         traceback: Optional[TracebackType],
     ):
         logging.debug(f"Closing MBTAApi {self.watcher_type} {exc_type}")
+        # Suppress noisy traces on cooperative cancellation
+        if isinstance(exc_value, CancelledError):
+            logger.info(f"{self.watcher_type} cancelled; exiting cleanly")
+            return True
         if exc_value:
+            # Log unexpected errors with stack for investigation
             logger.error(
                 f"Error in MBTAApi {exc_type}\n{traceback}", exc_info=exc_value
             )
@@ -1180,11 +1185,11 @@ async def watch_mbta_server_side_events(
     transit_time_min: int,
 ) -> None:
     while True:
-        async with create_task_group() as tg:
-            client = aiosseclient(endpoint, headers=headers)
-            if os.getenv("IMT_PROMETHEUS_ENDPOINT"):
-                tg.start_soon(watcher._monitor_health, tg)
-            try:
+        try:
+            async with create_task_group() as tg:
+                client = aiosseclient(endpoint, headers=headers)
+                if os.getenv("IMT_PROMETHEUS_ENDPOINT"):
+                    tg.start_soon(watcher._monitor_health, tg)
                 async for event in client:
                     server_side_events.labels(watcher.gen_unique_id()).inc()
                     tg.start_soon(
@@ -1196,13 +1201,15 @@ async def watch_mbta_server_side_events(
                         session,
                         tg,
                     )
-            except ClientPayloadError as err:
-                logging.error("Error processing response", exc_info=err)
-            except GeneratorExit as e:
-                logger.error(
-                    "GeneratorExit in watch_mbta_server_side_events", exc_info=e
-                )
-                return
+        except CancelledError:
+            # Normal shutdown path; keep logs concise
+            logger.info("SSE watcher cancelled; stopping stream loop")
+            return
+        except ClientPayloadError as err:
+            logging.error("Error processing response", exc_info=err)
+        except GeneratorExit as e:
+            logger.error("GeneratorExit in watch_mbta_server_side_events", exc_info=e)
+            return
 
 
 @retry(

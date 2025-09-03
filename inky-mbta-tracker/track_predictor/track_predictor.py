@@ -1,4 +1,3 @@
-import asyncio
 import logging
 import os
 import time
@@ -203,7 +202,7 @@ class TrackPredictor:
                 if not assignments:
                     return route_results
 
-                # Fetch all assignment data concurrently
+                # Fetch all assignment data
                 async def fetch_assignment_data(
                     assignment_key: bytes,
                 ) -> Optional[TrackAssignment]:
@@ -217,36 +216,25 @@ class TrackPredictor:
                         logger.error("Failed to parse assignment data", exc_info=e)
                     return None
 
-                assignment_tasks = [
-                    fetch_assignment_data(assignment_key)
-                    for assignment_key in assignments
-                ]
-                assignment_results = await asyncio.gather(
-                    *assignment_tasks, return_exceptions=True
-                )
-
-                for result in assignment_results:
-                    if isinstance(result, TrackAssignment):
-                        route_results.append(result)
-                    elif isinstance(result, Exception):
-                        logger.error("Error fetching assignment data", exc_info=result)
+                for assignment_key in assignments:
+                    try:
+                        result = await fetch_assignment_data(assignment_key)
+                        if isinstance(result, TrackAssignment):
+                            route_results.append(result)
+                    except (ConnectionError, TimeoutError) as e:
+                        logger.error("Error fetching assignment data", exc_info=e)
 
                 return route_results
 
             # Fetch assignments for all routes concurrently
-            route_tasks = [fetch_route_assignments(route) for route in routes_to_check]
-            route_results_list = await asyncio.gather(
-                *route_tasks, return_exceptions=True
-            )
-
             results: list[TrackAssignment] = []
-            for route_results in route_results_list:
-                if isinstance(route_results, list):
+
+            for route in routes_to_check:
+                try:
+                    route_results = await fetch_route_assignments(route)
                     results.extend(route_results)
-                elif isinstance(route_results, Exception):
-                    logger.error(
-                        "Error fetching route assignments", exc_info=route_results
-                    )
+                except (ConnectionError, TimeoutError) as e:
+                    logger.error("Error fetching route assignments", exc_info=e)
 
             return results
 
@@ -1222,23 +1210,19 @@ class TrackPredictor:
                                 )
                                 return False
 
-                        # Process all departures for this route concurrently
-                        departure_tasks = [
-                            process_departure(departure_data)
-                            for departure_data in upcoming_departures
-                        ]
-                        departure_results = await asyncio.gather(
-                            *departure_tasks, return_exceptions=True
-                        )
-
-                        # Count successful predictions
-                        for result in departure_results:
-                            if result is True:
-                                route_predictions_cached += 1
-                            elif isinstance(result, Exception):
+                        # Process departures sequentially with explicit error handling
+                        for dep in upcoming_departures:
+                            try:
+                                if await process_departure(dep):
+                                    route_predictions_cached += 1
+                            except (
+                                ConnectionError,
+                                TimeoutError,
+                                ValidationError,
+                            ) as e:
                                 logger.error(
                                     f"Unexpected error in departure processing for {route_id}",
-                                    exc_info=result,
+                                    exc_info=e,
                                 )
 
                     except (
