@@ -16,12 +16,11 @@ from anyio import (
 )
 from anyio.abc import TaskGroup
 from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
-from consts import DAY, MINUTE
+from consts import DAY
 from llm.models import AsyncModel
 from mbta_responses import AlertResource
 from redis.asyncio import Redis
 from redis_cache import check_cache, write_cache
-from redis_lock.asyncio.async_lock import RedisLock
 
 logger = logging.getLogger(__name__)
 
@@ -730,34 +729,24 @@ class OllamaClientIMT(AsyncContextManagerMixin):
         """
         if self.model:
             key = self._alert_hash(alert)
-            async with RedisLock(
-                self.r_client,
-                "ollama_lock",
-                blocking_timeout=20 * MINUTE,
-                expire_timeout=MINUTE,
-            ):
-                # this call can wait around for a while and the event may have already been cached in the waiting time
-                # so we try to return a cached value if available once we have the lock
-                cached = await check_cache(self.r_client, key)
-                if cached and send_stream:
-                    await send_stream.send(cached)
-                async with await open_file(
-                    Path("./fragments/agent-prompt.txt")
-                ) as prompt_file:
-                    start = datetime.now()
-                    agent_prompt = await prompt_file.read()
-                    prompt_str = f"Summarize this alert in {sentence_limit} sentences.\n{self._format_alert(alert)}"
-                    response = await self.model.prompt(
-                        fragments=[agent_prompt], prompt=prompt_str
-                    )
-                    resp_text = await response.text()
-                    cleaned_text = self._clean_model_response(resp_text)
-                    await write_cache(self.r_client, key, cleaned_text, DAY)
-                    if send_stream:
-                        await send_stream.send(cleaned_text)
-                    end = datetime.now()
+            cached = await check_cache(self.r_client, key)
+            if cached and send_stream:
+                await send_stream.send(cached)
+            async with await open_file(
+                Path("./fragments/agent-prompt.txt")
+            ) as prompt_file:
+                start = datetime.now()
+                agent_prompt = await prompt_file.read()
+                prompt_str = f"Summarize this alert in {sentence_limit} sentences.\n{self._format_alert(alert)}"
+                response = await self.model.prompt(
+                    fragments=[agent_prompt], prompt=prompt_str
+                )
+                resp_text = await response.text()
+                cleaned_text = self._clean_model_response(resp_text)
+                await write_cache(self.r_client, key, cleaned_text, DAY)
+                if send_stream:
+                    await send_stream.send(cleaned_text)
+                end = datetime.now()
 
-                    logger.info(
-                        f"Ollama generated a response in {(end - start).seconds}s"
-                    )
-                    logger.info(f"Response: {cleaned_text}")
+                logger.info(f"Ollama generated a response in {(end - start).seconds}s")
+                logger.info(f"Response: {cleaned_text}")
