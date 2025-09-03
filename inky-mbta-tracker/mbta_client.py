@@ -378,6 +378,7 @@ class MBTAApi:
                 or "Blue" in self.route
                 or "Green" in self.route
                 or "Mattapan" in self.route
+                or self.route.startswith("7")
             ):
                 hc_fail_threshold = 5 * 60
         async with aiohttp.ClientSession() as session:

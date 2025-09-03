@@ -115,7 +115,8 @@ server_side_events = Counter(
 async def query_server_side_events(
     session: aiohttp.ClientSession, job: str, id: str
 ) -> Optional[PrometheusAPIResponse]:
-    prom_query = f'mbta_server_side_events:rate5m{{job="{job}",id="{id}"}}'
+    metric = os.getenv("IMT_METRIC_NAME", "mbta_server_side_events:rate30m")
+    prom_query = f'{metric}{{job="{job}",id="{id}"}}'
     try:
         resp = await session.get(
             f"{os.getenv('IMT_PROMETHEUS_ENDPOINT')}/api/v1/query",

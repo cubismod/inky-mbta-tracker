@@ -269,6 +269,128 @@ def _remove_duplicate_words(text: str) -> str:
     return cur
 
 
+def _remove_unknown_cause_phrases(text: str) -> str:
+    """Remove vague cause phrases like "due to unknown cause".
+
+    Targets common variants such as:
+    - "due to unknown cause/reason"
+    - "because of an unknown cause/reason"
+    - "for unknown reasons"
+    - "cause unknown" / "reason unknown"
+
+    Cleans up leftover punctuation and extra whitespace.
+    """
+    if not text:
+        return text
+
+    cleaned = text
+    patterns = [
+        r"\b(?:due\s+to|because\s+of|stemming\s+from|caused\s+by)\s+(?:an?\s+)?unknown\s+(?:cause|reason|issue|problem)s?\b",
+        r"\bfor\s+(?:an?\s+)?unknown\s+(?:cause|reason)s?\b",
+        r"\bfor\s+unknown\s+reasons?\b",
+        r"\bcause\s+unknown\b",
+        r"\breason\s+unknown\b",
+        r"\b(?:reason|cause)\s+not\s+(?:yet\s+)?known\b",
+        r"\bunknown\s+(?:cause|reason)\b",
+    ]
+
+    for pat in patterns:
+        cleaned = re.sub(pat, "", cleaned, flags=re.IGNORECASE)
+
+    # Remove dangling filler phrases that often follow the removed clause
+    fillers = [
+        "at this time",
+        "at the moment",
+        "at this moment",
+        "as of now",
+        "at present",
+        "right now",
+        "currently",
+        "for now",
+        "for the moment",
+        "for the time being",
+    ]
+    filler_re = "|".join(map(re.escape, fillers))
+    # Drop optional leading punctuation for neatness if it's directly tied to the filler
+    cleaned = re.sub(
+        rf"(?:[,;:–—-]\s*)?(?:{filler_re})\b(?=\s*(?:[)\]]|$|[.,;:!?]))",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+
+    # Tidy punctuation/spaces left behind by removals
+    cleaned = re.sub(r"\s+([,.;:!?])", r"\1", cleaned)  # no space before punctuation
+    cleaned = re.sub(r"\s{2,}", " ", cleaned)  # collapse multiple spaces
+    cleaned = re.sub(r"^[\s,;:–—-]+", "", cleaned)  # trim leading punctuation
+    cleaned = re.sub(r"[\s,;:–—-]+$", "", cleaned)  # trim trailing punctuation
+
+    return cleaned.strip()
+
+
+def _remove_vacuous_alert_sentences(text: str) -> str:
+    """Remove sentences like "The Red Line is affected by an alert".
+
+    Drops sentences whose primary content is that some subject "is affected
+    by an alert" or "is impacted by an alert". If the sentence contains
+    additional substantive content beyond that clause (e.g., "and delays are
+    expected"), the sentence is kept.
+    """
+    if not text:
+        return text
+
+    # Split into sentences on . ! ? followed by whitespace/newline
+    sentences = re.split(r"(?<=[.!?])\s+", text.strip())
+
+    vacuous = re.compile(
+        r"\b(?:is|are|was|were|has\s+been|have\s+been|will\s+be)\s+"
+        r"(?:affected|impacted)\s+by\s+(?:an\s+)?alert\b",
+        flags=re.IGNORECASE,
+    )
+
+    kept: list[str] = []
+    for s in sentences:
+        candidate = s.strip()
+        if not candidate:
+            continue
+        m = vacuous.search(candidate)
+        if m:
+            # Remove the vacuous clause and see what's left
+            residual = vacuous.sub("", candidate)
+            # Remove connectors that might dangle
+            residual = re.sub(
+                r"\b(?:and|but|so|then|however|though)\b",
+                "",
+                residual,
+                flags=re.IGNORECASE,
+            )
+            residual = re.sub(r"\s+", " ", residual)
+            residual = residual.strip(" ,;:-–—.!")
+            # If little to nothing left, or no substantive keywords remain, drop
+            if len(residual.split()) <= 3:
+                continue
+            keywords = re.compile(
+                r"\b("
+                r"delay|delays|detour|shuttle|bus|buses|cancel+|cancell?ed|"
+                r"suspend+|divert+|resume|resumed|incident|police|medical|"
+                r"signal|switch|power|track|maintenance|work|construction|bridge|"
+                r"fire|weather|flood|snow|ice|disabled|problem|issue|repair|"
+                r"late|hold|holding|stalled|evacuat|derail|mechanical|"
+                r"single[- ]?track|express|weekend"
+                r")\b",
+                re.IGNORECASE,
+            )
+            if not keywords.search(residual):
+                continue
+        kept.append(candidate)
+
+    result = " ".join(kept)
+    # Final tidy
+    result = re.sub(r"\s+([,.;:!?])", r"\1", result)
+    result = re.sub(r"\s{2,}", " ", result).strip()
+    return result
+
+
 class OllamaClientIMT(AsyncContextManagerMixin):
     """Lightweight async helper for summarizing MBTA alerts.
 
@@ -420,6 +542,8 @@ class OllamaClientIMT(AsyncContextManagerMixin):
         summary = _humanize_effect_codes(summary)
         summary = _remove_cr_prefixes(summary)
         summary = _remove_duplicate_words(summary)
+        summary = _remove_unknown_cause_phrases(summary)
+        summary = _remove_vacuous_alert_sentences(summary)
 
         original_summary = summary
         logger.debug(f"Cleaning model response (original length: {len(summary)})")
