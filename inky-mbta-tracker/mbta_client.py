@@ -381,6 +381,8 @@ class MBTAApi:
                 or self.route.startswith("7")
             ):
                 hc_fail_threshold = 5 * 60
+            if "CR" in self.route:
+                hc_fail_threshold = HOUR + (randint(0, 120) * 60)
         async with aiohttp.ClientSession() as session:
             logger.debug("started hc monitoring")
             while True:
