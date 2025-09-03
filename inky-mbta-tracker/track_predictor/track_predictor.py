@@ -2,15 +2,16 @@ import asyncio
 import logging
 import os
 import time
+from asyncio import CancelledError
 from collections import defaultdict
 from datetime import UTC, datetime, timedelta
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional, TypedDict
 
 import aiohttp
 import shared_types.shared_types
 import textdistance
-from async_lru import alru_cache
-from consts import DAY, HOUR, INSTANCE_ID, MBTA_V3_ENDPOINT, MINUTE, WEEK, YEAR
+from anyio.abc import TaskGroup
+from consts import DAY, INSTANCE_ID, MBTA_V3_ENDPOINT, MONTH, WEEK, YEAR
 from exceptions import RateLimitExceeded
 from mbta_client import MBTAApi
 from mbta_responses import Schedules
@@ -19,7 +20,6 @@ from prometheus import (
     mbta_api_requests,
     redis_commands,
     track_historical_assignments_stored,
-    track_negative_cache_hits,
     track_pattern_analysis_duration,
     track_prediction_confidence,
     track_predictions_cached,
@@ -27,6 +27,7 @@ from prometheus import (
     track_predictions_validated,
 )
 from pydantic import ValidationError
+from redis.asyncio import Redis
 from redis_cache import check_cache, write_cache
 from shared_types.shared_types import (
     TrackAssignment,
@@ -36,14 +37,25 @@ from shared_types.shared_types import (
 from tenacity import (
     before_sleep_log,
     retry,
+    retry_if_not_exception_type,
     wait_exponential_jitter,
 )
-from utils import get_redis
+
+
+class DepartureInfo(TypedDict):
+    """Typed representation of an upcoming departure returned from schedules."""
+
+    trip_id: str
+    station_id: str
+    route_id: str
+    direction_id: int
+    departure_time: str
+
 
 logger = logging.getLogger(__name__)
 
 # Route family mappings for cross-route pattern learning
-ROUTE_FAMILIES = {
+ROUTE_FAMILIES: dict[str, list[str]] = {
     "CR-Worcester": ["CR-Framingham"],
     "CR-Framingham": ["CR-Worcester"],
     "CR-Franklin": ["CR-Foxboro", "CR-Franklin"],
@@ -63,11 +75,11 @@ ROUTE_FAMILIES = {
 }
 
 # Service type patterns
-EXPRESS_KEYWORDS = ["express", "limited", "direct"]
-LOCAL_KEYWORDS = ["local", "all stops", "stopping"]
+EXPRESS_KEYWORDS: list[str] = ["express", "limited", "direct"]
+LOCAL_KEYWORDS: list[str] = ["local", "all stops", "stopping"]
 
 # Station-specific confidence thresholds
-STATION_CONFIDENCE_THRESHOLDS = {
+STATION_CONFIDENCE_THRESHOLDS: dict[str, float] = {
     "place-sstat": 0.25,  # South Station - high volume, lower threshold
     "place-north": 0.25,  # North Station - high volume, lower threshold
     "place-bbsta": 0.30,  # Back Bay - medium volume
@@ -83,10 +95,12 @@ class TrackPredictor:
     assignments before they are officially announced by the MBTA.
     """
 
-    def __init__(self) -> None:
-        self.redis = get_redis()
+    def __init__(self, r_client: Redis) -> None:
+        self.redis = r_client
 
-    async def store_historical_assignment(self, assignment: TrackAssignment) -> None:
+    async def store_historical_assignment(
+        self, assignment: TrackAssignment, tg: TaskGroup
+    ) -> None:
         """
         Store a historical track assignment for future analysis.
 
@@ -102,7 +116,8 @@ class TrackPredictor:
                 return
 
             # Store for 6 months for analysis
-            await write_cache(
+            tg.start_soon(
+                write_cache,
                 self.redis,
                 key,
                 assignment.model_dump_json(),
@@ -113,13 +128,15 @@ class TrackPredictor:
             time_series_key = (
                 f"track_timeseries:{assignment.station_id}:{assignment.route_id}"
             )
-            await self.redis.zadd(
-                time_series_key, {key: assignment.scheduled_time.timestamp()}
+            tg.start_soon(
+                self.redis.zadd,
+                time_series_key,
+                {key: assignment.scheduled_time.timestamp()},
             )
             redis_commands.labels("zadd").inc()
 
             # Set expiration for time series (1 year)
-            await self.redis.expire(time_series_key, 1 * YEAR)
+            tg.start_soon(self.redis.expire, time_series_key, 1 * YEAR)
             redis_commands.labels("expire").inc()
 
             track_historical_assignments_stored.labels(
@@ -222,7 +239,7 @@ class TrackPredictor:
                 *route_tasks, return_exceptions=True
             )
 
-            results = []
+            results: list[TrackAssignment] = []
             for route_results in route_results_list:
                 if isinstance(route_results, list):
                     results.extend(route_results)
@@ -334,6 +351,7 @@ class TrackPredictor:
         trip_headsign: str,
         direction_id: int,
         scheduled_time: datetime,
+        tg: TaskGroup,
     ) -> Dict[str, float]:
         """
         Analyze historical patterns to determine track assignment probabilities.
@@ -351,21 +369,6 @@ class TrackPredictor:
         try:
             start_time = time.time()
 
-            # Check negative cache for this pattern
-            negative_cache_key = f"no_prediction:{station_id}:{route_id}:{scheduled_time.date()}:{scheduled_time.hour}"
-            cached_result = await check_cache(self.redis, negative_cache_key)
-            if cached_result:
-                track_negative_cache_hits.labels(
-                    station_id=station_id,
-                    route_id=route_id,
-                    cache_reason=cached_result,
-                    instance=INSTANCE_ID,
-                ).inc()
-                logger.debug(
-                    f"Negative cache hit for station_id={station_id}, route_id={route_id}, hour={scheduled_time.hour}, reason={cached_result}"
-                )
-                return {}
-
             # Look back 3 months for historical data
             start_date = scheduled_time - timedelta(days=90)
             end_date = scheduled_time
@@ -378,13 +381,6 @@ class TrackPredictor:
             if not assignments:
                 logger.debug(
                     f"No historical assignments found for station_id={station_id}, route_id={route_id}, trip_id={trip_headsign}, direction_id={direction_id}, scheduled_time={scheduled_time}"
-                )
-                # Cache negative result for 1 hour to avoid repeated calculations
-                await write_cache(
-                    self.redis,
-                    negative_cache_key,
-                    "no_data",
-                    1 * HOUR,  # Cache for 1 hour
                 )
                 return {}
 
@@ -549,7 +545,7 @@ class TrackPredictor:
             # Convert to probabilities with confidence adjustments
             if combined_scores:
                 total_score = sum(combined_scores.values())
-                total = {}
+                total: dict[str, float] = {}
                 for track, score in combined_scores.items():
                     base_prob = score / total_score
                     sample_size = sample_counts[track]
@@ -588,14 +584,6 @@ class TrackPredictor:
                 f"No patterns found for station_id={station_id}, route_id={route_id}, trip_id={trip_headsign}, direction_id={direction_id}, scheduled_time={scheduled_time}"
             )
 
-            # Cache negative result for 1 hour to avoid repeated calculations
-            await write_cache(
-                self.redis,
-                negative_cache_key,
-                "no_patterns",
-                1 * HOUR,  # Cache for 1 hour
-            )
-
             # Record analysis duration even for no patterns
             duration = time.time() - start_time
             track_pattern_analysis_duration.labels(
@@ -617,7 +605,6 @@ class TrackPredictor:
             )
             return {}
 
-    @alru_cache(ttl=30 * MINUTE)
     async def predict_track(
         self,
         station_id: str,
@@ -626,6 +613,7 @@ class TrackPredictor:
         headsign: str,
         direction_id: int,
         scheduled_time: datetime,
+        tg: TaskGroup,
     ) -> Optional[TrackPrediction]:
         """
         Generate a track prediction for a given trip.
@@ -646,22 +634,6 @@ class TrackPredictor:
             if not route_id.startswith("CR"):
                 return None
 
-            # Check if this is a negative cache hit first
-            negative_cache_key = f"no_prediction:{station_id}:{route_id}:{scheduled_time.date()}:{scheduled_time.hour}"
-            cached_result = await check_cache(self.redis, negative_cache_key)
-            if cached_result:
-                track_negative_cache_hits.labels(
-                    station_id=station_id,
-                    route_id=route_id,
-                    cache_reason=cached_result,
-                    instance=INSTANCE_ID,
-                ).inc()
-                logger.debug(
-                    f"Negative cache hit for station_id={station_id}, route_id={route_id}, hour={scheduled_time.hour}, reason={cached_result}"
-                )
-                return None
-
-            # If not, maybe we have a cached prediction
             cache_key = f"track_prediction:{station_id}:{route_id}:{trip_id}:{scheduled_time.date()}"
             cached_prediction = await check_cache(self.redis, cache_key)
             if cached_prediction:
@@ -673,13 +645,21 @@ class TrackPredictor:
             # it makes more sense to get the headsign client-side using the exact trip_id due to API rate limits
             async with aiohttp.ClientSession(base_url=MBTA_V3_ENDPOINT) as session:
                 async with MBTAApi(
-                    watcher_type=shared_types.shared_types.TaskType.TRACK_PREDICTIONS
+                    r_client=self.redis,
+                    watcher_type=shared_types.shared_types.TaskType.TRACK_PREDICTIONS,
                 ) as api:
-                    new_hs = await api.get_headsign(trip_id, session)
+                    new_hs = await api.get_headsign(trip_id, session, tg)
                     if new_hs != "":
                         headsign = new_hs
-                    stop_data = await api.get_stop(session, station_id)
-                    if stop_data[0] and stop_data[0].data.attributes.platform_code:
+                    stop_data = await api.get_stop(session, station_id, tg)
+                    if new_hs != "":
+                        headsign = new_hs
+                    stop_data = await api.get_stop(session, station_id, tg)
+                    if (
+                        stop_data[0]
+                        and stop_data[0].data
+                        and stop_data[0].data.attributes.platform_code
+                    ):
                         # confirmed from the MBTA that this is the platform code
                         prediction = TrackPrediction(
                             station_id=station_id,
@@ -709,11 +689,30 @@ class TrackPredictor:
                             instance=INSTANCE_ID,
                         ).set(1.0)
 
+                        track_number = prediction.track_number
+                        track_confidence = prediction.confidence_score
+                        logger.info(
+                            f"Generated track prediction: {route_id} {scheduled_time.strftime('%H:%M')} {headsign} -> {track_number}"
+                            f"(confidence: {track_confidence:.2f})"
+                        )
+
+                        tg.start_soon(
+                            write_cache,
+                            self.redis,
+                            cache_key,
+                            prediction.model_dump_json(),
+                            2 * MONTH,
+                        )
+
                         return prediction
 
-            # Analyze patterns
             patterns = await self.analyze_patterns(
-                station_id, route_id, headsign, direction_id, scheduled_time
+                station_id,
+                route_id,
+                headsign,
+                direction_id,
+                scheduled_time,
+                tg,
             )
 
             if not patterns:
@@ -729,16 +728,6 @@ class TrackPredictor:
                 logger.debug(
                     f"No prediction made for station_id={station_id}, route_id={route_id}, trip_id={trip_id}, headsign={headsign}, direction_id={direction_id}, scheduled_time={scheduled_time}, confidence={confidence}, threshold={confidence_threshold}"
                 )
-
-                # Cache negative result for low confidence predictions
-                negative_cache_key = f"no_prediction:{station_id}:{route_id}:{scheduled_time.date()}:{scheduled_time.hour}"
-                await write_cache(
-                    self.redis,
-                    negative_cache_key,
-                    "low_confidence",
-                    1 * HOUR,  # Cache for 1 hour
-                )
-
                 return None
 
             # Determine prediction method
@@ -796,8 +785,7 @@ class TrackPredictor:
             ).set(confidence)
 
             # Store prediction for later validation
-            await self._store_prediction(prediction)
-
+            tg.start_soon(self._store_prediction, prediction)
             logger.debug(
                 f"Predicted track={prediction.track_number}, station_id={station_id}, route_id={route_id}, trip_id={trip_id}, headsign={headsign}, direction_id={direction_id}, scheduled_time={scheduled_time}, confidence={confidence}, method={method}, historical_matches={historical_matches}"
             )
@@ -861,6 +849,7 @@ class TrackPredictor:
         trip_id: str,
         scheduled_time: datetime,
         actual_track_number: Optional[str],
+        tg: TaskGroup,
     ) -> None:
         """
         Validate a previous prediction against actual track assignment.
@@ -893,8 +882,12 @@ class TrackPredictor:
             is_correct = prediction.track_number == actual_track_number
 
             # Update statistics
-            await self._update_prediction_stats(
-                station_id, route_id, is_correct, prediction.confidence_score
+            tg.start_soon(
+                self._update_prediction_stats,
+                station_id,
+                route_id,
+                is_correct,
+                prediction.confidence_score,
             )
 
             # Record validation metric
@@ -907,11 +900,12 @@ class TrackPredictor:
             ).inc()
 
             # Mark as validated to prevent duplicate processing
-            await write_cache(
+            tg.start_soon(
+                write_cache,
                 self.redis,
                 validation_key,
                 "validated",
-                WEEK,  # Store validation flag for 1 week
+                WEEK,
             )
 
             logger.info(
@@ -1009,16 +1003,17 @@ class TrackPredictor:
             return None
 
     @retry(
-        wait=wait_exponential_jitter(initial=2, jitter=5),
+        wait=wait_exponential_jitter(initial=2, jitter=5, max=60),
         before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
+        retry=retry_if_not_exception_type(CancelledError),
     )
     async def fetch_upcoming_departures(
         self,
-        session: aiohttp.ClientSession,
+        session: Any,
         route_id: str,
         station_ids: List[str],
         target_date: Optional[datetime] = None,
-    ) -> List[dict]:
+    ) -> List[DepartureInfo]:
         """
         Fetch upcoming departures for specific stations on a commuter rail route.
 
@@ -1036,15 +1031,12 @@ class TrackPredictor:
 
         date_str = target_date.date().isoformat()
         auth_token = os.environ.get("AUTH_TOKEN", "")
-        upcoming_departures = []
+        upcoming_departures: list[DepartureInfo] = []
 
         # Fetch schedules for all stations in a single API call
         stations_str = ",".join(station_ids)
 
-        current_time = target_date.strftime("%H:%M")
-        eight_hours_later = (target_date + timedelta(hours=8)).strftime("%H:%M")
-
-        endpoint = f"{MBTA_V3_ENDPOINT}/schedules?filter[stop]={stations_str}&filter[route]={route_id}&filter[date]={date_str}&sort=departure_time&include=trip&api_key={auth_token}&filter[min_time]={current_time}&filter[max_time]={eight_hours_later}"
+        endpoint = f"{MBTA_V3_ENDPOINT}/schedules?filter[stop]={stations_str}&filter[route]={route_id}&filter[date]={date_str}&sort=departure_time&include=trip&api_key={auth_token}"
 
         try:
             async with session.get(endpoint) as response:
@@ -1093,7 +1085,7 @@ class TrackPredictor:
                     ):
                         station_id = schedule.relationships.stop.data.id
 
-                    departure_info = {
+                    departure_info: DepartureInfo = {
                         "trip_id": trip_id,
                         "station_id": station_id,
                         "route_id": route_id,
@@ -1109,13 +1101,14 @@ class TrackPredictor:
             )
             return []
 
-        logger.info(
+        logger.debug(
             f"Found {len(upcoming_departures)} upcoming departures for route {route_id} across {len(station_ids)} stations"
         )
         return upcoming_departures
 
     async def precache(
         self,
+        tg: TaskGroup,
         routes: Optional[List[str]] = None,
         target_stations: Optional[List[str]] = None,
     ) -> int:
@@ -1170,7 +1163,7 @@ class TrackPredictor:
                 async def process_route(route_id: str) -> int:
                     """Process a single route and return number of predictions cached."""
                     route_predictions_cached = 0
-                    logger.info(f"Precaching predictions for route {route_id}")
+                    logger.debug(f"Precaching predictions for route {route_id}")
 
                     try:
                         # Fetch upcoming departures with actual scheduled times
@@ -1178,7 +1171,9 @@ class TrackPredictor:
                             session, route_id, target_stations, current_time
                         )
 
-                        async def process_departure(departure_data: dict) -> bool:
+                        async def process_departure(
+                            departure_data: DepartureInfo,
+                        ) -> bool:
                             """Process a single departure and return True if cached."""
                             try:
                                 trip_id = departure_data["trip_id"]
@@ -1204,6 +1199,7 @@ class TrackPredictor:
                                     headsign="",  # Will be fetched in predict_track method
                                     direction_id=direction_id,
                                     scheduled_time=scheduled_time,
+                                    tg=tg,
                                 )
 
                                 if prediction:
@@ -1255,14 +1251,10 @@ class TrackPredictor:
 
                     return route_predictions_cached
 
-                # Process all routes concurrently
-                route_tasks = [process_route(route_id) for route_id in routes]
-                route_results = await asyncio.gather(
-                    *route_tasks, return_exceptions=True
-                )
+                route_tasks = [await process_route(route_id) for route_id in routes]
 
                 # Sum up all predictions cached
-                for result in route_results:
+                for result in route_tasks:
                     if isinstance(result, int):
                         predictions_cached += result
                     elif isinstance(result, Exception):

@@ -272,7 +272,7 @@ class TestTracker:
         result = Tracker.prediction_display(event)
         assert result == " DEP"
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio("asyncio")
     async def test_calculate_vehicle_speed_no_previous_data(self) -> None:
         tracker = Tracker()
         mock_redis = AsyncMock()
@@ -295,7 +295,7 @@ class TestTracker:
         assert speed == 25.0
         assert approximate is False
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio("asyncio")
     async def test_calculate_vehicle_speed_with_previous_data(self) -> None:
         tracker = Tracker()
         mock_redis = AsyncMock()
@@ -334,7 +334,7 @@ class TestTracker:
         assert speed is not None
         assert approximate is True
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio("asyncio")
     async def test_calculate_vehicle_speed_stopped(self) -> None:
         tracker = Tracker()
         mock_redis = AsyncMock()
@@ -356,12 +356,18 @@ class TestTracker:
         assert speed is None
         assert approximate is False
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio("asyncio")
     async def test_cleanup(self) -> None:
         tracker = Tracker()
         mock_redis = AsyncMock()
         mock_pipeline = AsyncMock()
         tracker.redis = mock_redis
+        # In cleanup(), tracker may call self.redis.pipeline() synchronously to create
+        # a new pipeline. Ensure our mock behaves like a sync factory to avoid
+        # un-awaited coroutine warnings.
+        from unittest.mock import MagicMock
+
+        mock_redis.pipeline = MagicMock(return_value=mock_pipeline)
 
         # Mock obsolete IDs from Redis
         obsolete_ids = [b"event-1", b"event-2"]
@@ -380,7 +386,7 @@ class TestTracker:
         # Should call rm for each obsolete ID
         assert mock_pipeline.delete.call_count == 2
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio("asyncio")
     async def test_add_schedule_event_future(self) -> None:
         tracker = Tracker()
         mock_redis = AsyncMock()
@@ -409,7 +415,7 @@ class TestTracker:
         assert mock_pipeline.set.call_count == 2
         mock_pipeline.zadd.assert_called_once()
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio("asyncio")
     async def test_add_schedule_event_past(self) -> None:
         tracker = Tracker()
         mock_redis = AsyncMock()
@@ -437,7 +443,7 @@ class TestTracker:
         mock_pipeline.set.assert_not_called()
         mock_pipeline.zadd.assert_not_called()
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio("asyncio")
     async def test_add_vehicle_event(self) -> None:
         tracker = Tracker()
         mock_redis = AsyncMock()
@@ -463,7 +469,7 @@ class TestTracker:
         mock_pipeline.set.assert_called_once()
         mock_pipeline.sadd.assert_called_once()
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio("asyncio")
     async def test_rm_schedule_event(self) -> None:
         tracker = Tracker()
         mock_pipeline = AsyncMock()
@@ -488,7 +494,7 @@ class TestTracker:
         mock_pipeline.delete.assert_called_once_with(event.id)
         mock_pipeline.zrem.assert_called_once()
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio("asyncio")
     async def test_rm_vehicle_event(self) -> None:
         tracker = Tracker()
         mock_pipeline = AsyncMock()
@@ -509,7 +515,7 @@ class TestTracker:
         # Should delete vehicle data
         mock_pipeline.delete.assert_called_once_with("vehicle-vehicle-123")
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio("asyncio")
     async def test_process_queue_item_reset(self) -> None:
         tracker = Tracker()
         mock_pipeline = AsyncMock()
@@ -532,7 +538,7 @@ class TestTracker:
             await tracker.process_queue_item(event, mock_pipeline)
             mock_add.assert_called_once_with(event, mock_pipeline, "reset")
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio("asyncio")
     async def test_process_queue_item_remove(self) -> None:
         tracker = Tracker()
         mock_pipeline = AsyncMock()
@@ -555,7 +561,7 @@ class TestTracker:
             await tracker.process_queue_item(event, mock_pipeline)
             mock_rm.assert_called_once_with(event, mock_pipeline)
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio("asyncio")
     @patch.dict(os.environ, {"IMT_ENABLE_MQTT": "true"})
     @patch("schedule_tracker.publish")
     async def test_send_mqtt_enabled(self, mock_publish: MagicMock) -> None:
@@ -583,7 +589,7 @@ class TestTracker:
 
             mock_publish.multiple.assert_called_once()
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio("asyncio")
     @patch.dict(os.environ, {"IMT_ENABLE_MQTT": "false"})
     @patch("schedule_tracker.publish")
     async def test_send_mqtt_disabled(self, mock_publish: MagicMock) -> None:
@@ -609,6 +615,18 @@ class TestProcessQueue:
 
         mock_runner_instance = MagicMock()
         mock_runner.return_value.__enter__.return_value = mock_runner_instance
+
+        # Avoid un-awaited coroutine warnings by consuming the coroutine passed to run()
+        def _consume(coro: object) -> None:
+            try:
+                # Close coroutine objects to suppress RuntimeWarning about un-awaited coroutines
+                close = getattr(coro, "close", None)
+                if callable(close):
+                    close()
+            except Exception:
+                pass
+
+        mock_runner_instance.run.side_effect = _consume
 
         queue = Queue[ScheduleEvent]()
 

@@ -78,7 +78,7 @@ class ClassItem(BaseModel):
 
 
 @click.command()
-def main():
+def main() -> None:
     """Main function to compute class hashes and set variables."""
     source_paths = [
         Path("inky-mbta-tracker/shared_types/shared_types.py"),

@@ -1,6 +1,6 @@
 [project]
 name = "inky-mbta-tracker"
-version = "1.0.1"
+version = "1.2.0"
 description = "Redis backed application to track MBTA vehicle schedules & vehicles postitions among other data"
 readme = "README.md"
 requires-python = ">=3.13"
@@ -23,6 +23,7 @@ dependencies = [
     "frozenlist==1.7.0",
     "geojson==3.1.0",
     "h11==0.16.0",
+    "hiredis>=2.3.2",
     "httpcore==1.0.9",
     "humanize==4.13.0",
     "idna==3.10",
@@ -54,11 +55,13 @@ dependencies = [
     "uvloop>=0.21.0",
     "uvloop>=0.20.0; sys_platform != 'win32'",
     "yarl==1.20.1",
+    "pyright>=1.1.404",
+    "llm>=0.27.1",
+    "llm-ollama>=0.13.0",
 ]
 
 [dependency-groups]
 dev = [
-    "mypy>=1.15.0",
     "pytest>=8.4.1",
     "pytest-asyncio>=1.0.0",
     "ruff==0.12.11",
@@ -145,15 +148,31 @@ docstring-code-format = false
 # enabled.
 docstring-code-line-length = "dynamic"
 
-[tool.mypy]
-files = ["inky-mbta-tracker"]
-plugins = ["pydantic.mypy"]
-check_untyped_defs = true
-warn_unused_ignores = true
-show_error_codes = true
-disallow_untyped_defs = true
-disallow_incomplete_defs = true
-ignore_missing_imports = true
+[tool.pyright]
+include = ["inky-mbta-tracker"]
+pythonVersion = "3.13"
+
+# Aim to mirror prior mypy settings
+# - disallow_untyped_defs / disallow_incomplete_defs
+typeCheckingMode = "basic"
+analyzeUnannotatedFunctions = true
+reportUnknownParameterType = "error"
+reportUnknownReturnType = "error"
+
+# - warn_unused_ignores
+reportUnusedIgnore = "warning"
+
+# - ignore_missing_imports
+reportMissingImports = "none"
+reportMissingTypeStubs = "none"
+
+exclude = [
+    ".venv",
+    ".mypy_cache",
+    ".ruff_cache",
+    "dist",
+    "build",
+]
 
 [build-system]
 requires = ["setuptools"]

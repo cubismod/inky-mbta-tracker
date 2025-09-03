@@ -1,8 +1,8 @@
 from datetime import datetime
 from enum import Enum
-from typing import Optional
+from typing import Dict, List, Optional, Tuple
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class ScheduleEvent(BaseModel):
@@ -102,3 +102,76 @@ class TaskType(Enum):
     TRACK_PREDICTIONS = 6
     REDIS_BACKUP = 7
     VEHICLES_BACKGROUND_WORKER = 8
+
+
+class MBTAServiceType(Enum):
+    BUS_WEEKDAY = 0
+    BUS_WEEKEND = 1
+    RAPID_WEEKDAY = 2  # includes silver line
+    RAPID_LATE = 3  # late night hours on fridays & saturdays
+    RAPID_WEEKEND = 4
+    COMMUTER_WEEKDAY = 5
+    COMMUTER_WEEKEND = 6
+    NO_SERVICE = 9
+
+
+class SummarizationResponse(BaseModel):
+    """Response model for alert summarization"""
+
+    summary: str
+    alert_count: int
+    model_used: str
+    processing_time_ms: float
+
+
+class SummaryCacheEntry(BaseModel):
+    """Cache entry for stored summaries"""
+
+    summary: str
+    alert_count: int
+    alerts_hash: str
+    generated_at: datetime
+    config: dict
+    ttl: int = 3600  # 1 hour default TTL
+
+
+class IndividualSummaryCacheEntry(BaseModel):
+    """Cache entry for individual alert summaries"""
+
+    alert_id: str
+    summary: str
+    style: str
+    sentence_limit: int
+    generated_at: datetime
+    format: str
+    ttl: int = 3600  # 1 hour default TTL
+
+
+type ShapeTuple = Tuple[float, float]
+
+type LineRoute = List[List[ShapeTuple]]
+
+
+class RouteShapes(BaseModel):
+    lines: Dict[str, LineRoute]
+
+
+class PrometheusServerSideMetric(BaseModel):
+    name: str = Field(alias="__name__")
+    id: str
+    instance: str
+    job: str
+
+
+class PrometheusResult(BaseModel):
+    metric: PrometheusServerSideMetric
+    value: List[float | str]
+
+
+class PrometheusData(BaseModel):
+    result: Optional[List[PrometheusResult]] = None
+
+
+class PrometheusAPIResponse(BaseModel):
+    status: str
+    data: PrometheusData

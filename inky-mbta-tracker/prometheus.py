@@ -1,4 +1,14 @@
+import logging
+import os
+from typing import Optional
+
+import aiohttp
+from consts import AIOHTTP_TIMEOUT
 from prometheus_client import Counter, Gauge
+from pydantic import ValidationError
+from shared_types.shared_types import PrometheusAPIResponse
+
+logger = logging.getLogger(__name__)
 
 schedule_events = Counter(
     "imt_schedule_events", "Processed Schedule Events", ["action", "route_id", "stop"]
@@ -21,17 +31,6 @@ mbta_api_requests = Gauge(
 running_threads = Gauge("imt_active_threads", "Active Threads")
 
 redis_commands = Gauge("imt_redis_cmds", "Redis commands made", ["name"])
-
-queue_size = Gauge("imt_queue_size", "Schedule/vehicle queue size")
-
-# Ratio of queue depth to queue capacity (0..1). Useful for spotting backpressure.
-queue_backpressure_ratio = Gauge(
-    "imt_queue_backpressure_ratio", "Queue depth ratio (0..1) indicating backpressure"
-)
-
-queue_processed_item = Gauge(
-    "imt_queue_processed_item", "Queue processed item", ["item_type"]
-)
 
 track_predictions_generated = Counter(
     "imt_track_predictions_generated",
@@ -81,9 +80,56 @@ track_negative_cache_hits = Counter(
     ["station_id", "route_id", "cache_reason", "instance"],
 )
 
-# Events eliminated by in-batch coalescing in the consumer
-coalesced_events_dropped = Counter(
-    "imt_coalesced_events_dropped",
-    "Events dropped due to in-batch coalescing",
-    ["item_type", "coalesce_by"],
+current_buffer_used = Gauge(
+    "imt_current_buffer_used", "number of items stored in the buffer", ["name"]
 )
+max_buffer_size = Gauge(
+    "imt_max_buffer_size",
+    "maximum number of items that can be stored on this stream (or math.inf)",
+    ["name"],
+)
+open_receive_streams = Gauge(
+    "imt_open_receive_streams",
+    "number of unclosed clones of the receive stream",
+    ["name"],
+)
+open_send_streams = Gauge(
+    "imt_open_send_streams", "number of unclosed clones of the send stream", ["name"]
+)
+tasks_waiting_receive = Gauge(
+    "imt_tasks_waiting_receive",
+    "number of tasks blocked on MemoryObjectReceiveStream.receive()",
+    ["name"],
+)
+tasks_waiting_send = Gauge(
+    "imt_tasks_waiting_send",
+    "number of tasks blocked on MemoryObjectSendStream.send()",
+    ["name"],
+)
+
+server_side_events = Counter(
+    "imt_server_side_events", "Number of server-side events", ["id"]
+)
+
+
+async def query_server_side_events(
+    session: aiohttp.ClientSession, job: str, id: str
+) -> Optional[PrometheusAPIResponse]:
+    metric = os.getenv("IMT_METRIC_NAME", "mbta_server_side_events:rate30m")
+    prom_query = f'{metric}{{job="{job}",id="{id}"}}'
+    try:
+        resp = await session.get(
+            f"{os.getenv('IMT_PROMETHEUS_ENDPOINT')}/api/v1/query",
+            params={"query": prom_query},
+            timeout=AIOHTTP_TIMEOUT,
+        )
+        resp_json = await resp.json()
+        logger.debug(resp_json)
+        prom_resp = PrometheusAPIResponse.model_validate(resp_json)
+        logger.debug(f"Prometheus response: {prom_resp.model_dump_json()}")
+        return prom_resp
+
+    except ValidationError as err:
+        logger.error("Unable to parse response", exc_info=err)
+    except Exception as err:
+        logger.error("Failed to query Prometheus", exc_info=err)
