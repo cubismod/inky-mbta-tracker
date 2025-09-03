@@ -6,6 +6,7 @@ from random import randint
 from typing import Optional
 from zoneinfo import ZoneInfo
 
+import aiohttp
 import click
 from anyio import (
     create_memory_object_stream,
@@ -15,6 +16,7 @@ from anyio import (
 from anyio.abc import TaskGroup
 from anyio.streams.memory import MemoryObjectSendStream
 from config import StopSetup, load_config
+from consts import MBTA_V3_ENDPOINT
 from dotenv import load_dotenv
 from geojson_utils import background_refresh
 from logging_setup import setup_logging
@@ -52,6 +54,7 @@ def start_task(
     target: TaskType,
     send_stream: MemoryObjectSendStream[ScheduleEvent | VehicleRedisSchema],
     tg: TaskGroup,
+    session: aiohttp.ClientSession,
     stop: Optional[StopSetup] = None,
     route_id: Optional[str] = None,
 ) -> None:
@@ -75,6 +78,7 @@ def start_task(
                     stop.show_on_display,
                     tg,
                     stop.route_substring_filter,
+                    session,
                 )
         case TaskType.SCHEDULE_PREDICTIONS:
             if stop:
@@ -90,10 +94,11 @@ def start_task(
                     stop.show_on_display,
                     tg,
                     stop.route_substring_filter,
+                    session,
                 )
         case TaskType.VEHICLES:
             tg.start_soon(
-                watch_vehicles, r_client, send_stream, exp_time, route_id or ""
+                watch_vehicles, r_client, send_stream, exp_time, route_id or "", session
             )
 
 
@@ -142,63 +147,71 @@ async def __main__() -> None:
     await schema_versioner(get_redis(redis_pool))
 
     start_http_server(int(os.getenv("IMT_PROM_PORT", "8000")))
-    async with create_task_group() as tg:
-        for stop in config.stops:
-            if stop.schedule_only:
-                start_task(
-                    get_redis(redis_pool), TaskType.SCHEDULES, send_stream, tg, stop
-                )
-            else:
-                start_task(
+    async with aiohttp.ClientSession(base_url=MBTA_V3_ENDPOINT) as session:
+        async with create_task_group() as tg:
+            for stop in config.stops:
+                if stop.schedule_only:
+                    start_task(
+                        get_redis(redis_pool),
+                        TaskType.SCHEDULES,
+                        send_stream,
+                        tg,
+                        session,
+                        stop,
+                    )
+                else:
+                    start_task(
+                        get_redis(redis_pool),
+                        TaskType.SCHEDULE_PREDICTIONS,
+                        send_stream,
+                        tg,
+                        session,
+                        stop,
+                    )
+            if config.vehicles_by_route:
+                for route_id in config.vehicles_by_route:
+                    start_task(
+                        get_redis(redis_pool),
+                        TaskType.VEHICLES,
+                        send_stream,
+                        tg,
+                        session,
+                        stop,
+                        route_id,
+                    )
+
+            # Start track prediction precaching if enabled
+            if config.enable_track_predictions:
+                tg.start_soon(
+                    precache_track_predictions_runner,
                     get_redis(redis_pool),
-                    TaskType.SCHEDULE_PREDICTIONS,
-                    send_stream,
                     tg,
-                    stop,
-                )
-        if config.vehicles_by_route:
-            for route_id in config.vehicles_by_route:
-                start_task(
-                    get_redis(redis_pool),
-                    TaskType.VEHICLES,
-                    send_stream,
-                    tg,
-                    stop,
-                    route_id,
+                    config.track_prediction_routes,
+                    config.track_prediction_stations,
+                    config.track_prediction_interval_hours,
                 )
 
-        # Start track prediction precaching if enabled
-        if config.enable_track_predictions:
-            tg.start_soon(
-                precache_track_predictions_runner,
-                get_redis(redis_pool),
-                tg,
-                config.track_prediction_routes,
-                config.track_prediction_stations,
-                config.track_prediction_interval_hours,
-            )
+            # consumer
+            tg.start_soon(process_queue_async, receive_stream, tg)
 
-        # consumer
-        tg.start_soon(process_queue_async, receive_stream, tg)
+            tg.start_soon(background_refresh, get_redis(redis_pool), tg)
 
-        tg.start_soon(background_refresh, get_redis(redis_pool), tg)
+            # Run backup scheduler as native asyncio task for proper cancellation
+            # Parse backup time from env (default 03:00, America/New_York)
 
-        # Run backup scheduler as native asyncio task for proper cancellation
-        # Parse backup time from env (default 03:00, America/New_York)
-
-        next_backup = get_next_backup_time()
-        # cron/timed tasks
-        while True:
-            now = datetime.now(ZoneInfo("America/New_York"))
-            if now >= next_backup:
-                redis_backup = RedisBackup(r_client=get_redis(redis_pool))
-                filename = await redis_backup.create_backup()
-                logger.info(f"Redis backup created at {filename}")
-                # schedule next run for the next day at the configured time
-                next_backup = get_next_backup_time(now)
-            # sleep until next check; if far away, sleep the whole duration
-            sleep_seconds = max(1, int((next_backup - now).total_seconds()))
-            await asyncio.sleep(min(sleep_seconds, 60))
+            next_backup = get_next_backup_time()
+            # cron/timed tasks
+            while True:
+                now = datetime.now(ZoneInfo("America/New_York"))
+                if now >= next_backup:
+                    redis_backup = RedisBackup(r_client=get_redis(redis_pool))
+                    filename = await redis_backup.create_backup()
+                    logger.info(f"Redis backup created at {filename}")
+                    # schedule next run for the next day at the configured time
+                    next_backup = get_next_backup_time(now)
+                # sleep until next check; if far away, sleep the whole duration
+                sleep_seconds = max(1, int((next_backup - now).total_seconds()))
+                await asyncio.sleep(min(sleep_seconds, 60))
 
 
 @click.command()

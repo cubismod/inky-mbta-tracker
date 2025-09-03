@@ -104,6 +104,10 @@ async def get_shapes(
     session: ClientSession,
     tg: Optional[TaskGroup] = None,
 ) -> RouteShapes:
+    # Avoid retries using a closed session; return empty result
+    if session.closed:
+        logger.debug("get_shapes called with a closed session; skipping fetch")
+        return RouteShapes(lines={})
     ret = RouteShapes(lines={})
     for route in routes:
         key = f"shape:{route}"
@@ -869,6 +873,9 @@ class MBTAApi:
     async def get_trip(
         self, trip_id: str, session: ClientSession, tg: TaskGroup
     ) -> Optional[Trips]:
+        if session.closed:
+            logger.debug("get_trip called with a closed session; skipping fetch")
+            return None
         key = f"trip:{trip_id}:full"
         cached = await check_cache(self.r_client, key)
         try:
@@ -902,6 +909,9 @@ class MBTAApi:
     async def save_route(
         self, prediction: PredictionResource | ScheduleResource, session: ClientSession
     ) -> None:
+        if session.closed:
+            logger.debug("save_route called with a closed session; skipping fetch")
+            return
         if prediction.relationships.route and prediction.relationships.route.data:
             route_id = prediction.relationships.route.data.id
             if route_id not in self.routes:
@@ -931,6 +941,9 @@ class MBTAApi:
         trip_id: Optional[str] = None,
         route_id: Optional[str] = None,
     ) -> Optional[list[AlertResource]]:
+        if session.closed:
+            logger.debug("get_alerts called with a closed session; skipping fetch")
+            return None
         endpoint = "/alerts"
         if trip_id:
             endpoint += f"?filter[trip]={trip_id}"
@@ -974,6 +987,9 @@ class MBTAApi:
         tg: TaskGroup,
         time_limit: Optional[timedelta] = None,
     ) -> None:
+        if session.closed:
+            logger.debug("save_schedule called with a closed session; skipping fetch")
+            return
         endpoint = f"schedules?filter[stop]={self.stop_id}&sort=time&api_key={MBTA_AUTH}&filter[date]={datetime.now().date().isoformat()}"
         if self.route != "":
             endpoint += f"&filter[route]={self.route}"
@@ -1025,6 +1041,9 @@ class MBTAApi:
     async def get_stop(
         self, session: ClientSession, stop_id: str, tg: Optional[TaskGroup] = None
     ) -> tuple[Optional[Stop], Optional[Facilities]]:
+        if session.closed:
+            logger.debug("get_stop called with a closed session; skipping fetch")
+            return None, None
         key = f"stop:{stop_id}:full"
         stop = None
         facilities = None
@@ -1202,33 +1221,34 @@ async def watch_static_schedule(
     show_on_display: bool,
     tg: TaskGroup,
     route_substring_filter: Optional[str] = None,
+    session: ClientSession | None = None,
 ) -> None:
     if route_substring_filter:
         logger.info(
             f"Watching station {stop_id} for route substring filter {route_substring_filter}"
         )
     refresh_time = datetime.now().astimezone(UTC) - timedelta(minutes=10)
+    assert session is not None, (
+        "ClientSession must be provided to watch_static_schedule"
+    )
     while True:
-        async with aiohttp.ClientSession(base_url=MBTA_V3_ENDPOINT) as session:
-            if datetime.now().astimezone(UTC) > refresh_time:
-                async with MBTAApi(
-                    r_client,
-                    stop_id=stop_id,
-                    route=route,
-                    direction_filter=direction,
-                    schedule_only=True,
-                    watcher_type=TaskType.SCHEDULES,
-                    show_on_display=show_on_display,
-                    route_substring_filter=route_substring_filter,
-                ) as watcher:
-                    await watcher.save_own_stop(session, tg)
-                    await watcher.save_schedule(
-                        transit_time_min, send_stream, session, tg
-                    )
-                    refresh_time = datetime.now().astimezone(UTC) + timedelta(
-                        hours=randint(2, 6)
-                    )
-            await sleep(10)
+        if datetime.now().astimezone(UTC) > refresh_time:
+            async with MBTAApi(
+                r_client,
+                stop_id=stop_id,
+                route=route,
+                direction_filter=direction,
+                schedule_only=True,
+                watcher_type=TaskType.SCHEDULES,
+                show_on_display=show_on_display,
+                route_substring_filter=route_substring_filter,
+            ) as watcher:
+                await watcher.save_own_stop(session, tg)
+                await watcher.save_schedule(transit_time_min, send_stream, session, tg)
+                refresh_time = datetime.now().astimezone(UTC) + timedelta(
+                    hours=randint(2, 6)
+                )
+        await sleep(10)
 
 
 @retry(
@@ -1242,26 +1262,27 @@ async def watch_vehicles(
     send_stream: MemoryObjectSendStream[ScheduleEvent | VehicleRedisSchema],
     expiration_time: Optional[datetime],
     route_id: str,
+    session: ClientSession | None = None,
 ) -> None:
     endpoint = f"{MBTA_V3_ENDPOINT}/vehicles?fields[vehicle]=direction_id,latitude,longitude,speed,current_status,occupancy_status,carriages&filter[route]={route_id}&api_key={MBTA_AUTH}"
     mbta_api_requests.labels("vehicles").inc()
     headers = {"accept": "text/event-stream"}
+    assert session is not None, "ClientSession must be provided to watch_vehicles"
     async with MBTAApi(
         r_client,
         route=route_id,
         watcher_type=TaskType.VEHICLES,
         expiration_time=expiration_time,
     ) as watcher:
-        async with aiohttp.ClientSession(base_url=MBTA_V3_ENDPOINT) as session:
-            tracker_executions.labels("vehicles").inc()
-            await watch_mbta_server_side_events(
-                watcher,
-                endpoint,
-                headers,
-                send_stream,
-                session=session,
-                transit_time_min=0,
-            )
+        tracker_executions.labels("vehicles").inc()
+        await watch_mbta_server_side_events(
+            watcher,
+            endpoint,
+            headers,
+            send_stream,
+            session=session,
+            transit_time_min=0,
+        )
 
 
 async def watch_station(
@@ -1275,6 +1296,7 @@ async def watch_station(
     show_on_display: bool,
     tg: TaskGroup,
     route_substring_filter: Optional[str] = None,
+    session: ClientSession | None = None,
 ) -> None:
     if route_substring_filter:
         logger.info(
@@ -1291,28 +1313,28 @@ async def watch_station(
         endpoint += f"&filter[direction_id]={direction_filter}"
     headers = {"accept": "text/event-stream"}
 
-    async with aiohttp.ClientSession(MBTA_V3_ENDPOINT) as session:
-        async with MBTAApi(
-            r_client,
-            stop_id,
-            route,
-            direction_filter,
-            expiration_time,
-            watcher_type=TaskType.SCHEDULE_PREDICTIONS,
-            show_on_display=show_on_display,
-            route_substring_filter=route_substring_filter,
-        ) as watcher:
-            tg.start_soon(watcher.save_own_stop, session, tg)
-            if watcher.stop:
-                tracker_executions.labels(watcher.stop.data.attributes.name).inc()
-            await watch_mbta_server_side_events(
-                watcher,
-                endpoint,
-                headers,
-                send_stream,
-                session,
-                transit_time_min,
-            )
+    assert session is not None, "ClientSession must be provided to watch_station"
+    async with MBTAApi(
+        r_client,
+        stop_id,
+        route,
+        direction_filter,
+        expiration_time,
+        watcher_type=TaskType.SCHEDULE_PREDICTIONS,
+        show_on_display=show_on_display,
+        route_substring_filter=route_substring_filter,
+    ) as watcher:
+        tg.start_soon(watcher.save_own_stop, session, tg)
+        if watcher.stop:
+            tracker_executions.labels(watcher.stop.data.attributes.name).inc()
+        await watch_mbta_server_side_events(
+            watcher,
+            endpoint,
+            headers,
+            send_stream,
+            session,
+            transit_time_min,
+        )
 
 
 # takes a stop_id from the vehicle API and returns the station_id and if it is one of the stations that has track predictions
