@@ -1011,8 +1011,8 @@ class MBTAApi:
                         await write_cache(self.r_client, cache_key, body, 45)
                     except Exception:
                         pass
-                for alert in alerts.data:
-                    if os.getenv("IMT_OLLAMA_ENABLE", "false") == "true":
+                if os.getenv("IMT_OLLAMA_ENABLE", "false") == "true":
+                    for alert in alerts.data:
                         # append an AI summary to the alert if available, otherwise queue one
                         # to be appended with the next alerts refresh
                         async with OllamaClientIMT(r_client=self.r_client) as ollama:
