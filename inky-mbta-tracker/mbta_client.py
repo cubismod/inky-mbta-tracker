@@ -94,7 +94,7 @@ def parse_shape_data(shapes: Shapes) -> LineRoute:
 # gets line (orange, blue, red, green, etc) geometry using MBTA API
 # redis expires in 24 hours
 @retry(
-    wait=wait_exponential_jitter(initial=2, jitter=5, max=60),
+    wait=wait_exponential_jitter(initial=5, jitter=5, max=60),
     before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
     retry=retry_if_not_exception_type(CancelledError),
 )
@@ -871,7 +871,7 @@ class MBTAApi:
             await send_stream.send(event)
 
     @retry(
-        wait=wait_exponential_jitter(initial=2, jitter=5, max=60),
+        wait=wait_exponential_jitter(initial=5, jitter=5, max=60),
         before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
         retry=retry_if_not_exception_type(CancelledError),
     )
@@ -907,7 +907,7 @@ class MBTAApi:
 
     # saves a route to the dict of routes rather than redis
     @retry(
-        wait=wait_exponential_jitter(initial=2, jitter=5, max=60),
+        wait=wait_exponential_jitter(initial=5, jitter=5, max=60),
         before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
         retry=retry_if_not_exception_type(CancelledError),
     )
@@ -936,7 +936,7 @@ class MBTAApi:
                         logger.error("Unable to parse route", exc_info=err)
 
     @retry(
-        wait=wait_exponential_jitter(initial=2, jitter=5, max=60),
+        wait=wait_exponential_jitter(initial=5, jitter=5, max=60),
         before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
         retry=retry_if_not_exception_type(CancelledError),
     )
@@ -1026,7 +1026,7 @@ class MBTAApi:
         return None
 
     @retry(
-        wait=wait_exponential_jitter(initial=2, jitter=5, max=60),
+        wait=wait_exponential_jitter(initial=5, jitter=5, max=60),
         before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
         retry=retry_if_not_exception_type(CancelledError),
     )
@@ -1085,7 +1085,7 @@ class MBTAApi:
 
     # 3 weeks of caching in redis as maybe a stop will change? idk
     @retry(
-        wait=wait_exponential_jitter(initial=2, jitter=5, max=60),
+        wait=wait_exponential_jitter(initial=5, jitter=5, max=60),
         before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
         retry=retry_if_not_exception_type(CancelledError),
     )
@@ -1217,7 +1217,7 @@ async def precache_track_predictions_runner(
 
 
 @retry(
-    wait=wait_exponential_jitter(initial=2, jitter=5, max=60),
+    wait=wait_exponential_jitter(initial=5, jitter=5, max=60),
     before=before_log(logger, logging.INFO),
     before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
     retry=retry_if_not_exception_type(CancelledError),
@@ -1259,7 +1259,7 @@ async def watch_mbta_server_side_events(
 
 
 @retry(
-    wait=wait_exponential_jitter(initial=2, jitter=5, max=60),
+    wait=wait_exponential_jitter(initial=5, jitter=5, max=60),
     before=before_log(logger, logging.INFO),
     before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
     retry=retry_if_not_exception_type(CancelledError),
@@ -1305,7 +1305,7 @@ async def watch_static_schedule(
 
 
 @retry(
-    wait=wait_exponential_jitter(initial=2, jitter=5, max=60),
+    wait=wait_exponential_jitter(initial=5, jitter=5, max=60),
     before=before_log(logger, logging.INFO),
     before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
     retry=retry_if_not_exception_type(CancelledError),

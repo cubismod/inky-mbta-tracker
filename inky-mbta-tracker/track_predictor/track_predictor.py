@@ -991,7 +991,7 @@ class TrackPredictor:
             return None
 
     @retry(
-        wait=wait_exponential_jitter(initial=2, jitter=5, max=60),
+        wait=wait_exponential_jitter(initial=5, jitter=5, max=60),
         before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
         retry=retry_if_not_exception_type(CancelledError),
     )
