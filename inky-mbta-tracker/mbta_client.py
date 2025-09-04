@@ -1012,12 +1012,13 @@ class MBTAApi:
                     except Exception:
                         pass
                 for alert in alerts.data:
-                    # append an AI summary to the alert if available, otherwise queue one
-                    # to be appended with the next alerts refresh
-                    async with OllamaClientIMT(r_client=self.r_client) as ollama:
-                        resp = await ollama.fetch_cached_summary(alert)
-                        if resp:
-                            alert.ai_summary = resp
+                    if os.getenv("IMT_OLLAMA_ENABLE", "false") == "true":
+                        # append an AI summary to the alert if available, otherwise queue one
+                        # to be appended with the next alerts refresh
+                        async with OllamaClientIMT(r_client=self.r_client) as ollama:
+                            resp = await ollama.fetch_cached_summary(alert)
+                            if resp:
+                                alert.ai_summary = resp
                 return alerts.data
             except ValidationError as err:
                 logger.error("Unable to parse alert", exc_info=err)
