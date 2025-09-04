@@ -102,6 +102,7 @@ class TaskType(Enum):
     TRACK_PREDICTIONS = 6
     REDIS_BACKUP = 7
     VEHICLES_BACKGROUND_WORKER = 8
+    ALERTS = 9
 
 
 class MBTAServiceType(Enum):

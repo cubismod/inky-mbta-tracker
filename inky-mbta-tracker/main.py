@@ -17,6 +17,7 @@ from geojson_utils import background_refresh
 from logging_setup import setup_logging
 from mbta_client import (
     precache_track_predictions_runner,
+    watch_alerts,
     watch_static_schedule,
     watch_station,
     watch_vehicles,
@@ -173,6 +174,14 @@ async def __main__() -> None:
                         session,
                         stop,
                         route_id,
+                    )
+                # Start alerts SSE watchers for each configured route
+                for route_id in config.vehicles_by_route:
+                    tg.start_soon(
+                        watch_alerts,
+                        get_redis(redis_pool),
+                        route_id,
+                        session,
                     )
 
             # Start track prediction precaching if enabled

@@ -19,7 +19,6 @@ from consts import DAY, FOUR_WEEKS, HOUR, MBTA_V3_ENDPOINT, TWO_MONTHS, YEAR
 from exceptions import RateLimitExceeded
 from mbta_responses import (
     AlertResource,
-    Alerts,
     Facilities,
     PredictionAttributes,
     PredictionResource,
@@ -46,6 +45,7 @@ from prometheus import (
 )
 from pydantic import BaseModel, TypeAdapter, ValidationError
 from redis.asyncio.client import Redis
+from redis.exceptions import RedisError
 from redis_cache import check_cache, write_cache
 from schedule_tracker import ScheduleEvent, VehicleRedisSchema, dummy_schedule_event
 from shared_types.shared_types import (
@@ -380,6 +380,10 @@ class MBTAApi:
         hc_fail_threshold = 2 * HOUR
         ny_tz = ZoneInfo("America/New_York")
         failtime: Optional[datetime] = None
+        if self.watcher_type == TaskType.ALERTS:
+            await sleep(6 * HOUR)
+            tg.cancel_scope.cancel()
+            return
         if self.route:
             if (
                 "Red" in self.route
@@ -446,13 +450,93 @@ class MBTAApi:
         self,
         data: str,
         event_type: str,
-        send_stream: MemoryObjectSendStream[ScheduleEvent | VehicleRedisSchema],
+        send_stream: MemoryObjectSendStream[ScheduleEvent | VehicleRedisSchema] | None,
         transit_time_min: int,
         session: ClientSession,
         tg: TaskGroup,
     ) -> None:
         # https://www.mbta.com/developers/v3-api/streaming
         try:
+            # Handle Alerts stream separately
+            if self.watcher_type == TaskType.ALERTS:
+                if event_type == "reset":
+                    ta = TypeAdapter(list[AlertResource])
+                    alerts = ta.validate_json(data, strict=False)
+                    # If filtering by a single route, reset that set first
+                    if self.route:
+                        await self.r_client.delete(f"alerts:route:{self.route}")
+                    for a in alerts:
+                        await write_cache(
+                            self.r_client,
+                            f"alert:{a.id}",
+                            a.model_dump_json(),
+                            2 * HOUR,
+                        )
+                        # Ensure membership in sets
+                        if self.route:
+                            await self.r_client.sadd(f"alerts:route:{self.route}", a.id)  # type: ignore
+                        # Also map to any routes in informed_entity
+                        if a.attributes and a.attributes.informed_entity:
+                            for ent in a.attributes.informed_entity:
+                                if ent.route:
+                                    await self.r_client.sadd(
+                                        f"alerts:route:{ent.route}", a.id
+                                    )  # type: ignore[misc]
+                                # Map to trip as well if present
+                                if ent.trip:
+                                    await self.r_client.sadd(
+                                        f"alerts:trip:{ent.trip}", a.id
+                                    )  # type: ignore[misc]
+                    return
+                elif event_type in ("add", "update"):
+                    a = AlertResource.model_validate_json(data, strict=False)
+                    await write_cache(
+                        self.r_client, f"alert:{a.id}", a.model_dump_json(), 2 * HOUR
+                    )
+                    if self.route:
+                        await self.r_client.sadd(f"alerts:route:{self.route}", a.id)  # type: ignore[misc]
+                    if a.attributes and a.attributes.informed_entity:
+                        for ent in a.attributes.informed_entity:
+                            if ent.route:
+                                await self.r_client.sadd(
+                                    f"alerts:route:{ent.route}", a.id
+                                )  # type: ignore[misc]
+                            if ent.trip:
+                                await self.r_client.sadd(
+                                    f"alerts:trip:{ent.trip}", a.id
+                                )  # type: ignore[misc]
+                    return
+                elif event_type == "remove":
+                    type_and_id = TypeAndID.model_validate_json(data, strict=False)
+                    # Remove from sets based on stored alert data, then delete key
+                    try:
+                        cached = await check_cache(
+                            self.r_client, f"alert:{type_and_id.id}"
+                        )
+                        if cached:
+                            try:
+                                a = AlertResource.model_validate_json(
+                                    cached, strict=False
+                                )
+                                if a.attributes and a.attributes.informed_entity:
+                                    for ent in a.attributes.informed_entity:
+                                        if ent.route:
+                                            await self.r_client.srem(
+                                                f"alerts:route:{ent.route}",
+                                                type_and_id.id,
+                                            )  # type: ignore[misc]
+                                        if ent.trip:
+                                            await self.r_client.srem(
+                                                f"alerts:trip:{ent.trip}",
+                                                type_and_id.id,
+                                            )  # type: ignore[misc]
+                            except ValidationError:
+                                pass
+                    finally:
+                        await self.r_client.delete(f"alert:{type_and_id.id}")  # type: ignore[misc]
+                    return
+                # For unknown event types, ignore
+                return
             match event_type:
                 case "reset":
                     if (
@@ -461,86 +545,97 @@ class MBTAApi:
                     ):
                         ta = TypeAdapter(list[PredictionResource])
                         prediction_resource = ta.validate_json(data, strict=False)
-                        for item in prediction_resource:
-                            tg.start_soon(
-                                self.queue_event,
-                                item,
-                                "reset",
-                                send_stream,
-                                session,
-                                tg,
-                                transit_time_min,
-                            )
+                        if send_stream is not None:
+                            for item in prediction_resource:
+                                tg.start_soon(
+                                    self.queue_event,
+                                    item,
+                                    "reset",
+                                    send_stream,
+                                    session,
+                                    tg,
+                                    transit_time_min,
+                                )
                         if len(prediction_resource) == 0:
-                            tg.start_soon(
-                                self.save_schedule,
-                                transit_time_min,
-                                send_stream,
-                                session,
-                                tg,
-                                timedelta(hours=4),
-                            )
+                            if send_stream is not None:
+                                tg.start_soon(
+                                    self.save_schedule,
+                                    transit_time_min,
+                                    send_stream,
+                                    session,
+                                    tg,
+                                    timedelta(hours=4),
+                                )
                     else:
-                        ta = TypeAdapter(list[Vehicle])
-                        vehicles = ta.validate_json(data, strict=False)
-                        for v in vehicles:
-                            tg.start_soon(
-                                self.queue_event,
-                                v,
-                                event_type,
-                                send_stream,
-                                session,
-                                tg,
-                            )
+                        if send_stream is not None:
+                            ta = TypeAdapter(list[Vehicle])
+                            vehicles = ta.validate_json(data, strict=False)
+                            for v in vehicles:
+                                tg.start_soon(
+                                    self.queue_event,
+                                    v,
+                                    event_type,
+                                    send_stream,
+                                    session,
+                                    tg,
+                                )
 
                 case "add":
                     if (
                         self.watcher_type == TaskType.SCHEDULE_PREDICTIONS
                         or self.watcher_type == TaskType.SCHEDULES
                     ):
-                        tg.start_soon(
-                            self.queue_event,
-                            PredictionResource.model_validate_json(data, strict=False),
-                            "add",
-                            send_stream,
-                            session,
-                            tg,
-                            transit_time_min,
-                        )
+                        if send_stream is not None:
+                            tg.start_soon(
+                                self.queue_event,
+                                PredictionResource.model_validate_json(
+                                    data, strict=False
+                                ),
+                                "add",
+                                send_stream,
+                                session,
+                                tg,
+                                transit_time_min,
+                            )
                     else:
-                        vehicle = Vehicle.model_validate_json(data, strict=False)
-                        tg.start_soon(
-                            self.queue_event,
-                            vehicle,
-                            event_type,
-                            send_stream,
-                            session,
-                            tg,
-                        )
+                        if send_stream is not None:
+                            vehicle = Vehicle.model_validate_json(data, strict=False)
+                            tg.start_soon(
+                                self.queue_event,
+                                vehicle,
+                                event_type,
+                                send_stream,
+                                session,
+                                tg,
+                            )
                 case "update":
                     if (
                         self.watcher_type == TaskType.SCHEDULE_PREDICTIONS
                         or self.watcher_type == TaskType.SCHEDULES
                     ):
-                        tg.start_soon(
-                            self.queue_event,
-                            PredictionResource.model_validate_json(data, strict=False),
-                            "update",
-                            send_stream,
-                            session,
-                            tg,
-                            transit_time_min,
-                        )
+                        if send_stream is not None:
+                            tg.start_soon(
+                                self.queue_event,
+                                PredictionResource.model_validate_json(
+                                    data, strict=False
+                                ),
+                                "update",
+                                send_stream,
+                                session,
+                                tg,
+                                transit_time_min,
+                            )
                     else:
-                        vehicle = Vehicle.model_validate_json(data, strict=False)
-                        tg.start_soon(
-                            self.queue_event,
-                            vehicle,
-                            event_type,
-                            send_stream,
-                            session,
-                            tg,
-                        )
+                        if send_stream is not None:
+                            vehicle = Vehicle.model_validate_json(data, strict=False)
+                            tg.start_soon(
+                                self.queue_event,
+                                vehicle,
+                                event_type,
+                                send_stream,
+                                session,
+                                tg,
+                            )
                 case "remove":
                     type_and_id = TypeAndID.model_validate_json(data, strict=False)
                     # directly interact with the queue here to use a dummy object
@@ -548,20 +643,22 @@ class MBTAApi:
                         self.watcher_type == TaskType.SCHEDULE_PREDICTIONS
                         or self.watcher_type == TaskType.SCHEDULES
                     ):
-                        await send_stream.send(dummy_schedule_event(type_and_id.id))
+                        if send_stream is not None:
+                            await send_stream.send(dummy_schedule_event(type_and_id.id))
                     elif self.route:
-                        await send_stream.send(
-                            VehicleRedisSchema(
-                                longitude=0,
-                                latitude=0,
-                                direction_id=0,
-                                current_status="",
-                                id=type_and_id.id,
-                                action="remove",
-                                route=self.route,
-                                update_time=datetime.now().astimezone(UTC),
+                        if send_stream is not None:
+                            await send_stream.send(
+                                VehicleRedisSchema(
+                                    longitude=0,
+                                    latitude=0,
+                                    direction_id=0,
+                                    current_status="",
+                                    id=type_and_id.id,
+                                    action="remove",
+                                    route=self.route,
+                                    update_time=datetime.now().astimezone(UTC),
+                                )
                             )
-                        )
 
         except ValidationError as err:
             logger.error("Unable to parse schedule", exc_info=err)
@@ -946,84 +1043,56 @@ class MBTAApi:
         trip_id: Optional[str] = None,
         route_id: Optional[str] = None,
     ) -> Optional[list[AlertResource]]:
-        if session.closed:
-            logger.debug("get_alerts called with a closed session; skipping fetch")
-            return None
-
-        # Build endpoint and cache keys
-        endpoint = "/alerts"
-        cache_key: Optional[str] = None
-        throttle_key: Optional[str] = None
+        # Read alerts from Redis sets populated by SSE watchers
+        key: Optional[str] = None
         if trip_id:
-            endpoint += f"?filter[trip]={trip_id}"
-            cache_key = f"alerts:trip:{trip_id}"
-            throttle_key = f"alerts:throttle:trip:{trip_id}"
+            key = f"alerts:trip:{trip_id}"
         elif route_id:
-            endpoint += f"?filter[route]={route_id}"
-            cache_key = f"alerts:route:{route_id}"
-            throttle_key = f"alerts:throttle:route:{route_id}"
+            key = f"alerts:route:{route_id}"
         else:
             logging.error("you need to specify a trip_id or route_id to fetch alerts")
             return None
-        endpoint += f"&api_key={MBTA_AUTH}&filter[lifecycle]=NEW,ONGOING,ONGOING_UPCOMING&filter[datetime]=NOW&filter[severity]=3,4,5,6,7,8,9,10"
 
-        # Respect simple throttle to avoid hammering the API for the same key
-        if throttle_key:
-            try:
-                # Allow one call per 5 seconds per (trip/route) key
-                set_ok = await self.r_client.set(throttle_key, 1, ex=5, nx=True)  # type: ignore[misc]
-                if not set_ok and cache_key:
-                    cached = await check_cache(self.r_client, cache_key)
-                    if cached:
-                        alerts = Alerts.model_validate_json(cached, strict=False)
-                        return alerts.data
-                    # No cache available; back off silently
-                    return None
-            except Exception:
-                # If Redis is unavailable, continue without throttle
-                pass
-
-        async with session.get(endpoint) as response:
-            try:
-                if response.status == 429:
-                    # Respect retry-after when available and fall back to cache
-                    retry_after = response.headers.get("Retry-After")
-                    try:
-                        if retry_after:
-                            await sleep(min(60, int(retry_after)))
-                    except Exception:
-                        # ignore parsing issues
-                        pass
-                    if cache_key:
-                        cached = await check_cache(self.r_client, cache_key)
-                        if cached:
-                            alerts = Alerts.model_validate_json(cached, strict=False)
-                            return alerts.data
-                    # Quietly back off to avoid tenacity error spam
-                    return None
-
-                body = await response.text()
-                mbta_api_requests.labels("alerts").inc()
-                alerts = Alerts.model_validate_json(strict=False, json_data=body)
-                # Cache raw body for a short period to reduce API pressure
-                if cache_key:
-                    try:
-                        await write_cache(self.r_client, cache_key, body, 45)
-                    except Exception:
-                        pass
-                if os.getenv("IMT_OLLAMA_ENABLE", "false") == "true":
-                    for alert in alerts.data:
-                        # append an AI summary to the alert if available, otherwise queue one
-                        # to be appended with the next alerts refresh
-                        async with OllamaClientIMT(r_client=self.r_client) as ollama:
-                            resp = await ollama.fetch_cached_summary(alert)
-                            if resp:
-                                alert.ai_summary = resp
-                return alerts.data
-            except ValidationError as err:
-                logger.error("Unable to parse alert", exc_info=err)
-                logger.debug(f"Alert body: {body}")
-        return None
+        try:
+            ids = await self.r_client.smembers(key)  # type: ignore[misc]
+            if not ids:
+                return []
+            # Fetch alert objects in a pipeline
+            pl = self.r_client.pipeline()
+            for raw in ids:
+                alert_id = (
+                    raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else raw
+                )
+                pl.get(f"alert:{alert_id}")
+            results = await pl.execute()
+            ret: list[AlertResource] = []
+            for raw in results:
+                if not raw:
+                    continue
+                try:
+                    alert = AlertResource.model_validate_json(raw, strict=False)
+                    # Optionally attach cached AI summary if available
+                    if os.getenv("IMT_OLLAMA_ENABLE", "false") == "true":
+                        try:
+                            async with OllamaClientIMT(
+                                r_client=self.r_client
+                            ) as ollama:
+                                resp = await ollama.fetch_cached_summary(alert)
+                                if resp:
+                                    alert.ai_summary = resp
+                        except (ConnectionError, TimeoutError, RedisError):
+                            # Best-effort attach of cached summaries; ignore connectivity/cache issues
+                            pass
+                    ret.append(alert)
+                except ValidationError:
+                    continue
+            return ret
+        except RedisError as e:
+            logger.error("Redis error while loading alerts", exc_info=e)
+            return None
+        except (ConnectionError, TimeoutError) as e:
+            logger.error("Connection error while loading alerts", exc_info=e)
+            return None
 
     @retry(
         wait=wait_exponential_jitter(initial=5, jitter=20, max=60),
@@ -1209,7 +1278,7 @@ async def precache_track_predictions_runner(
         except CancelledError:
             logger.info("Track prediction precache runner cancelled")
             break
-        except Exception as e:
+        except (ValidationError, RedisError, ConnectionError, TimeoutError) as e:
             logger.error("Error in track prediction precaching runner", exc_info=e)
 
         # Wait for the specified interval
@@ -1226,7 +1295,7 @@ async def watch_mbta_server_side_events(
     watcher: MBTAApi,
     endpoint: str,
     headers: dict[str, str],
-    send_stream: MemoryObjectSendStream[ScheduleEvent | VehicleRedisSchema],
+    send_stream: MemoryObjectSendStream[ScheduleEvent | VehicleRedisSchema] | None,
     session: ClientSession,
     transit_time_min: int,
 ) -> None:
@@ -1403,3 +1472,41 @@ def determine_station_id(stop_id: str) -> tuple[str, bool]:
     if "Providence" in stop_id or "NEC-1851" in stop_id:
         return "place-NEC-1851", True
     return stop_id, False
+
+
+@retry(
+    wait=wait_exponential_jitter(initial=5, jitter=20, max=60),
+    before=before_log(logger, logging.INFO),
+    before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
+    retry=retry_if_not_exception_type(CancelledError),
+)
+async def watch_alerts(
+    r_client: Redis, route_id: Optional[str], session: ClientSession
+) -> None:
+    """Watch MBTA Alerts via SSE and persist to Redis.
+
+    - If `route_id` is provided, filters alerts for that route and maintains
+      `alerts:route:{route_id}` set membership.
+    - Stores individual alerts under `alert:{id}` with a short TTL.
+    """
+    # Base endpoint and filters
+    endpoint = f"{MBTA_V3_ENDPOINT}/alerts?api_key={MBTA_AUTH}&filter[lifecycle]=NEW,ONGOING,ONGOING_UPCOMING&filter[datetime]=NOW&filter[severity]=3,4,5,6,7,8,9,10"
+    if route_id:
+        endpoint += f"&filter[route]={route_id}"
+    headers = {"accept": "text/event-stream"}
+
+    async with MBTAApi(
+        r_client,
+        route=route_id,
+        watcher_type=TaskType.ALERTS,
+    ) as watcher:
+        tracker_executions.labels("alerts").inc()
+        await sleep(randint(1, 15))
+        await watch_mbta_server_side_events(
+            watcher,
+            endpoint,
+            headers,
+            None,
+            session=session,
+            transit_time_min=0,
+        )
