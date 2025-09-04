@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 
 @retry(
-    wait=wait_exponential_jitter(initial=5, jitter=5, max=60),
+    wait=wait_exponential_jitter(initial=5, jitter=20, max=60),
     stop=stop_after_attempt(3),
     retry=retry_if_not_exception_type((ValueError, CancelledError)),
     before_sleep=before_sleep_log(logger, logging.DEBUG),
