@@ -390,7 +390,7 @@ class MBTAApi:
                 or self.route.startswith("7")
             ):
                 hc_fail_threshold = 60
-            if "CR" in self.route:
+            if "CR" in self.route or self.route == "746":
                 hc_fail_threshold = HOUR + (randint(0, 120) * 60)
         async with aiohttp.ClientSession() as session:
             logger.debug("started hc monitoring")
@@ -949,23 +949,68 @@ class MBTAApi:
         if session.closed:
             logger.debug("get_alerts called with a closed session; skipping fetch")
             return None
+
+        # Build endpoint and cache keys
         endpoint = "/alerts"
+        cache_key: Optional[str] = None
+        throttle_key: Optional[str] = None
         if trip_id:
             endpoint += f"?filter[trip]={trip_id}"
+            cache_key = f"alerts:trip:{trip_id}"
+            throttle_key = f"alerts:throttle:trip:{trip_id}"
         elif route_id:
             endpoint += f"?filter[route]={route_id}"
+            cache_key = f"alerts:route:{route_id}"
+            throttle_key = f"alerts:throttle:route:{route_id}"
         else:
             logging.error("you need to specify a trip_id or route_id to fetch alerts")
             return None
         endpoint += f"&api_key={MBTA_AUTH}&filter[lifecycle]=NEW,ONGOING,ONGOING_UPCOMING&filter[datetime]=NOW&filter[severity]=3,4,5,6,7,8,9,10"
 
+        # Respect simple throttle to avoid hammering the API for the same key
+        if throttle_key:
+            try:
+                # Allow one call per 5 seconds per (trip/route) key
+                set_ok = await self.r_client.set(throttle_key, 1, ex=5, nx=True)  # type: ignore[misc]
+                if not set_ok and cache_key:
+                    cached = await check_cache(self.r_client, cache_key)
+                    if cached:
+                        alerts = Alerts.model_validate_json(cached, strict=False)
+                        return alerts.data
+                    # No cache available; back off silently
+                    return None
+            except Exception:
+                # If Redis is unavailable, continue without throttle
+                pass
+
         async with session.get(endpoint) as response:
             try:
                 if response.status == 429:
-                    raise RateLimitExceeded()
+                    # Respect retry-after when available and fall back to cache
+                    retry_after = response.headers.get("Retry-After")
+                    try:
+                        if retry_after:
+                            await sleep(min(60, int(retry_after)))
+                    except Exception:
+                        # ignore parsing issues
+                        pass
+                    if cache_key:
+                        cached = await check_cache(self.r_client, cache_key)
+                        if cached:
+                            alerts = Alerts.model_validate_json(cached, strict=False)
+                            return alerts.data
+                    # Quietly back off to avoid tenacity error spam
+                    return None
+
                 body = await response.text()
                 mbta_api_requests.labels("alerts").inc()
                 alerts = Alerts.model_validate_json(strict=False, json_data=body)
+                # Cache raw body for a short period to reduce API pressure
+                if cache_key:
+                    try:
+                        await write_cache(self.r_client, cache_key, body, 45)
+                    except Exception:
+                        pass
                 for alert in alerts.data:
                     # append an AI summary to the alert if available, otherwise queue one
                     # to be appended with the next alerts refresh
