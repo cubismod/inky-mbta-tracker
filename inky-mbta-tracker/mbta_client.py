@@ -1301,27 +1301,31 @@ async def watch_mbta_server_side_events(
 ) -> None:
     while True:
         try:
-            async with create_task_group() as tg:
-                client = aiosseclient(endpoint, headers=headers)
-                if os.getenv("IMT_PROMETHEUS_ENDPOINT"):
-                    tg.start_soon(watcher._monitor_health, tg)
-                async for event in client:
-                    server_side_events.labels(watcher.gen_unique_id()).inc()
-                    tg.start_soon(
-                        watcher.parse_live_api_response,
-                        event.data,
-                        event.event,
-                        send_stream,
-                        transit_time_min,
-                        session,
-                        tg,
-                    )
+            # Inner try dedicated to ExceptionGroup handling via except*
+            try:
+                async with create_task_group() as tg:
+                    client = aiosseclient(endpoint, headers=headers)
+                    if os.getenv("IMT_PROMETHEUS_ENDPOINT"):
+                        tg.start_soon(watcher._monitor_health, tg)
+                    async for event in client:
+                        server_side_events.labels(watcher.gen_unique_id()).inc()
+                        tg.start_soon(
+                            watcher.parse_live_api_response,
+                            event.data,
+                            event.event,
+                            send_stream,
+                            transit_time_min,
+                            session,
+                            tg,
+                        )
+            except* ClientPayloadError as eg:
+                # Handle aiohttp payload/errors wrapped in ExceptionGroup from TaskGroup
+                for err in eg.exceptions:
+                    logger.error("SSE client payload error", exc_info=err)
         except CancelledError:
             # Normal shutdown path; keep logs concise
             logger.info("SSE watcher cancelled; stopping stream loop")
             return
-        except ClientPayloadError as err:
-            logging.error("Error processing response", exc_info=err)
         except GeneratorExit as e:
             logger.error("GeneratorExit in watch_mbta_server_side_events", exc_info=e)
             return
