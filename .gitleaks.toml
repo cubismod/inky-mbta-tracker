@@ -1,2 +1,9 @@
+[extend]
+useDefault = true
+
+[[rules]]
+id = "allow_list_autogen"
+description = "Ignore auto generated hashes"
+
 [allowlist]
 paths = ["inky-mbta-tracker/shared_types/class_hashes.py"]
