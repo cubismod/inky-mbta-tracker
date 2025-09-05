@@ -1,16 +1,12 @@
 # inky-mbta-tracker
 
-Inky MBTA Tracker is a personal project using the [Inky WHAT display](https://shop.pimoroni.com/products/inky-what?variant=21214020436051)
-as a transit tracker for the Massachusetts Bay Transit Authority System.
+Inky MBTA Tracker or IMT is a multi-purpose, async Python application tracking the
+Massachusetts Bay Transit Authority. It relies on Redis for data storage in conjunction with
+[inky-display](https://github.com/cubismod/inky-display) for e-inky display functionality. Additionally,
+it provides a comprehensive API using FastAPI which serves [ryanwallace.cloud](https://ryanwallace.cloud).
 
-## Features
 
-- **Real-time Predictions**: Stream live predictions from the MBTA API
-- **Static Schedules**: Fall back to static schedules when real-time data is unavailable
-- **Vehicle Tracking**: Track real-time vehicle positions and status
-- **Track Prediction**:  Predict commuter rail track assignments before they're announced
-- **MQTT Integration**: Publish departure information to MQTT for home automation
-- **Prometheus Metrics**: Monitor system performance and API usage
+## Configuring
 
 ## Getting Started
 
@@ -23,8 +19,20 @@ AUTH_TOKEN=<MBTA_API_TOKEN> # https://www.mbta.com/developers/v3-api
 # Application Configuration
 IMT_CONFIG=./config.json # optional to specify a different config file
 IMT_LOG_FILE=./logs/inky.log # optional to also log to a file
+LOG_LEVEL=info
+IMT_COLOR=true  # to log with colors
+IMT_REDIS_BACKUP_TIME=21:50 # set to backup every night at this time, you are responsible for cleaning up backups
+# use these settings for real time self-monitoring health checks via prometheus
+IMT_PROMETHEUS_JOB="imt_dev"
+IMT_PROMETHEUS_ENDPOINT="http://prometheus.local"
+IMT_METRIC_NAME="mbta_server_side_events:rate5m"
 
-# Redis Configuration (works for local dev w/ docker-compose)
+# monitoring with Pyroscope (optional)
+IMT_PYROSCOPE_ENABLED=true
+IMT_PYROSCOPE_HOST=http://pyroscope.local
+IMT_PYROSCOPE_NAME=inky-local
+
+# Redis Configuration (required)
 IMT_REDIS_ENDPOINT=127.0.0.1
 IMT_REDIS_PORT=6379
 IMT_REDIS_PASSWORD=mbta # change this!
@@ -35,7 +43,6 @@ IMT_MQTT_HOST=127.0.0.1
 IMT_MQTT_USER=username
 IMT_MQTT_PASS=mqtt_pass # change this!
 
-# Performance Tuning
 # API Timeouts
 IMT_API_REQUEST_TIMEOUT=30 # API request timeout in seconds
 IMT_TRACK_PREDICTION_TIMEOUT=15 # Track prediction timeout in seconds
@@ -43,7 +50,6 @@ IMT_TRACK_PREDICTION_TIMEOUT=15 # Track prediction timeout in seconds
 # Feature Flags
 IMT_RATE_LIMITING_ENABLED=true # Enable/disable rate limiting
 IMT_SSE_ENABLED=true # Enable/disable Server-Sent Events
-IMT_PROFILE_FILE=./profile.txt # optional to enable Yappi profiling around every hour
 
 # Ollama AI Summarizer Configuration
 OLLAMA_BASE_URL=http://localhost:11434 # Ollama API endpoint
