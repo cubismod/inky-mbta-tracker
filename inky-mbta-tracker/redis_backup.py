@@ -1,8 +1,10 @@
+import gzip
 import logging
+import shutil
 from datetime import UTC, datetime
 from typing import Any
 
-from anyio import Path, open_file
+from anyio import Path, open_file, to_thread
 from prometheus import redis_commands
 from redis.asyncio import Redis
 
@@ -119,6 +121,32 @@ class RedisBackup:
             backup_size = (await backup_path.stat()).st_size
             logger.info(f"Backup created: {backup_filename} ({backup_size} bytes)")
 
+            # Compress the RESP backup with gzip. If compression fails, keep original.
+            try:
+                compressed_path = backup_path.with_suffix(backup_path.suffix + ".gz")
+
+                def _compress(src: str, dst: str) -> None:
+                    with open(src, "rb") as f_in, gzip.open(dst, "wb") as f_out:
+                        shutil.copyfileobj(f_in, f_out)
+
+                await to_thread.run_sync(
+                    _compress, str(backup_path), str(compressed_path)
+                )
+
+                # Replace original with compressed version
+                await backup_path.unlink()
+                backup_path = compressed_path
+                backup_filename = compressed_path.name
+                compressed_size = (await compressed_path.stat()).st_size
+                logger.info(
+                    f"Compressed backup: {backup_filename} ({compressed_size} bytes)"
+                )
+            except Exception as ce:
+                logger.warning(
+                    "Gzip compression failed; keeping uncompressed RESP backup",
+                    exc_info=ce,
+                )
+
             return backup_filename
 
         except Exception as e:
@@ -133,11 +161,14 @@ class RedisBackup:
             cutoff_time = datetime.now(UTC).timestamp() - (keep_days * 24 * 3600)
 
             removed_count = 0
-            async for backup_file in self.backup_dir.glob("redis_backup_*.resp"):
-                if (await backup_file.stat()).st_mtime < cutoff_time:
-                    await backup_file.unlink()
-                    removed_count += 1
-                    logger.info(f"Removed old backup: {backup_file.name}")
+
+            # Handle both compressed and any legacy uncompressed backups
+            for pattern in ("redis_backup_*.resp.gz", "redis_backup_*.resp"):
+                async for backup_file in self.backup_dir.glob(pattern):
+                    if (await backup_file.stat()).st_mtime < cutoff_time:
+                        await backup_file.unlink()
+                        removed_count += 1
+                        logger.info(f"Removed old backup: {backup_file.name}")
 
             if removed_count > 0:
                 logger.info(f"Cleaned up {removed_count} old backup files")
