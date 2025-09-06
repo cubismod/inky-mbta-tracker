@@ -180,3 +180,5 @@ profiles/
 
 mosquitto/
 backups/
+
+.zed/debug.json

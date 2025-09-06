@@ -1,9 +1,0 @@
-[
-  {
-    "adapter": "Debugpy",
-    "label": "Python Debugger: IMT Module",
-    "request": "launch",
-    "program": "${ZED_WORKTREE_ROOT}/.venv/bin/inky-mbta-tracker",
-    "envFile": "${ZED_WORKTREE_ROOT}/.env"
-  }
-]

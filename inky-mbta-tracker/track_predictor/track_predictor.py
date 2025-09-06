@@ -623,12 +623,17 @@ class TrackPredictor:
                 return None
 
             cache_key = f"track_prediction:{station_id}:{route_id}:{trip_id}:{scheduled_time.date()}"
+            negative_cache_key = f"negative_{cache_key}"
             cached_prediction = await check_cache(self.redis, cache_key)
             if cached_prediction:
                 track_predictions_cached.labels(
                     station_id=station_id, route_id=route_id, instance=INSTANCE_ID
                 ).inc()
                 return TrackPrediction.model_validate_json(cached_prediction)
+
+            negative_cached = await check_cache(self.redis, negative_cache_key)
+            if negative_cached:
+                return None
 
             # it makes more sense to get the headsign client-side using the exact trip_id due to API rate limits
             async with aiohttp.ClientSession(base_url=MBTA_V3_ENDPOINT) as session:
@@ -704,6 +709,7 @@ class TrackPredictor:
             )
 
             if not patterns:
+                await write_cache(self.redis, negative_cache_key, "True", 2 * MONTH)
                 return None
 
             # Find the most likely track
@@ -716,6 +722,7 @@ class TrackPredictor:
                 logger.debug(
                     f"No prediction made for station_id={station_id}, route_id={route_id}, trip_id={trip_id}, headsign={headsign}, direction_id={direction_id}, scheduled_time={scheduled_time}, confidence={confidence}, threshold={confidence_threshold}"
                 )
+                await write_cache(self.redis, negative_cache_key, "True", 2 * MONTH)
                 return None
 
             # Determine prediction method
@@ -782,6 +789,7 @@ class TrackPredictor:
 
         except ValidationError as e:
             logger.error("Failed to predict track", exc_info=e)
+            await write_cache(self.redis, negative_cache_key, "True", 2 * MONTH)
             return None
 
     async def _store_prediction(self, prediction: TrackPrediction) -> None:
