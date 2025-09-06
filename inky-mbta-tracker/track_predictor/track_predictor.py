@@ -709,7 +709,7 @@ class TrackPredictor:
             )
 
             if not patterns:
-                await write_cache(self.redis, negative_cache_key, "True", 2 * MONTH)
+                await write_cache(self.redis, negative_cache_key, "True", 4 * 60)
                 return None
 
             # Find the most likely track
