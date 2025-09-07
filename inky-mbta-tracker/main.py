@@ -33,6 +33,7 @@ from schedule_tracker import (
 )
 from shared_types.schema_versioner import schema_versioner
 from shared_types.shared_types import TaskType
+from track_predictor.track_predictor import TrackPredictor
 from utils import get_redis
 
 load_dotenv()
@@ -193,6 +194,12 @@ async def __main__() -> None:
                     config.track_prediction_routes,
                     config.track_prediction_stations,
                     config.track_prediction_interval_hours,
+                )
+
+            # Start ML worker only if enabled via env IMT_ML
+            if os.getenv("IMT_ML", "").strip().lower() in {"1", "true", "yes", "on"}:
+                tg.start_soon(
+                    TrackPredictor(get_redis(redis_pool)).ml_prediction_worker
                 )
 
             # consumer

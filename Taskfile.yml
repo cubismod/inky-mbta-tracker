@@ -9,7 +9,7 @@ tasks:
   check:
     cmds:
       - uv run ruff check inky-mbta-tracker
-      - task: pyright
+      - task: basedpyright
   fix:
     cmds:
       - uv run ruff check --fix inky-mbta-tracker

@@ -20,7 +20,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `uv run inky-mbta-tracker --prediction-api` - Run prediction API directly
 - `uv run pytest` - Run tests directly
 - `uv run ruff check inky-mbta-tracker` - Lint check
-- `uv run pyright` - Type check
+- `uv run basedpyright` - Type check
 
 ## Architecture
 
@@ -63,7 +63,7 @@ This is a Python-based real-time transit tracking system that monitors MBTA (Mas
 
 The application uses a `config.json` file to define stops to track, with options for:
 - Real-time predictions vs. static schedules
-- Route and direction filtering  
+- Route and direction filtering
 - Transit time calculations
 - Display preferences
 - Track prediction precaching (optional - see README.md for configuration)
@@ -107,11 +107,11 @@ Each time you modify the code please run `task format`, `task fix`, and `task ch
       risky_operation()
   except ValueError as e:
       logger.error("Failed to process data", exc_info=e)
-  
+
   # Bad - missing stack trace
   except ValueError as e:
       logger.error(f"Failed to process data: {e}")
-  
+
   # Bad - redundant exception in message
   except ValueError as e:
       logger.error(f"Failed to process data: {e}", exc_info=e)

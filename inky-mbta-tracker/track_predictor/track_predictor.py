@@ -1,14 +1,21 @@
+import json
 import logging
+import math
 import os
 import time
+import uuid
 from asyncio import CancelledError
 from collections import defaultdict
 from datetime import UTC, datetime, timedelta
-from typing import Any, Dict, List, Optional, TypedDict
+from typing import Any, Awaitable, Dict, List, Optional, TypedDict
 
 import aiohttp
+import anyio
+import numpy as np
 import shared_types.shared_types
 import textdistance
+from anyio import to_thread
+from typing import cast
 from anyio.abc import TaskGroup
 from consts import DAY, INSTANCE_ID, MBTA_V3_ENDPOINT, MONTH, WEEK, YEAR
 from exceptions import RateLimitExceeded
@@ -159,6 +166,188 @@ class TrackPredictor:
                 f"Failed to store track assignment due to validation error: {e}",
                 exc_info=True,
             )
+
+    # ------------------------------
+    # ML Queue + Worker (Ensemble)
+    # ------------------------------
+
+    # Redis keys for ML prediction queueing
+    ML_QUEUE_KEY = "ml:track_predict:requests"
+    ML_RESULT_KEY_PREFIX = "ml:track_predict:result:"
+    ML_STATION_VOCAB_KEY = "ml:vocab:station"
+    ML_ROUTE_VOCAB_KEY = "ml:vocab:route"
+
+    @staticmethod
+    def _ml_enabled() -> bool:
+        val = os.getenv("IMT_ML", "").strip().lower()
+        return val in {"1", "true", "yes", "on"}
+
+    async def enqueue_ml_prediction(
+        self,
+        *,
+        station_id: str,
+        route_id: str,
+        direction_id: int,
+        scheduled_time: datetime,
+        trip_id: Optional[str] = None,
+        headsign: Optional[str] = None,
+        request_id: Optional[str] = None,
+    ) -> str:
+        """
+        Enqueue a request for ML-powered track prediction. Returns the request_id.
+
+        Other modules can call this to request a prediction and then poll
+        `await_ml_prediction_result` for the result.
+        """
+        rid = request_id or str(uuid.uuid4())
+        payload = {
+            "id": rid,
+            "station_id": station_id,
+            "route_id": route_id,
+            "direction_id": int(direction_id),
+            "scheduled_time": scheduled_time.isoformat(),
+            "trip_id": trip_id,
+            "headsign": headsign,
+        }
+        await self.redis.lpush(self.ML_QUEUE_KEY, json.dumps(payload)) # pyright:ignore
+        return rid
+
+    @staticmethod
+    def _cyclical_time_features(ts: datetime) -> dict[str, float]:
+        """Compute cyclical encodings for hour/minute/day_of_week and raw timestamp."""
+        # Use local time where scheduled_time is assumed to be timezone-aware
+        hour = ts.hour
+        minute = ts.minute
+        dow = ts.weekday()  # 0..6
+        hour_angle = 2 * math.pi * (hour / 24.0)
+        minute_angle = 2 * math.pi * (minute / 60.0)
+        day_angle = 2 * math.pi * (dow / 7.0)
+        return {
+            "hour_sin": math.sin(hour_angle),
+            "hour_cos": math.cos(hour_angle),
+            "minute_sin": math.sin(minute_angle),
+            "minute_cos": math.cos(minute_angle),
+            "day_sin": math.sin(day_angle),
+            "day_cos": math.cos(day_angle),
+            "scheduled_timestamp": ts.timestamp(),
+        }
+
+    async def ml_prediction_worker(self) -> None:
+        """
+        Background worker that consumes prediction requests from Redis and
+        generates predictions using the Keras ensemble model.
+
+        Runs blocking model load/inference in an anyio thread.
+        """
+        if not self._ml_enabled():
+            logger.info("ML worker not started: IMT_ML not enabled")
+            return
+
+        def load_model_blocking():  # type: ignore[no-untyped-def]
+            # Set backend before importing keras
+            os.environ.setdefault("KERAS_BACKEND", "torch")
+            import keras
+
+            try:
+                model = keras.saving.load_model("hf://cubis/mbta-track-predictor")
+            except Exception as e:  # noqa: BLE001 (surface errors to logs)
+                logger.error("Failed to load ML model", exc_info=e)
+                raise
+            return model
+
+        # Load model once in a worker thread
+        logger.info("Starting ML prediction worker: loading model…")
+        try:
+            model = await to_thread.run_sync(load_model_blocking)
+        except Exception:
+            logger.error("ML worker disabled due to model load failure.")
+            return
+        logger.info("ML model loaded. Worker ready.")
+
+        # Consume requests
+        while True:
+            try:
+                item = await self.redis.brpop([self.ML_QUEUE_KEY], timeout=5) # pyright:ignore
+                redis_commands.labels("brpop").inc()
+                if not item:
+                    continue
+
+                _, raw = item
+                payload = json.loads(raw)
+
+                req_id = payload.get("id", str(uuid.uuid4()))
+                station_id = str(payload.get("station_id", ""))
+                route_id = str(payload.get("route_id", ""))
+                direction_id = int(payload.get("direction_id", 0))
+                scheduled_time_str = payload.get("scheduled_time")
+                try:
+                    scheduled_dt = datetime.fromisoformat(scheduled_time_str)
+                except Exception:
+                    scheduled_dt = datetime.now(UTC)
+
+                # Vocab lookups
+                station_idx = await self._vocab_get_or_add(
+                    self.ML_STATION_VOCAB_KEY, station_id
+                )
+                route_idx = await self._vocab_get_or_add(
+                    self.ML_ROUTE_VOCAB_KEY, route_id
+                )
+
+                feats = self._cyclical_time_features(scheduled_dt)
+
+                # Prepare tensors
+                features = {
+                    "station_id": np.array([station_idx], dtype=np.int64),
+                    "route_id": np.array([route_idx], dtype=np.int64),
+                    "direction_id": np.array([direction_id], dtype=np.int64),
+                    "hour_sin": np.array([feats["hour_sin"]], dtype=np.float32),
+                    "hour_cos": np.array([feats["hour_cos"]], dtype=np.float32),
+                    "minute_sin": np.array([feats["minute_sin"]], dtype=np.float32),
+                    "minute_cos": np.array([feats["minute_cos"]], dtype=np.float32),
+                    "day_sin": np.array([feats["day_sin"]], dtype=np.float32),
+                    "day_cos": np.array([feats["day_cos"]], dtype=np.float32),
+                    "scheduled_timestamp": np.array(
+                        [feats["scheduled_timestamp"]], dtype=np.float32
+                    ),
+                }
+
+                def predict_blocking():  # type: ignore[no-untyped-def]
+                    # Import inside the thread to ensure backend is respected
+
+                    probs = model.predict(features, verbose=0)
+                    return probs
+
+                probs = await to_thread.run_sync(predict_blocking)
+                # Expect shape (1, num_classes)
+                if isinstance(probs, list):
+                    # Some Keras configurations might return list of outputs
+                    probs_arr = np.mean(np.array(probs), axis=0)
+                else:
+                    probs_arr = np.array(probs)
+                avg_prob = probs_arr[0]
+                pred_class = int(np.argmax(avg_prob))
+
+                result = {
+                    "id": req_id,
+                    "predicted_track_index": pred_class,
+                    "probabilities": [float(x) for x in avg_prob.tolist()],
+                    "model": "hf://cubis/mbta-track-predictor",
+                    "backend": os.environ.get("KERAS_BACKEND", "torch"),
+                    "created_at": datetime.now(UTC).isoformat(),
+                    "station_vocab_index": station_idx,
+                    "route_vocab_index": route_idx,
+                }
+
+                # Write result with short TTL
+                result_key = f"{self.ML_RESULT_KEY_PREFIX}{req_id}"
+                await self.redis.set(result_key, json.dumps(result), ex=120)
+                redis_commands.labels("set").inc()
+
+            except (CancelledError, KeyboardInterrupt):
+                raise
+            except Exception as e:  # noqa: BLE001
+                logger.error("Error in ML prediction worker loop", exc_info=e)
+                await anyio.sleep(0.5)
 
     async def get_historical_assignments(
         self,
@@ -708,7 +897,68 @@ class TrackPredictor:
                 tg,
             )
 
+            # If no patterns, try ML ensemble fallback before negative caching
             if not patterns:
+                if not self._ml_enabled():
+                    await write_cache(self.redis, negative_cache_key, "True", 4 * 60)
+                    return None
+                try:
+                    req_id = await self.enqueue_ml_prediction(
+                        station_id=station_id,
+                        route_id=route_id,
+                        direction_id=direction_id,
+                        scheduled_time=scheduled_time,
+                        trip_id=trip_id,
+                        headsign=headsign,
+                    )
+                    ml_res = await self.await_ml_prediction_result(req_id, 6.0)
+                    if ml_res and "predicted_track_index" in ml_res:
+                        # Map class index -> probable numeric track (1-indexed)
+                        best_idx = int(ml_res["predicted_track_index"]) + 1
+                        best_track = str(best_idx)
+                        # Confidence as max probability
+                        probs = ml_res.get("probabilities") or []
+                        confidence = float(max(probs)) if probs else 0.0
+
+                        prediction = TrackPrediction(
+                            station_id=station_id,
+                            route_id=route_id,
+                            trip_id=trip_id,
+                            headsign=headsign,
+                            direction_id=direction_id,
+                            scheduled_time=scheduled_time,
+                            track_number=best_track,
+                            confidence_score=confidence,
+                            prediction_method="ml_ensemble",
+                            historical_matches=0,
+                            created_at=datetime.now(UTC),
+                        )
+
+                        track_predictions_generated.labels(
+                            station_id=station_id,
+                            route_id=route_id,
+                            prediction_method="ml_ensemble",
+                            instance=INSTANCE_ID,
+                        ).inc()
+
+                        track_prediction_confidence.labels(
+                            station_id=station_id,
+                            route_id=route_id,
+                            track_number=best_track,
+                            instance=INSTANCE_ID,
+                        ).set(confidence)
+
+                        tg.start_soon(
+                            write_cache,
+                            self.redis,
+                            cache_key,
+                            prediction.model_dump_json(),
+                            2 * MONTH,
+                        )
+                        return prediction
+                except Exception as e:
+                    logger.error("ML fallback failed (no patterns)", exc_info=e)
+
                 await write_cache(self.redis, negative_cache_key, "True", 4 * 60)
                 return None
 
@@ -719,6 +969,65 @@ class TrackPredictor:
             # Use station-specific confidence threshold
             confidence_threshold = self._get_station_confidence_threshold(station_id)
             if confidence < confidence_threshold or not best_track.isdigit():
+                if self._ml_enabled():
+                    logger.debug(
+                        f"No/low-confidence pattern result; attempting ML fallback for station_id={station_id}, route_id={route_id}, trip_id={trip_id}"
+                    )
+                    # Try ML fallback before negative caching
+                    try:
+                        req_id = await self.enqueue_ml_prediction(
+                            station_id=station_id,
+                            route_id=route_id,
+                            direction_id=direction_id,
+                            scheduled_time=scheduled_time,
+                            trip_id=trip_id,
+                            headsign=headsign,
+                        )
+                        ml_res = await self.await_ml_prediction_result(req_id, 6.0)
+                        if ml_res and "predicted_track_index" in ml_res:
+                            best_idx = int(ml_res["predicted_track_index"]) + 1
+                            ml_track = str(best_idx)
+                            probs = ml_res.get("probabilities") or []
+                            ml_conf = float(max(probs)) if probs else 0.0
+
+                            prediction = TrackPrediction(
+                                station_id=station_id,
+                                route_id=route_id,
+                                trip_id=trip_id,
+                                headsign=headsign,
+                                direction_id=direction_id,
+                                scheduled_time=scheduled_time,
+                                track_number=ml_track,
+                                confidence_score=ml_conf,
+                                prediction_method="ml_ensemble",
+                                historical_matches=0,
+                                created_at=datetime.now(UTC),
+                            )
+
+                            track_predictions_generated.labels(
+                                station_id=station_id,
+                                route_id=route_id,
+                                prediction_method="ml_ensemble",
+                                instance=INSTANCE_ID,
+                            ).inc()
+
+                            track_prediction_confidence.labels(
+                                station_id=station_id,
+                                route_id=route_id,
+                                track_number=ml_track,
+                                instance=INSTANCE_ID,
+                            ).set(ml_conf)
+
+                            tg.start_soon(
+                                write_cache,
+                                self.redis,
+                                cache_key,
+                                prediction.model_dump_json(),
+                                2 * MONTH,
+                            )
+                            return prediction
+                    except Exception as e:
+                        logger.error("ML fallback failed (low-confidence)", exc_info=e)
                 logger.debug(
                     f"No prediction made for station_id={station_id}, route_id={route_id}, trip_id={trip_id}, headsign={headsign}, direction_id={direction_id}, scheduled_time={scheduled_time}, confidence={confidence}, threshold={confidence_threshold}"
                 )

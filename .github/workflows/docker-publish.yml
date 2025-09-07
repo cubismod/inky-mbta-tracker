@@ -78,7 +78,7 @@ jobs:
       - name: Run ruff check
         run: uv run ruff check
       - name: Run pyright
-        run: uv run pyright
+        run: uv run basedpyright
       - name: Run pytest
         run: uv run pytest inky-mbta-tracker/tests/
   pr-check:
