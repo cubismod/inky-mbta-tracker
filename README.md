@@ -81,13 +81,7 @@ The ML ensemble for track prediction is optional and off by default. To enable i
 
 - Environment
   - `IMT_ML=true` to enable the ML worker
-  - `KERAS_BACKEND=torch` to use the Keras-on-PyTorch backend
-
-- Install CPU‑only PyTorch (recommended)
-  - On Linux, use the PyTorch CPU wheel index to avoid pulling NVIDIA CUDA split packages:
-    - `uv sync --extra ml-cpu --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple`
-  - Docker builds already install CPU‑only wheels via the same index (see `Dockerfile`).
-  - CI uses the CPU index as well (see `.github/workflows/docker-publish.yml`).
+  - `KERAS_BACKEND=jax` to use the Keras-on-PyTorch backend
 
 - Behavior at a glance
   - ML runs asynchronously; the predictor never blocks waiting for ML.

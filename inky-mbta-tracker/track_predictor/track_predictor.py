@@ -546,7 +546,7 @@ class TrackPredictor:
                         if mean_probs is not None
                         else None,
                         "model": "hf://cubis/mbta-track-predictor",
-                        "backend": os.environ.get("KERAS_BACKEND", "torch"),
+                        "backend": os.environ.get("KERAS_BACKEND", "jax"),
                         "created_at": datetime.now(UTC).isoformat(),
                         "station_vocab_index": station_idx,
                         "route_vocab_index": route_idx,

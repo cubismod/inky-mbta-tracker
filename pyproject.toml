@@ -60,6 +60,7 @@ dependencies = [
     "keras>=3.11.3",
     "scipy>=1.14.1",
     "huggingface-hub>=0.34.4",
+    "jax>=0.5.3",
 ]
 
 [dependency-groups]
@@ -72,12 +73,6 @@ dev = [
 
 [project.scripts]
 inky-mbta-tracker = "main:run_main"
-
-[project.optional-dependencies]
-# CPU-only ML stack (PyTorch without NVIDIA CUDA packages)
-ml = [
-    "torch",
-]
 
 [tool.ruff]
 # Exclude a variety of commonly ignored directories.

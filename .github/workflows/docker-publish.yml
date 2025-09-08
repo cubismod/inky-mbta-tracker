@@ -57,7 +57,7 @@ jobs:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     env:
-      KERAS_BACKEND: "torch"
+      KERAS_BACKEND: "jax"
     steps:
       - uses: actions/checkout@master
       - name: Set up uv
