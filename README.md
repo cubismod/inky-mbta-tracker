@@ -75,6 +75,33 @@ Then run `task run` to start up the tracker.
 
 Note: On Linux/macOS, `uvloop` is enabled automatically when available for faster asyncio performance. If not present, the default loop is used.
 
+## ML Track Prediction (optional)
+
+The ML ensemble for track prediction is optional and off by default. To enable it:
+
+- Environment
+  - `IMT_ML=true` to enable the ML worker
+  - `KERAS_BACKEND=torch` to use the Keras-on-PyTorch backend
+
+- Install CPU‑only PyTorch (recommended)
+  - On Linux, use the PyTorch CPU wheel index to avoid pulling NVIDIA CUDA split packages:
+    - `uv sync --extra ml-cpu --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple`
+  - Docker builds already install CPU‑only wheels via the same index (see `Dockerfile`).
+  - CI uses the CPU index as well (see `.github/workflows/docker-publish.yml`).
+
+- Behavior at a glance
+  - ML runs asynchronously; the predictor never blocks waiting for ML.
+  - The ML worker writes a `TrackPrediction` to Redis and clears any corresponding `negative_…` cache key to avoid suppression.
+  - Predictions with confidence below 25% are filtered out (hard floor).
+  - Confidence combines margin‑based probability, optional sharpening, historical accuracy, and (when available) Bayes fusion with latest ML outputs.
+
+- Tuning (env vars)
+  - `IMT_ML_CONF_GAMMA` (default `1.3`): probability sharpening factor used for display confidence.
+  - `IMT_CONF_HIST_WEIGHT` (default `0.3`): blend weight for historical accuracy into display confidence.
+  - `IMT_BAYES_ALPHA` (default `0.65`): weight for pattern vs. ML in Bayes fusion.
+  - `IMT_ML_SAMPLE_PCT` (default `0.10`): % of successful traditional predictions also queued to ML for exploration.
+  - `IMT_ML_REPLACE_DELTA` (default `0.05`): minimum ML confidence improvement to overwrite an existing non‑ML prediction.
+
 ## Track Prediction Feature
 
 The track prediction system analyzes historical track assignments to predict future track assignments for MBTA commuter rail trains before they are officially announced. This helps solve the "mad scramble" problem at major stations like South Station and North Station.
