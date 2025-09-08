@@ -57,7 +57,6 @@ dependencies = [
     "yarl==1.20.1",
     "llm>=0.27.1",
     "llm-ollama>=0.13.0",
-    "torch>=2.8.0",
     "keras>=3.11.3",
     "scipy>=1.14.1",
     "huggingface-hub>=0.34.4",
@@ -73,6 +72,24 @@ dev = [
 
 [project.scripts]
 inky-mbta-tracker = "main:run_main"
+
+[project.optional-dependencies]
+# CPU-only ML stack (PyTorch without NVIDIA CUDA packages)
+ml-cpu = [
+    "torch>=2.5.0",
+]
+
+# GPU-enabled ML stack (opt-in). These NVIDIA libraries are optional and only
+# applicable on Linux with CUDA 12. Adjust versions as needed for your drivers.
+ml-gpu = [
+    "torch>=2.5.0",
+    "nvidia-cublas-cu12>=12.4.5.8; platform_system=='Linux'",
+    "nvidia-cuda-cupti-cu12>=12.4.127; platform_system=='Linux'",
+    "nvidia-cuda-nvrtc-cu12>=12.4.127; platform_system=='Linux'",
+    "nvidia-cuda-runtime-cu12>=12.4.127; platform_system=='Linux'",
+    "nvidia-cudnn-cu12>=9.1.0.70; platform_system=='Linux'",
+    "nvidia-nccl-cu12>=2.21.5; platform_system=='Linux'",
+]
 
 [tool.ruff]
 # Exclude a variety of commonly ignored directories.

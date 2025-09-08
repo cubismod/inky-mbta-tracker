@@ -5,116 +5,118 @@ name: Docker
 # separate terms of service, privacy policy, and support
 # documentation.
 permissions:
-  contents: read
-  packages: write
-  attestations: write
-  id-token: write
-  security-events: write
+    contents: read
+    packages: write
+    attestations: write
+    id-token: write
+    security-events: write
 
 env:
-  CACHE_REPO: ghcr.io/cubismod/inky-mbta-tracker/cache
-  REPO: ghcr.io/cubismod/inky-mbta-tracker
+    CACHE_REPO: ghcr.io/cubismod/inky-mbta-tracker/cache
+    REPO: ghcr.io/cubismod/inky-mbta-tracker
 
 on:
-  push:
-    branches: ["main"]
-  pull_request:
-  merge_group:
+    push:
+        branches: ["main"]
+    pull_request:
+    merge_group:
 
 jobs:
-  build-main:
-    if: github.ref_name == 'main'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@master
-      - name: login to ghcr
-        uses: docker/login-action@184bdaa0721073962dff0199f1fb9940f07167d1 # v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3
-      - name: build and push
-        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6
-        with:
-          context: .
-          push: true
-          tags: ${{ env.REPO }}:${{ github.sha }},${{ env.REPO }}:latest,${{ env.REPO }}:dev-latest
-          cache-from: type=registry,ref=${{ env.CACHE_REPO }}
-          cache-to: type=registry,ref=${{ env.CACHE_REPO }},mode=max
-      - name: Run Trivy vulnerability scanner
-        uses: aquasecurity/trivy-action@b6643a29fecd7f34b3597bc6acb0a98b03d33ff8 # 0.33.1
-        with:
-          image-ref: '${{ env.REPO }}:${{ github.sha }}'
-          format: 'sarif'
-          output: 'trivy-results.sarif'
-      - name: Upload Trivy scan results to GitHub Security tab
-        uses: github/codeql-action/upload-sarif@f1f6e5f6af878fb37288ce1c627459e94dbf7d01 # v3
-        with:
-          sarif_file: 'trivy-results.sarif'
-  test:
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@master
-      - name: Set up uv
-        uses: astral-sh/setup-uv@557e51de59eb14aaaba2ed9621916900a91d50c6 # v6
-        with:
-          enable-cache: true
-      - name: Set up Python
-        run: uv python install
-      - name: Cache uv dependencies
-        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4
-        with:
-          path: |
-            ~/.cache/uv
-            .venv
-          key: uv-${{ runner.os }}-${{ hashFiles('uv.lock', 'pyproject.toml') }}
-          restore-keys: |
-            uv-${{ runner.os }}-
-      - name: Install dependencies
-        run: uv sync --group dev
-      - name: Run ruff check
-        run: uv run ruff check
-      - name: Run pyright
-        run: uv run basedpyright
-      - name: Run pytest
-        run: uv run pytest inky-mbta-tracker/tests/
-  pr-check:
-    if: startsWith(github.ref, 'refs/pull/')
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@master
-      - name: login to ghcr
-        uses: docker/login-action@184bdaa0721073962dff0199f1fb9940f07167d1 # v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3
-      - name: Sanitize branch name
-        id: sanitize
-        run: |
-          BRANCH_NAME="${{ github.head_ref }}"
-          SANITIZED=$(echo "$BRANCH_NAME" | tr '/' '-' | tr '_' '-' | tr '[:upper:]' '[:lower:]')
-          echo "branch_tag=$SANITIZED" >> $GITHUB_OUTPUT
-      - name: build and push
-        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6
-        with:
-          context: .
-          push: true
-          tags: ${{ env.REPO }}:${{ github.sha }},${{ env.REPO }}:dev-latest,${{ env.REPO }}:${{ steps.sanitize.outputs.branch_tag }}
-          cache-from: type=registry,ref=${{ env.CACHE_REPO }}
-          cache-to: type=registry,ref=${{ env.CACHE_REPO }},mode=max
-      - name: Run Trivy vulnerability scanner
-        uses: aquasecurity/trivy-action@b6643a29fecd7f34b3597bc6acb0a98b03d33ff8 # 0.33.1
-        with:
-          image-ref: '${{ env.REPO }}:${{ github.sha }}'
-          format: 'sarif'
-          output: 'trivy-results.sarif'
-      - name: Upload Trivy scan results to GitHub Security tab
-        uses: github/codeql-action/upload-sarif@f1f6e5f6af878fb37288ce1c627459e94dbf7d01 # v3
-        with:
-          sarif_file: 'trivy-results.sarif'
+    build-main:
+        if: github.ref_name == 'main'
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@master
+            - name: login to ghcr
+              uses: docker/login-action@184bdaa0721073962dff0199f1fb9940f07167d1 # v3
+              with:
+                  registry: ghcr.io
+                  username: ${{ github.actor }}
+                  password: ${{ secrets.GITHUB_TOKEN }}
+            - name: Set up Docker Buildx
+              uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3
+            - name: build and push
+              uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6
+              with:
+                  context: .
+                  push: true
+                  tags: ${{ env.REPO }}:${{ github.sha }},${{ env.REPO }}:latest,${{ env.REPO }}:dev-latest
+                  cache-from: type=registry,ref=${{ env.CACHE_REPO }}
+                  cache-to: type=registry,ref=${{ env.CACHE_REPO }},mode=max
+            - name: Run Trivy vulnerability scanner
+              uses: aquasecurity/trivy-action@b6643a29fecd7f34b3597bc6acb0a98b03d33ff8 # 0.33.1
+              with:
+                  image-ref: "${{ env.REPO }}:${{ github.sha }}"
+                  format: "sarif"
+                  output: "trivy-results.sarif"
+            - name: Upload Trivy scan results to GitHub Security tab
+              uses: github/codeql-action/upload-sarif@f1f6e5f6af878fb37288ce1c627459e94dbf7d01 # v3
+              with:
+                  sarif_file: "trivy-results.sarif"
+    test:
+        if: github.event_name == 'pull_request'
+        runs-on: ubuntu-latest
+        env:
+            KERAS_BACKEND: "torch"
+        steps:
+            - uses: actions/checkout@master
+            - name: Set up uv
+              uses: astral-sh/setup-uv@557e51de59eb14aaaba2ed9621916900a91d50c6 # v6
+              with:
+                  enable-cache: true
+            - name: Set up Python
+              run: uv python install
+            - name: Cache uv dependencies
+              uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4
+              with:
+                  path: |
+                      ~/.cache/uv
+                      .venv
+                  key: uv-${{ runner.os }}-${{ hashFiles('uv.lock', 'pyproject.toml') }}
+                  restore-keys: |
+                      uv-${{ runner.os }}-
+            - name: Install dependencies
+              run: uv sync --group dev
+            - name: Run ruff check
+              run: uv run ruff check
+            - name: Run pyright
+              run: uv run basedpyright
+            - name: Run pytest
+              run: uv run pytest inky-mbta-tracker/tests/
+    pr-check:
+        if: startsWith(github.ref, 'refs/pull/')
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@master
+            - name: login to ghcr
+              uses: docker/login-action@184bdaa0721073962dff0199f1fb9940f07167d1 # v3
+              with:
+                  registry: ghcr.io
+                  username: ${{ github.actor }}
+                  password: ${{ secrets.GITHUB_TOKEN }}
+            - name: Set up Docker Buildx
+              uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3
+            - name: Sanitize branch name
+              id: sanitize
+              run: |
+                  BRANCH_NAME="${{ github.head_ref }}"
+                  SANITIZED=$(echo "$BRANCH_NAME" | tr '/' '-' | tr '_' '-' | tr '[:upper:]' '[:lower:]')
+                  echo "branch_tag=$SANITIZED" >> $GITHUB_OUTPUT
+            - name: build and push
+              uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6
+              with:
+                  context: .
+                  push: true
+                  tags: ${{ env.REPO }}:${{ github.sha }},${{ env.REPO }}:dev-latest,${{ env.REPO }}:${{ steps.sanitize.outputs.branch_tag }}
+                  cache-from: type=registry,ref=${{ env.CACHE_REPO }}
+                  cache-to: type=registry,ref=${{ env.CACHE_REPO }},mode=max
+            - name: Run Trivy vulnerability scanner
+              uses: aquasecurity/trivy-action@b6643a29fecd7f34b3597bc6acb0a98b03d33ff8 # 0.33.1
+              with:
+                  image-ref: "${{ env.REPO }}:${{ github.sha }}"
+                  format: "sarif"
+                  output: "trivy-results.sarif"
+            - name: Upload Trivy scan results to GitHub Security tab
+              uses: github/codeql-action/upload-sarif@f1f6e5f6af878fb37288ce1c627459e94dbf7d01 # v3
+              with:
+                  sarif_file: "trivy-results.sarif"
