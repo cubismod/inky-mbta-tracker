@@ -4,7 +4,9 @@ COPY --from=ghcr.io/astral-sh/uv:0.8.15@sha256:a5727064a0de127bdb7c9d3c1383f3a9a
 WORKDIR /app
 ADD README.md pyproject.toml uv.lock ./
 
-RUN uv venv && uv sync --frozen --no-cache --no-install-project --no-dev
+ENV HF_HOME /app/hf
+
+RUN mkdir hf && uv venv && uv sync --frozen --no-cache --no-install-project --no-dev
 
 ADD . .
 
