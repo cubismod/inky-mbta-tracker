@@ -10,6 +10,7 @@ RUN mkdir hf && uv venv && uv sync --frozen --no-cache --no-install-project --no
 
 ADD . .
 
-RUN uv sync --no-dev && uv lock --check
+# Install project with CPU-only ML extras (no NVIDIA CUDA libs)
+RUN uv sync --no-dev --extra ml-cpu && uv lock --check
 
 CMD ["uv", "run", "inky-mbta-tracker"]
