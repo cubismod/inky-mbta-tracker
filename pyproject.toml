@@ -76,7 +76,10 @@ inky-mbta-tracker = "main:run_main"
 [project.optional-dependencies]
 # CPU-only ML stack (PyTorch without NVIDIA CUDA packages)
 ml-cpu = [
-    "torch>=2.5.0",
+    # On non-Linux platforms, the default torch wheel is CPU-only
+    "torch>=2.5.0; platform_system!='Linux'",
+    # On Linux x86_64, force the CPU wheel variant. Requires CPU index URL.
+    "torch==2.5.*+cpu; platform_system=='Linux' and platform_machine=='x86_64'",
 ]
 
 # GPU-enabled ML stack (opt-in). These NVIDIA libraries are optional and only

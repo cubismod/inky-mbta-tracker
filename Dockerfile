@@ -11,6 +11,10 @@ RUN mkdir hf && uv venv && uv sync --frozen --no-cache --no-install-project --no
 ADD . .
 
 # Install project with CPU-only ML extras (no NVIDIA CUDA libs)
-RUN uv sync --no-dev --extra ml-cpu && uv lock --check
+# Prefer the PyTorch CPU wheel index on Linux to avoid NVIDIA CUDA deps
+RUN uv sync --no-dev --extra ml-cpu \
+    --index-url https://download.pytorch.org/whl/cpu \
+    --extra-index-url https://pypi.org/simple \
+  && uv lock --check
 
 CMD ["uv", "run", "inky-mbta-tracker"]
