@@ -7,7 +7,7 @@ ADD README.md pyproject.toml uv.lock ./
 ENV HF_HOME=/app/hf
 ENV KERAS_BACKEND=jax
 
-RUN mkdir hf && uv venv && uv sync --frozen --no-cache --no-install-project --no-dev --extra ml
+RUN mkdir hf && uv venv && uv sync --frozen --no-cache --no-install-project --no-dev
 
 ADD . .
 

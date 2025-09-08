@@ -46,6 +46,3 @@ tasks:
       - task: fix
       - task: check
       - task: test
-  sync:
-    cmds:
-      - uv sync --extra "ml"
