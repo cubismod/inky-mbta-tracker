@@ -2,12 +2,13 @@ import json
 import logging
 import math
 import os
+import random
 import time
 import uuid
 from asyncio import CancelledError
 from collections import defaultdict
 from datetime import UTC, datetime, timedelta
-from typing import Any, Awaitable, Dict, List, Optional, TypedDict
+from typing import Any, Dict, List, Optional, TypedDict
 
 import aiohttp
 import anyio
@@ -15,13 +16,15 @@ import numpy as np
 import shared_types.shared_types
 import textdistance
 from anyio import to_thread
-from typing import cast
 from anyio.abc import TaskGroup
 from consts import DAY, INSTANCE_ID, MBTA_V3_ENDPOINT, MONTH, WEEK, YEAR
 from exceptions import RateLimitExceeded
+from huggingface_hub import hf_hub_download
+from keras import Model
 from mbta_client import MBTAApi
 from mbta_responses import Schedules
 from metaphone import doublemetaphone
+from numpy.typing import NDArray
 from prometheus import (
     mbta_api_requests,
     redis_commands,
@@ -36,6 +39,7 @@ from pydantic import ValidationError
 from redis.asyncio import Redis
 from redis_cache import check_cache, write_cache
 from shared_types.shared_types import (
+    MLPredictionRequest,
     TrackAssignment,
     TrackPrediction,
     TrackPredictionStats,
@@ -174,8 +178,120 @@ class TrackPredictor:
     # Redis keys for ML prediction queueing
     ML_QUEUE_KEY = "ml:track_predict:requests"
     ML_RESULT_KEY_PREFIX = "ml:track_predict:result:"
+    ML_RESULT_LATEST_PREFIX = "ml:track_predict:latest:"
     ML_STATION_VOCAB_KEY = "ml:vocab:station"
     ML_ROUTE_VOCAB_KEY = "ml:vocab:route"
+
+    @staticmethod
+    def _conf_gamma() -> float:
+        """Read sharpening gamma from env; default to 1.3."""
+        try:
+            return float(os.getenv("IMT_ML_CONF_GAMMA", "1.3"))
+        except Exception:
+            return 1.3
+
+    @staticmethod
+    def _conf_hist_weight() -> float:
+        """Weight for blending historical accuracy into confidence (0..1)."""
+        try:
+            w = float(os.getenv("IMT_CONF_HIST_WEIGHT", "0.3"))
+            return min(1.0, max(0.0, w))
+        except Exception:
+            return 0.3
+
+    @staticmethod
+    def _bayes_alpha() -> float:
+        """Blend weight for pattern vs ML in Bayes fusion (0..1)."""
+        try:
+            a = float(os.getenv("IMT_BAYES_ALPHA", "0.65"))
+            return min(1.0, max(0.0, a))
+        except Exception:
+            return 0.65
+
+    @staticmethod
+    def _ml_sample_prob() -> float:
+        """Fraction of successful traditional predictions to enqueue for ML as exploration."""
+        try:
+            p = float(os.getenv("IMT_ML_SAMPLE_PCT", "0.1"))
+            return min(1.0, max(0.0, p))
+        except Exception:
+            return 0.1
+
+    @staticmethod
+    def _ml_replace_delta() -> float:
+        """Minimum improvement required for ML to overwrite an existing prediction."""
+        try:
+            d = float(os.getenv("IMT_ML_REPLACE_DELTA", "0.05"))
+            return max(0.0, d)
+        except Exception:
+            return 0.05
+
+    @staticmethod
+    def _sharpen_probs(
+        vec: Optional[NDArray[np.floating[Any]]],
+        gamma: float,
+    ) -> Optional[NDArray[np.floating[Any]]]:
+        """Sharpen a probability vector by exponentiation and renormalization.
+
+        Selection should be based on the original vector; the sharpened vector is for confidence only.
+        """
+        if vec is None:
+            return None
+        if gamma <= 0 or not np.isfinite(gamma):
+            gamma = 1.0
+        v = np.clip(vec.astype(np.float64), 1e-12, 1.0)
+        v = np.power(v, gamma)
+        s = v.sum()
+        return (v / s) if s > 0 else v
+
+    @staticmethod
+    def _margin_confidence(
+        vec: Optional[NDArray[np.floating[Any]]],
+        index: int,
+    ) -> float:
+        """Compute 0.5*(p1 + margin) where margin = p1 - p2 around a chosen index."""
+        if vec is None:
+            return 0.0
+        n = vec.size
+        if n == 0 or index < 0 or index >= n:
+            return 0.0
+        p1 = float(vec[index])
+        if n == 1:
+            return p1
+        # compute max of others
+        mask = np.ones(n, dtype=bool)
+        mask[index] = False
+        p2 = float(np.max(vec[mask])) if np.any(mask) else 0.0
+        margin = max(0.0, p1 - p2)
+        return 0.5 * (p1 + margin)
+
+    async def _get_allowed_tracks(self, station_id: str, route_id: str) -> set[str]:
+        """Return a set of allowed track numbers for a station/route based on recent history.
+
+        Cached in Redis for 1 day to avoid heavy scans. Falls back to empty set
+        meaning "no restriction" if nothing found.
+        """
+        cache_key = f"allowed_tracks:{station_id}:{route_id}"
+        cached = await check_cache(self.redis, cache_key)
+        if cached:
+            try:
+                lst = json.loads(cached)
+                return set(str(x) for x in lst)
+            except Exception:
+                pass
+
+        # Build from historical assignments over the last 180 days
+        try:
+            end = datetime.now(UTC)
+            start = end - timedelta(days=180)
+            assignments = await self.get_historical_assignments(
+                station_id, route_id, start, end
+            )
+            tracks = {a.track_number for a in assignments if a.track_number}
+            await write_cache(self.redis, cache_key, json.dumps(sorted(tracks)), DAY)
+            return set(tracks)
+        except Exception:
+            return set()
 
     @staticmethod
     def _ml_enabled() -> bool:
@@ -196,20 +312,20 @@ class TrackPredictor:
         """
         Enqueue a request for ML-powered track prediction. Returns the request_id.
 
-        Other modules can call this to request a prediction and then poll
-        `await_ml_prediction_result` for the result.
+        Other modules can call this to request a prediction; the ML worker
+        will write the result to Redis when ready for asynchronous consumers.
         """
         rid = request_id or str(uuid.uuid4())
-        payload = {
-            "id": rid,
-            "station_id": station_id,
-            "route_id": route_id,
-            "direction_id": int(direction_id),
-            "scheduled_time": scheduled_time.isoformat(),
-            "trip_id": trip_id,
-            "headsign": headsign,
-        }
-        await self.redis.lpush(self.ML_QUEUE_KEY, json.dumps(payload)) # pyright:ignore
+        payload = MLPredictionRequest(
+            id=rid,
+            station_id=station_id,
+            route_id=route_id,
+            direction_id=int(direction_id),
+            scheduled_time=scheduled_time,
+            trip_id=trip_id or "",
+            headsign=headsign or "",
+        )
+        await self.redis.lpush(self.ML_QUEUE_KEY, payload.model_dump_json())  # pyright:ignore
         return rid
 
     @staticmethod
@@ -232,6 +348,27 @@ class TrackPredictor:
             "scheduled_timestamp": ts.timestamp(),
         }
 
+    async def _vocab_get_or_add(self, key: str, token: str) -> int:
+        """Get a stable integer index for a token from a Redis hash, adding if missing.
+
+        This maintains consistent integer ids for categorical features like station_id
+        and route_id across ML predictions.
+        """
+        idx = await self.redis.hget(key, token)  # pyright: ignore
+        redis_commands.labels("hget").inc()
+        if idx is not None:
+            try:
+                return int(idx) if isinstance(idx, (bytes, bytearray)) else int(idx)
+            except (TypeError, ValueError):
+                pass
+
+        # Assign next index
+        next_id = await self.redis.hlen(key)  # pyright: ignore
+        redis_commands.labels("hlen").inc()
+        await self.redis.hset(key, token, str(next_id))  # pyright: ignore
+        redis_commands.labels("hset").inc()
+        return int(next_id)
+
     async def ml_prediction_worker(self) -> None:
         """
         Background worker that consumes prediction requests from Redis and
@@ -243,22 +380,36 @@ class TrackPredictor:
             logger.info("ML worker not started: IMT_ML not enabled")
             return
 
-        def load_model_blocking():  # type: ignore[no-untyped-def]
+        def load_models_blocking() -> List[Model]:
             # Set backend before importing keras
-            os.environ.setdefault("KERAS_BACKEND", "torch")
             import keras
 
+            models: List[Model] = list()
+
+            filenames = [
+                f"track_prediction_ensemble_model_{i}_best.keras" for i in range(5)
+            ]
+            model_paths = [
+                hf_hub_download("cubis/mbta-track-predictor", filename)
+                for filename in filenames
+            ]
+
             try:
-                model = keras.saving.load_model("hf://cubis/mbta-track-predictor")
+                # Load without compiling to avoid requiring custom loss/metrics
+                models = [
+                    keras.saving.load_model(model_path, compile=False)
+                    for model_path in model_paths
+                ]  # pyright: ignore
+                # model = keras.saving.load_model("hf://cubis/mbta-track-predictor")
             except Exception as e:  # noqa: BLE001 (surface errors to logs)
                 logger.error("Failed to load ML model", exc_info=e)
                 raise
-            return model
+            return models
 
         # Load model once in a worker thread
         logger.info("Starting ML prediction worker: loading model…")
         try:
-            model = await to_thread.run_sync(load_model_blocking)
+            models = await to_thread.run_sync(load_models_blocking)
         except Exception:
             logger.error("ML worker disabled due to model load failure.")
             return
@@ -267,23 +418,21 @@ class TrackPredictor:
         # Consume requests
         while True:
             try:
-                item = await self.redis.brpop([self.ML_QUEUE_KEY], timeout=5) # pyright:ignore
+                item = await self.redis.brpop([self.ML_QUEUE_KEY], timeout=5)  # pyright:ignore
                 redis_commands.labels("brpop").inc()
                 if not item:
                     continue
 
                 _, raw = item
-                payload = json.loads(raw)
+                payload = MLPredictionRequest.model_validate_json(raw)
 
-                req_id = payload.get("id", str(uuid.uuid4()))
-                station_id = str(payload.get("station_id", ""))
-                route_id = str(payload.get("route_id", ""))
-                direction_id = int(payload.get("direction_id", 0))
-                scheduled_time_str = payload.get("scheduled_time")
-                try:
-                    scheduled_dt = datetime.fromisoformat(scheduled_time_str)
-                except Exception:
-                    scheduled_dt = datetime.now(UTC)
+                req_id = payload.id
+                station_id = payload.station_id
+                route_id = payload.route_id
+                direction_id = payload.direction_id
+                scheduled_time = payload.scheduled_time
+                trip_id = payload.trip_id
+                headsign = payload.headsign
 
                 # Vocab lookups
                 station_idx = await self._vocab_get_or_add(
@@ -293,7 +442,7 @@ class TrackPredictor:
                     self.ML_ROUTE_VOCAB_KEY, route_id
                 )
 
-                feats = self._cyclical_time_features(scheduled_dt)
+                feats = self._cyclical_time_features(scheduled_time)
 
                 # Prepare tensors
                 features = {
@@ -313,38 +462,168 @@ class TrackPredictor:
 
                 def predict_blocking():  # type: ignore[no-untyped-def]
                     # Import inside the thread to ensure backend is respected
-
-                    probs = model.predict(features, verbose=0)
-                    return probs
+                    if models:
+                        probs = [model.predict(features) for model in models]
+                        return probs
 
                 probs = await to_thread.run_sync(predict_blocking)
-                # Expect shape (1, num_classes)
-                if isinstance(probs, list):
-                    # Some Keras configurations might return list of outputs
-                    probs_arr = np.mean(np.array(probs), axis=0)
-                else:
-                    probs_arr = np.array(probs)
-                avg_prob = probs_arr[0]
-                pred_class = int(np.argmax(avg_prob))
+                # Each model returns class probabilities shaped like (1, num_classes).
+                # Take per-model argmax, then majority vote across models,
+                # and compute mean probabilities for confidence reporting.
+                model_top_classes: list[int] = []
+                flat_probs: list[np.ndarray] = []
+                for p in probs or []:
+                    arr = np.array(p)
+                    try:
+                        if arr.ndim == 2 and arr.shape[0] == 1:
+                            flat = arr[0]
+                        elif arr.ndim == 1:
+                            flat = arr
+                        else:
+                            flat = arr.reshape(-1)
+                        idx = int(np.argmax(flat))
+                        model_top_classes.append(idx)
+                        flat_probs.append(flat.astype(np.float32))
+                    except Exception:
+                        continue
 
-                result = {
-                    "id": req_id,
-                    "predicted_track_index": pred_class,
-                    "probabilities": [float(x) for x in avg_prob.tolist()],
-                    "model": "hf://cubis/mbta-track-predictor",
-                    "backend": os.environ.get("KERAS_BACKEND", "torch"),
-                    "created_at": datetime.now(UTC).isoformat(),
-                    "station_vocab_index": station_idx,
-                    "route_vocab_index": route_idx,
-                }
+                if model_top_classes:
+                    # Majority vote; ties resolve to smallest index via argmax
+                    predicted_track = int(np.bincount(model_top_classes).argmax())
+                    # Mean probabilities across models for confidence
+                    mean_probs = (
+                        np.mean(np.stack(flat_probs, axis=0), axis=0)
+                        if flat_probs
+                        else None
+                    )
+                    # Apply allowed-tracks mask from history, and reselect from masked distribution
+                    if mean_probs is not None:
+                        allowed = await self._get_allowed_tracks(station_id, route_id)
+                        if allowed:
+                            masked = mean_probs.copy()
+                            for idx in range(masked.shape[0]):
+                                if str(idx + 1) not in allowed:
+                                    masked[idx] = 0.0
+                            total = float(np.sum(masked))
+                            mean_probs = masked / total if total > 0 else masked
+                            predicted_track = int(np.argmax(mean_probs))
+                    # Compute model confidence (pre-sharpen, pre-history)
+                    model_confidence = self._margin_confidence(
+                        mean_probs, predicted_track
+                    )
+                    # Sharpened margin-based display confidence around the selected class
+                    probs_for_conf = self._sharpen_probs(mean_probs, self._conf_gamma())
+                    confidence = self._margin_confidence(
+                        probs_for_conf, predicted_track
+                    )
+                    track_number = str(predicted_track + 1)  # 1-based for MBTA tracks
+                    # Drop very low-confidence ML predictions
+                    if confidence < 0.25:
+                        logger.debug(
+                            f"Dropping low-confidence ML prediction for {station_id} {route_id} at {scheduled_time}: track={track_number}, confidence={confidence:.3f}"
+                        )
+                        continue
+                    # Historical accuracy for predicted track number
+                    hist_acc = await self._get_prediction_accuracy(
+                        station_id, route_id, track_number
+                    )
+                    # Blend confidence with historical accuracy
+                    w_hist = self._conf_hist_weight()
+                    confidence = (1.0 - w_hist) * confidence + w_hist * hist_acc
 
-                # Write result with short TTL
-                result_key = f"{self.ML_RESULT_KEY_PREFIX}{req_id}"
-                await self.redis.set(result_key, json.dumps(result), ex=120)
-                redis_commands.labels("set").inc()
+                    result = {
+                        "id": req_id,
+                        "station_id": station_id,
+                        "route_id": route_id,
+                        "direction_id": direction_id,
+                        "scheduled_time": scheduled_time.isoformat(),
+                        "predicted_track_index": predicted_track,
+                        "track_number": track_number,
+                        "confidence": confidence,
+                        "model_confidence": model_confidence,
+                        "accuracy": hist_acc,
+                        "probabilities": mean_probs.tolist()
+                        if mean_probs is not None
+                        else None,
+                        "model": "hf://cubis/mbta-track-predictor",
+                        "backend": os.environ.get("KERAS_BACKEND", "torch"),
+                        "created_at": datetime.now(UTC).isoformat(),
+                        "station_vocab_index": station_idx,
+                        "route_vocab_index": route_idx,
+                    }
 
-            except (CancelledError, KeyboardInterrupt):
-                raise
+                    result_key = f"{self.ML_RESULT_KEY_PREFIX}{req_id}"
+                    await self.redis.set(result_key, json.dumps(result), ex=DAY)
+                    latest_key = f"{self.ML_RESULT_LATEST_PREFIX}{station_id}:{route_id}:{direction_id}:{int(scheduled_time.timestamp())}"
+                    await self.redis.set(latest_key, json.dumps(result), ex=DAY)
+
+                    # Persist a TrackPrediction entry conditionally replacing a weak traditional result
+                    cache_key = f"track_prediction:{station_id}:{route_id}:{trip_id}:{scheduled_time.date()}"
+                    do_write = False
+                    existing_json = await check_cache(self.redis, cache_key)
+                    if existing_json:
+                        try:
+                            existing = TrackPrediction.model_validate_json(
+                                existing_json
+                            )
+                            delta = self._ml_replace_delta()
+                            if existing.prediction_method != "ml_ensemble":
+                                if confidence > (existing.confidence_score + delta):
+                                    do_write = True
+                            else:
+                                if confidence > existing.confidence_score:
+                                    do_write = True
+                        except Exception:
+                            do_write = confidence >= 0.5
+                    else:
+                        do_write = confidence >= 0.5
+
+                    if do_write:
+                        prediction = TrackPrediction(
+                            station_id=station_id,
+                            route_id=route_id,
+                            trip_id=trip_id,
+                            headsign=headsign,
+                            direction_id=direction_id,
+                            scheduled_time=scheduled_time,
+                            track_number=track_number,
+                            confidence_score=confidence,
+                            accuracy=hist_acc,
+                            model_confidence=model_confidence,
+                            display_confidence=confidence,
+                            prediction_method="ml_ensemble",
+                            historical_matches=0,
+                            created_at=datetime.now(UTC),
+                        )
+
+                        negative_cache_key = f"negative_{cache_key}"
+                        try:
+                            await self.redis.delete(negative_cache_key)  # pyright: ignore
+                        except Exception:
+                            pass
+                        await write_cache(
+                            self.redis,
+                            cache_key,
+                            prediction.model_dump_json(),
+                            2 * MONTH,
+                        )
+
+                        track_predictions_generated.labels(
+                            station_id=station_id,
+                            route_id=route_id,
+                            prediction_method="ml_ensemble",
+                            instance=INSTANCE_ID,
+                        ).inc()
+                        track_prediction_confidence.labels(
+                            station_id=station_id,
+                            route_id=route_id,
+                            track_number=track_number,
+                            instance=INSTANCE_ID,
+                        ).set(confidence)
+                    # redis_commands.labels("set").inc()
+
+            except ValidationError as e:
+                logger.error("Unable to validate model", exc_info=e)
             except Exception as e:  # noqa: BLE001
                 logger.error("Error in ML prediction worker loop", exc_info=e)
                 await anyio.sleep(0.5)
@@ -852,6 +1131,7 @@ class TrackPredictor:
                             scheduled_time=scheduled_time,
                             track_number=stop_data[0].data.attributes.platform_code,
                             confidence_score=1.0,
+                            accuracy=1.0,
                             prediction_method="platform_code",
                             historical_matches=0,
                             created_at=datetime.now(UTC),
@@ -897,13 +1177,10 @@ class TrackPredictor:
                 tg,
             )
 
-            # If no patterns, try ML ensemble fallback before negative caching
+            # If no patterns, enqueue ML (non-blocking) and negative-cache briefly
             if not patterns:
-                if not self._ml_enabled():
-                    await write_cache(self.redis, negative_cache_key, "True", 4 * 60)
-                    return None
-                try:
-                    req_id = await self.enqueue_ml_prediction(
+                if self._ml_enabled():
+                    await self.enqueue_ml_prediction(
                         station_id=station_id,
                         route_id=route_id,
                         direction_id=direction_id,
@@ -911,123 +1188,103 @@ class TrackPredictor:
                         trip_id=trip_id,
                         headsign=headsign,
                     )
-                    ml_res = await self.await_ml_prediction_result(req_id, 6.0)
-                    if ml_res and "predicted_track_index" in ml_res:
-                        # Map class index -> probable numeric track (1-indexed)
-                        best_idx = int(ml_res["predicted_track_index"]) + 1
-                        best_track = str(best_idx)
-                        # Confidence as max probability
-                        probs = ml_res.get("probabilities") or []
-                        confidence = float(max(probs)) if probs else 0.0
-
-                        prediction = TrackPrediction(
-                            station_id=station_id,
-                            route_id=route_id,
-                            trip_id=trip_id,
-                            headsign=headsign,
-                            direction_id=direction_id,
-                            scheduled_time=scheduled_time,
-                            track_number=best_track,
-                            confidence_score=confidence,
-                            prediction_method="ml_ensemble",
-                            historical_matches=0,
-                            created_at=datetime.now(UTC),
-                        )
-
-                        track_predictions_generated.labels(
-                            station_id=station_id,
-                            route_id=route_id,
-                            prediction_method="ml_ensemble",
-                            instance=INSTANCE_ID,
-                        ).inc()
-
-                        track_prediction_confidence.labels(
-                            station_id=station_id,
-                            route_id=route_id,
-                            track_number=best_track,
-                            instance=INSTANCE_ID,
-                        ).set(confidence)
-
-                        tg.start_soon(
-                            write_cache,
-                            self.redis,
-                            cache_key,
-                            prediction.model_dump_json(),
-                            2 * MONTH,
-                        )
-                        return prediction
-                except Exception as e:
-                    logger.error("ML fallback failed (no patterns)", exc_info=e)
-
                 await write_cache(self.redis, negative_cache_key, "True", 4 * 60)
                 return None
 
-            # Find the most likely track
+            # Find the most likely track and compute margin-based confidence
             best_track = max(patterns.keys(), key=lambda x: patterns[x])
-            confidence = patterns[best_track]
+            p1 = float(patterns[best_track])
+            sorted_vals = sorted(patterns.values(), reverse=True)
+            p2 = float(sorted_vals[1]) if len(sorted_vals) > 1 else 0.0
+            confidence = 0.5 * (p1 + max(0.0, p1 - p2))
+            model_confidence = confidence
 
-            # Use station-specific confidence threshold
+            # Non-blocking Bayes fusion with the latest ML result to raise confidence when possible
+            used_bayes = False
+            if self._ml_enabled():
+                latest_key = f"{self.ML_RESULT_LATEST_PREFIX}{station_id}:{route_id}:{direction_id}:{int(scheduled_time.timestamp())}"
+                raw_ml = await self.redis.get(latest_key)  # pyright: ignore
+                if raw_ml:
+                    try:
+                        ml_res = json.loads(
+                            raw_ml.decode()
+                            if isinstance(raw_ml, (bytes, bytearray))
+                            else str(raw_ml)
+                        )
+                        ml_probs_list = ml_res.get("probabilities")
+                        if isinstance(ml_probs_list, list) and len(ml_probs_list) > 0:
+                            ml_probs = np.array(ml_probs_list, dtype=np.float64)
+                            n_classes = ml_probs.shape[0]
+                            # Map pattern dict into aligned vector over classes (track 1->idx0)
+                            pattern_vec = np.zeros(n_classes, dtype=np.float64)
+                            for t_str, prob in patterns.items():
+                                if t_str and t_str.isdigit():
+                                    idx = int(t_str) - 1
+                                    if 0 <= idx < n_classes:
+                                        pattern_vec[idx] = float(prob)
+                            s = pattern_vec.sum()
+                            if s > 0:
+                                pattern_vec = pattern_vec / s
+                            # Bayes fusion: posterior ∝ pattern^alpha * ml^(1-alpha)
+                            alpha = self._bayes_alpha()
+                            eps = 1e-9
+                            fused = np.power(
+                                np.clip(pattern_vec, eps, 1.0), alpha
+                            ) * np.power(np.clip(ml_probs, eps, 1.0), 1.0 - alpha)
+                            total = fused.sum()
+                            if total > 0:
+                                fused_norm = fused / total
+                                # Apply allowed-tracks mask before selection
+                                allowed = await self._get_allowed_tracks(
+                                    station_id, route_id
+                                )
+                                if allowed:
+                                    for idx in range(fused_norm.shape[0]):
+                                        if str(idx + 1) not in allowed:
+                                            fused_norm[idx] = 0.0
+                                    t2 = float(np.sum(fused_norm))
+                                    if t2 > 0:
+                                        fused_norm = fused_norm / t2
+                                # Select from fused distribution (pre-sharpen)
+                                best_idx = int(np.argmax(fused_norm))
+                                best_track = str(best_idx + 1)
+                                # Compute confidence from a sharpened version of fused
+                                fused_sharp = self._sharpen_probs(
+                                    fused_norm, self._conf_gamma()
+                                )
+                                confidence = self._margin_confidence(
+                                    fused_sharp, best_idx
+                                )
+                                # Pre-sharpen, pre-history confidence for reporting
+                                model_confidence = self._margin_confidence(
+                                    fused_norm, best_idx
+                                )
+                                # Blend with historical accuracy for the chosen track
+                                hist_acc = await self._get_prediction_accuracy(
+                                    station_id, route_id, best_track
+                                )
+                                w_hist = self._conf_hist_weight()
+                                confidence = (
+                                    1.0 - w_hist
+                                ) * confidence + w_hist * hist_acc
+                                used_bayes = True
+                    except Exception:
+                        pass
+
+            # Use station-specific confidence threshold with a hard floor of 0.25
             confidence_threshold = self._get_station_confidence_threshold(station_id)
+            if confidence_threshold < 0.25:
+                confidence_threshold = 0.25
             if confidence < confidence_threshold or not best_track.isdigit():
                 if self._ml_enabled():
-                    logger.debug(
-                        f"No/low-confidence pattern result; attempting ML fallback for station_id={station_id}, route_id={route_id}, trip_id={trip_id}"
+                    await self.enqueue_ml_prediction(
+                        station_id=station_id,
+                        route_id=route_id,
+                        direction_id=direction_id,
+                        scheduled_time=scheduled_time,
+                        trip_id=trip_id,
+                        headsign=headsign,
                     )
-                    # Try ML fallback before negative caching
-                    try:
-                        req_id = await self.enqueue_ml_prediction(
-                            station_id=station_id,
-                            route_id=route_id,
-                            direction_id=direction_id,
-                            scheduled_time=scheduled_time,
-                            trip_id=trip_id,
-                            headsign=headsign,
-                        )
-                        ml_res = await self.await_ml_prediction_result(req_id, 6.0)
-                        if ml_res and "predicted_track_index" in ml_res:
-                            best_idx = int(ml_res["predicted_track_index"]) + 1
-                            ml_track = str(best_idx)
-                            probs = ml_res.get("probabilities") or []
-                            ml_conf = float(max(probs)) if probs else 0.0
-
-                            prediction = TrackPrediction(
-                                station_id=station_id,
-                                route_id=route_id,
-                                trip_id=trip_id,
-                                headsign=headsign,
-                                direction_id=direction_id,
-                                scheduled_time=scheduled_time,
-                                track_number=ml_track,
-                                confidence_score=ml_conf,
-                                prediction_method="ml_ensemble",
-                                historical_matches=0,
-                                created_at=datetime.now(UTC),
-                            )
-
-                            track_predictions_generated.labels(
-                                station_id=station_id,
-                                route_id=route_id,
-                                prediction_method="ml_ensemble",
-                                instance=INSTANCE_ID,
-                            ).inc()
-
-                            track_prediction_confidence.labels(
-                                station_id=station_id,
-                                route_id=route_id,
-                                track_number=ml_track,
-                                instance=INSTANCE_ID,
-                            ).set(ml_conf)
-
-                            tg.start_soon(
-                                write_cache,
-                                self.redis,
-                                cache_key,
-                                prediction.model_dump_json(),
-                                2 * MONTH,
-                            )
-                            return prediction
-                    except Exception as e:
-                        logger.error("ML fallback failed (low-confidence)", exc_info=e)
                 logger.debug(
                     f"No prediction made for station_id={station_id}, route_id={route_id}, trip_id={trip_id}, headsign={headsign}, direction_id={direction_id}, scheduled_time={scheduled_time}, confidence={confidence}, threshold={confidence_threshold}"
                 )
@@ -1035,7 +1292,7 @@ class TrackPredictor:
                 return None
 
             # Determine prediction method
-            method = "historical_pattern"
+            method = "bayes_fusion" if used_bayes else "historical_pattern"
             if confidence >= 0.8:
                 method = "high_confidence_pattern"
             elif confidence >= 0.6:
@@ -1059,6 +1316,10 @@ class TrackPredictor:
             logger.debug(f"Historical matches={historical_matches}")
 
             # Create prediction
+            # Historical accuracy for predicted track
+            hist_acc = await self._get_prediction_accuracy(
+                station_id, route_id, best_track
+            )
             prediction = TrackPrediction(
                 station_id=station_id,
                 route_id=route_id,
@@ -1068,6 +1329,9 @@ class TrackPredictor:
                 scheduled_time=scheduled_time,
                 track_number=best_track,
                 confidence_score=confidence,
+                accuracy=hist_acc,
+                model_confidence=model_confidence,
+                display_confidence=confidence,
                 prediction_method=method,
                 historical_matches=historical_matches,
                 created_at=datetime.now(UTC),
@@ -1090,6 +1354,26 @@ class TrackPredictor:
 
             # Store prediction for later validation
             tg.start_soon(self._store_prediction, prediction)
+            # If traditional confidence is weak, funnel to ML for a possible replacement
+            if self._ml_enabled() and prediction.confidence_score < 0.5:
+                await self.enqueue_ml_prediction(
+                    station_id=station_id,
+                    route_id=route_id,
+                    direction_id=direction_id,
+                    scheduled_time=scheduled_time,
+                    trip_id=trip_id,
+                    headsign=headsign,
+                )
+            # Additionally, sample a percentage of successful predictions for ML exploration
+            elif self._ml_enabled() and random.random() < self._ml_sample_prob():
+                await self.enqueue_ml_prediction(
+                    station_id=station_id,
+                    route_id=route_id,
+                    direction_id=direction_id,
+                    scheduled_time=scheduled_time,
+                    trip_id=trip_id,
+                    headsign=headsign,
+                )
             logger.debug(
                 f"Predicted track={prediction.track_number}, station_id={station_id}, route_id={route_id}, trip_id={trip_id}, headsign={headsign}, direction_id={direction_id}, scheduled_time={scheduled_time}, confidence={confidence}, method={method}, historical_matches={historical_matches}"
             )
@@ -1195,6 +1479,16 @@ class TrackPredictor:
                 prediction.confidence_score,
             )
 
+            # Update per-track historical accuracy for the predicted track
+            if prediction.track_number:
+                tg.start_soon(
+                    self._update_track_accuracy,
+                    station_id,
+                    route_id,
+                    prediction.track_number,
+                    is_correct,
+                )
+
             # Record validation metric
             result = "correct" if is_correct else "incorrect"
             track_predictions_validated.labels(
@@ -1227,6 +1521,43 @@ class TrackPredictor:
                 f"Failed to validate prediction due to validation error: {e}",
                 exc_info=True,
             )
+
+    async def _update_track_accuracy(
+        self, station_id: str, route_id: str, track_number: str, is_correct: bool
+    ) -> None:
+        """Update per-track accuracy counters used by _get_prediction_accuracy.
+
+        Stored format is a simple "correct:total" string per station/route/track.
+        """
+        try:
+            key = f"track_accuracy:{station_id}:{route_id}:{track_number}"
+            raw = await self.redis.get(key)
+            correct = 0
+            total = 0
+            if raw:
+                try:
+                    parts = (
+                        raw.decode().split(":")
+                        if isinstance(raw, (bytes, bytearray))
+                        else str(raw).split(":")
+                    )
+                    if len(parts) == 2:
+                        correct = int(parts[0])
+                        total = int(parts[1])
+                except Exception:
+                    correct = 0
+                    total = 0
+            total += 1
+            if is_correct:
+                correct += 1
+            await write_cache(self.redis, key, f"{correct}:{total}", 30 * DAY)
+        except (ConnectionError, TimeoutError) as e:
+            logger.error(
+                f"Failed to update per-track accuracy due to Redis connection issue: {e}",
+                exc_info=True,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.error("Failed to update per-track accuracy", exc_info=e)
 
     async def _update_prediction_stats(
         self, station_id: str, route_id: str, is_correct: bool, confidence: float

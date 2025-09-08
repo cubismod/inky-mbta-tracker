@@ -40,6 +40,16 @@ class VehicleRedisSchema(BaseModel):
     headsign: Optional[str] = None
 
 
+class MLPredictionRequest(BaseModel):
+    id: str
+    station_id: str
+    route_id: str
+    direction_id: int
+    scheduled_time: datetime
+    trip_id: str
+    headsign: str
+
+
 class TrackAssignmentType(Enum):
     HISTORICAL = "historical"
     PREDICTED = "predicted"
@@ -74,6 +84,11 @@ class TrackPrediction(BaseModel):
     scheduled_time: datetime
     track_number: Optional[str] = None
     confidence_score: float  # 0.0 to 1.0
+    accuracy: float = 0.0  # historical accuracy estimate for predicted track
+    model_confidence: float = (
+        0.0  # confidence from model/fused pre-sharpen, pre-history
+    )
+    display_confidence: float = 0.0  # post-processed confidence for UX
     prediction_method: str  # e.g., "historical_pattern", "time_based", "headsign_based"
     historical_matches: int  # Number of historical matches used for prediction
     created_at: datetime
