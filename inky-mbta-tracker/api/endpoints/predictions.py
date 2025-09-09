@@ -69,7 +69,7 @@ async def generate_track_prediction(
 
 
 @router.post("/chained-predictions")
-@limiter.limit("50/minute")
+@limiter.limit("200/minute")
 async def generate_chained_track_predictions(
     request: Request, chained_request: ChainedPredictionsRequest, commons: GET_DI
 ) -> ChainedPredictionsResponse:
