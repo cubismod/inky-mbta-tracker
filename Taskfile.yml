@@ -5,7 +5,7 @@ dotenv: ['.env']
 tasks:
   pyright:
     cmds:
-     - uv run pyright
+     - uv run basedpyright
   check:
     cmds:
       - uv run ruff check inky-mbta-tracker

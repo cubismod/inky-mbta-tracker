@@ -815,7 +815,9 @@ class MBTAApi:
                                         route_id=route_id,
                                         trip_id=trip_id,
                                         headsign=headsign,
-                                        direction_id=item.attributes.direction_id,
+                                        direction_id=int(
+                                            item.attributes.direction_id or 0
+                                        ),
                                         assignment_type=TrackAssignmentType.HISTORICAL,
                                         track_number=track_number,
                                         scheduled_time=schedule_time,
@@ -868,7 +870,7 @@ class MBTAApi:
                                             route_id,
                                             trip_id,
                                             headsign,
-                                            item.attributes.direction_id,
+                                            int(item.attributes.direction_id or 0),
                                             schedule_time,
                                             tg,
                                         )

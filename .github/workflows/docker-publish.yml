@@ -56,6 +56,8 @@ jobs:
   test:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    env:
+      KERAS_BACKEND: "jax"
     steps:
       - uses: actions/checkout@master
       - name: Set up uv
@@ -78,7 +80,7 @@ jobs:
       - name: Run ruff check
         run: uv run ruff check
       - name: Run pyright
-        run: uv run pyright
+        run: uv run basedpyright
       - name: Run pytest
         run: uv run pytest inky-mbta-tracker/tests/
   pr-check:
