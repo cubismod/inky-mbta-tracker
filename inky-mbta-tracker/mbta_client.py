@@ -15,7 +15,7 @@ from aiosseclient import aiosseclient
 from anyio import create_task_group, sleep
 from anyio.abc import TaskGroup
 from anyio.streams.memory import MemoryObjectSendStream
-from consts import DAY, FOUR_WEEKS, HOUR, MBTA_V3_ENDPOINT, TWO_MONTHS, YEAR
+from consts import DAY, FOUR_WEEKS, HOUR, MBTA_V3_ENDPOINT, MINUTE, TWO_MONTHS, YEAR
 from exceptions import RateLimitExceeded
 from mbta_responses import (
     AlertResource,
@@ -398,6 +398,7 @@ class MBTAApi:
                 hc_fail_threshold = HOUR + (randint(0, 120) * 60)
         async with aiohttp.ClientSession() as session:
             logger.debug("started hc monitoring")
+            await sleep(10 * MINUTE)
             while True:
                 await sleep(randint(20, 90))
                 now = datetime.now(ny_tz)
