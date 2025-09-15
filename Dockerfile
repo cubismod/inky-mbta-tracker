@@ -6,6 +6,7 @@ ADD README.md pyproject.toml uv.lock ./
 
 ENV HF_HOME=/app/hf
 ENV KERAS_BACKEND=jax
+ENV UV_LINK_MODE=copy
 
 # Create HF dir and venv
 RUN mkdir hf && uv venv
@@ -14,13 +15,13 @@ RUN mkdir hf && uv venv
 # (requires BuildKit/Buildx in CI, which the workflow config already sets up)
 RUN --mount=type=cache,target=/root/.cache/pip \ 
 	--mount=type=cache,target=/root/.cache/uv \
-	uv sync --frozen --no-install-project --no-dev
+	uv sync --link-mode=copy --frozen --no-install-project --no-dev
 
 ADD . .
 
 # Install the project (uses cached wheels from previous step) and verify lockfile
 RUN --mount=type=cache,target=/root/.cache/pip \ 
 	--mount=type=cache,target=/root/.cache/uv \
-	uv sync --no-dev && uv lock --check
+	uv sync --link-mode=copy --no-dev && uv lock --check
 
 CMD ["uv", "run", "inky-mbta-tracker"]
