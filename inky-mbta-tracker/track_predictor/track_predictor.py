@@ -505,8 +505,25 @@ class TrackPredictor:
                                 if str(idx + 1) not in allowed:
                                     masked[idx] = 0.0
                             total = float(np.sum(masked))
-                            mean_probs = masked / total if total > 0 else masked
-                            predicted_track = int(np.argmax(mean_probs))
+                            # If masking removed all probability mass, keep original mean_probs
+                            if total > 0:
+                                mean_probs = masked / total
+                                predicted_track = int(np.argmax(mean_probs))
+                            else:
+                                # Try to pick top allowed track from history as fallback
+                                best_allowed = await self._choose_top_allowed_track(
+                                    station_id, route_id, allowed
+                                )
+                                if best_allowed:
+                                    logger.info(
+                                        f"Allowed mask removed ML probs for {station_id} {route_id}; falling back to most frequent allowed track {best_allowed}"
+                                    )
+                                    predicted_track = int(best_allowed) - 1
+                                    track_number = best_allowed
+                                else:
+                                    logger.debug(
+                                        f"Allowed-tracks mask removed all probabilities for {station_id} {route_id}; keeping original mean_probs"
+                                    )
                     # Compute model confidence (pre-sharpen, pre-history)
                     model_confidence = self._margin_confidence(
                         mean_probs, predicted_track
@@ -825,8 +842,7 @@ class TrackPredictor:
         try:
             start_time = time.time()
 
-            # Look back 3 months for historical data
-            start_date = scheduled_time - timedelta(days=90)
+            start_date = scheduled_time - timedelta(days=180)
             end_date = scheduled_time
 
             # Get assignments from same route and related routes
@@ -844,6 +860,9 @@ class TrackPredictor:
             patterns: dict[str, dict[str, int]] = {
                 "exact_match": defaultdict(int),  # Same headsign, time, direction
                 "headsign_match": defaultdict(int),  # Same headsign, direction
+                "platform_consistency": defaultdict(
+                    int
+                ),  # Consistency with station's modal platform
                 "time_match_30": defaultdict(int),  # Same time window (±30 min)
                 "time_match_60": defaultdict(int),  # Extended time window (±60 min)
                 "time_match_120": defaultdict(int),  # Wide time window (±120 min)
@@ -858,6 +877,18 @@ class TrackPredictor:
             target_minute = scheduled_time.minute
             target_service_type = self._detect_service_type(trip_headsign)
             target_is_weekend = self._is_weekend_service(target_dow)
+
+            # Compute modal track (most common historical track) to capture platform consistency
+            try:
+                modal_counts: dict[str, int] = defaultdict(int)
+                for a in assignments:
+                    if a.track_number:
+                        modal_counts[a.track_number] += 1
+                modal_track = None
+                if modal_counts:
+                    modal_track = max(modal_counts.items(), key=lambda x: x[1])[0]
+            except Exception:
+                modal_track = None
 
             for assignment in assignments:
                 if not assignment.track_number:
@@ -876,19 +907,31 @@ class TrackPredictor:
                         assignment.day_of_week
                     )
 
-                    # Calculate time differences for multiple windows
-                    time_diff_minutes = abs(
-                        assignment.hour * 60
-                        + assignment.minute
-                        - target_hour * 60
-                        - target_minute
-                    )
+                    # Calculate time differences using actual datetimes (minutes)
+                    try:
+                        time_diff_minutes = int(
+                            abs(
+                                (
+                                    assignment.scheduled_time - scheduled_time
+                                ).total_seconds()
+                            )
+                            / 60
+                        )
+                    except Exception:
+                        # Fallback to hour/minute arithmetic if scheduled_time is missing
+                        time_diff_minutes = abs(
+                            assignment.hour * 60
+                            + assignment.minute
+                            - target_hour * 60
+                            - target_minute
+                        )
 
                     # Exact match (enhanced similarity + time + direction)
+                    # Exact match window: within 60 minutes and same direction
                     if (
-                        headsign_similarity > 0.6  # Lowered from 0.7
+                        headsign_similarity > 0.6
                         and assignment.direction_id == direction_id
-                        and abs(assignment.hour - target_hour) <= 1
+                        and time_diff_minutes <= 60
                     ):
                         score = 15 * headsign_similarity  # Graduated scoring
                         patterns["exact_match"][assignment.track_number] += int(score)
@@ -933,6 +976,10 @@ class TrackPredictor:
                     if assignment.day_of_week == target_dow:
                         patterns["day_of_week_match"][assignment.track_number] += 1
 
+                    # Platform / track consistency (bonus if assignment matches modal track)
+                    if modal_track and assignment.track_number == modal_track:
+                        patterns["platform_consistency"][assignment.track_number] += 4
+
             # Combine all patterns with weights and time decay
             combined_scores: dict[str, float] = defaultdict(float)
             sample_counts: dict[str, int] = defaultdict(int)
@@ -954,12 +1001,20 @@ class TrackPredictor:
                 assignment_service_type = self._detect_service_type(assignment.headsign)
                 assignment_is_weekend = self._is_weekend_service(assignment.day_of_week)
 
-                time_diff_minutes = abs(
-                    assignment.hour * 60
-                    + assignment.minute
-                    - target_hour * 60
-                    - target_minute
-                )
+                try:
+                    time_diff_minutes = int(
+                        abs(
+                            (assignment.scheduled_time - scheduled_time).total_seconds()
+                        )
+                        / 60
+                    )
+                except Exception:
+                    time_diff_minutes = abs(
+                        assignment.hour * 60
+                        + assignment.minute
+                        - target_hour * 60
+                        - target_minute
+                    )
 
                 base_score = 0.0
 
@@ -967,7 +1022,7 @@ class TrackPredictor:
                 if (
                     headsign_similarity > 0.6
                     and assignment.direction_id == direction_id
-                    and abs(assignment.hour - target_hour) <= 1
+                    and time_diff_minutes <= 60
                 ):
                     base_score = 15 * headsign_similarity
                 # Strong headsign match
@@ -998,7 +1053,7 @@ class TrackPredictor:
                     combined_scores[assignment.track_number] += base_score * time_decay
                     sample_counts[assignment.track_number] += 1
 
-            # Convert to probabilities with confidence adjustments
+                # Convert to probabilities with confidence adjustments
             if combined_scores:
                 total_score = sum(combined_scores.values())
                 total: dict[str, float] = {}
@@ -1109,11 +1164,9 @@ class TrackPredictor:
                     r_client=self.redis,
                     watcher_type=shared_types.shared_types.TaskType.TRACK_PREDICTIONS,
                 ) as api:
+                    # Fetch headsign and stop/platform once each
                     new_hs = await api.get_headsign(trip_id, session, tg)
-                    if new_hs != "":
-                        headsign = new_hs
-                    stop_data = await api.get_stop(session, station_id, tg)
-                    if new_hs != "":
+                    if new_hs:
                         headsign = new_hs
                     stop_data = await api.get_stop(session, station_id, tg)
                     if (
@@ -1245,25 +1298,69 @@ class TrackPredictor:
                                     t2 = float(np.sum(fused_norm))
                                     if t2 > 0:
                                         fused_norm = fused_norm / t2
-                                # Select from fused distribution (pre-sharpen)
-                                best_idx = int(np.argmax(fused_norm))
-                                best_track = str(best_idx + 1)
-                                # Compute confidence from a sharpened version of fused
-                                fused_sharp = self._sharpen_probs(
-                                    fused_norm, self._conf_gamma()
-                                )
-                                confidence = self._margin_confidence(
-                                    fused_sharp, best_idx
-                                )
-                                # Pre-sharpen, pre-history confidence for reporting
-                                model_confidence = self._margin_confidence(
-                                    fused_norm, best_idx
-                                )
-                                # Blend with historical accuracy for the chosen track
-                                hist_acc = await self._get_prediction_accuracy(
-                                    station_id, route_id, best_track
-                                )
-                                w_hist = self._conf_hist_weight()
+                                    else:
+                                        # Allowed mask removed all mass; choose top allowed historical track
+                                        best_allowed = (
+                                            await self._choose_top_allowed_track(
+                                                station_id, route_id, allowed
+                                            )
+                                        )
+                                        if best_allowed:
+                                            logger.info(
+                                                f"Allowed mask removed fused probs for {station_id} {route_id}; falling back to most frequent allowed track {best_allowed}"
+                                            )
+                                            best_idx = int(best_allowed) - 1
+                                            best_track = best_allowed
+                                            # compute confidences from fused (all-zero) as conservative defaults
+                                            fused_norm = None
+                                        else:
+                                            logger.debug(
+                                                f"Allowed mask removed all fused probabilities for {station_id} {route_id}; no allowed historical fallback found"
+                                            )
+                                # Select from fused distribution (pre-sharpen) if available
+                                if (
+                                    fused_norm is not None
+                                    and float(np.sum(fused_norm)) > 0
+                                ):
+                                    best_idx = int(np.argmax(fused_norm))
+                                    best_track = str(best_idx + 1)
+                                    # Compute confidence from a sharpened version of fused
+                                    fused_sharp = self._sharpen_probs(
+                                        fused_norm, self._conf_gamma()
+                                    )
+                                    confidence = self._margin_confidence(
+                                        fused_sharp, best_idx
+                                    )
+                                    # Pre-sharpen, pre-history confidence for reporting
+                                    model_confidence = self._margin_confidence(
+                                        fused_norm, best_idx
+                                    )
+                                    # Blend with historical accuracy for the chosen track
+                                    hist_acc = await self._get_prediction_accuracy(
+                                        station_id, route_id, best_track
+                                    )
+                                    w_hist = self._conf_hist_weight()
+                                else:
+                                    # No valid fused distribution. If we selected a best_allowed earlier
+                                    # we'll use it as the choice and compute a conservative confidence.
+                                    if "best_idx" in locals():
+                                        # best_idx was set from allowed historical fallback
+                                        best_track = str(best_idx + 1)
+                                        hist_acc = await self._get_prediction_accuracy(
+                                            station_id, route_id, best_track
+                                        )
+                                        w_hist = self._conf_hist_weight()
+                                        # Blend existing pattern confidence with historical accuracy
+                                        confidence = (
+                                            1.0 - w_hist
+                                        ) * confidence + w_hist * hist_acc
+                                        model_confidence = 0.0
+                                    else:
+                                        # No fused info and no allowed fallback; keep original pattern result
+                                        hist_acc = await self._get_prediction_accuracy(
+                                            station_id, route_id, best_track
+                                        )
+                                        w_hist = self._conf_hist_weight()
                                 confidence = (
                                     1.0 - w_hist
                                 ) * confidence + w_hist * hist_acc
@@ -1309,7 +1406,7 @@ class TrackPredictor:
                 for _ in await self.get_historical_assignments(
                     station_id,
                     route_id,
-                    scheduled_time - timedelta(days=30),
+                    scheduled_time - timedelta(days=180),
                     scheduled_time,
                 )
             )
@@ -1430,6 +1527,31 @@ class TrackPredictor:
         except (ConnectionError, TimeoutError, ValueError) as e:
             logger.error("Failed to get prediction accuracy", exc_info=e)
             return 0.7  # Default accuracy
+
+    async def _choose_top_allowed_track(
+        self, station_id: str, route_id: str, allowed: set[str]
+    ) -> Optional[str]:
+        """Choose the most frequent historical track among the allowed set.
+
+        Returns the track string or None if unable to decide.
+        """
+        try:
+            end = datetime.now(UTC)
+            start = end - timedelta(days=180)
+            assignments = await self.get_historical_assignments(
+                station_id, route_id, start, end
+            )
+            counts: dict[str, int] = defaultdict(int)
+            for a in assignments:
+                if a.track_number and a.track_number in allowed:
+                    counts[a.track_number] += 1
+            if not counts:
+                return None
+            # return most frequent; ties resolved by smallest track string
+            best = max(sorted(counts.items(), key=lambda x: x[0]), key=lambda x: x[1])
+            return best[0]
+        except Exception:
+            return None
 
     async def validate_prediction(
         self,
@@ -1883,15 +2005,28 @@ class TrackPredictor:
 
                     return route_predictions_cached
 
-                route_tasks = [await process_route(route_id) for route_id in routes]
+                # Run route processing concurrently to improve precache throughput
+                route_results: list[int] = []
+
+                async def _run_route(rid: str) -> None:
+                    try:
+                        res = await process_route(rid)
+                        route_results.append(res)
+                    except Exception as e:
+                        logger.error(f"Error running route {rid}", exc_info=e)
+
+                async with anyio.create_task_group() as tg2:
+                    for rid in routes:
+                        tg2.start_soon(_run_route, rid)
 
                 # Sum up all predictions cached
-                for result in route_tasks:
+                for result in route_results:
                     if isinstance(result, int):
                         predictions_cached += result
-                    elif isinstance(result, Exception):
+                    else:
                         logger.error(
-                            "Unexpected error in route processing", exc_info=result
+                            "Unexpected non-int result in route processing",
+                            exc_info=result,
                         )
 
         except (ConnectionError, TimeoutError, aiohttp.ClientError) as e:

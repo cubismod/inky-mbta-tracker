@@ -15,7 +15,7 @@ from aiosseclient import aiosseclient
 from anyio import create_task_group, sleep
 from anyio.abc import TaskGroup
 from anyio.streams.memory import MemoryObjectSendStream
-from consts import DAY, FOUR_WEEKS, HOUR, MBTA_V3_ENDPOINT, TWO_MONTHS, YEAR
+from consts import DAY, FOUR_WEEKS, HOUR, MBTA_V3_ENDPOINT, MINUTE, TWO_MONTHS, YEAR
 from exceptions import RateLimitExceeded
 from mbta_responses import (
     AlertResource,
@@ -398,11 +398,14 @@ class MBTAApi:
                 hc_fail_threshold = HOUR + (randint(0, 120) * 60)
         async with aiohttp.ClientSession() as session:
             logger.debug("started hc monitoring")
+            await sleep(10 * MINUTE)
             while True:
                 await sleep(randint(20, 90))
                 now = datetime.now(ny_tz)
                 if failtime and now >= failtime:
-                    logger.info("Refreshing MBTA server side events")
+                    logger.info(
+                        "Refreshing MBTA server side events due to health check failure/scheduled restart."
+                    )
                     tg.cancel_scope.cancel()
                     return
                 if self.get_service_status():
@@ -421,16 +424,6 @@ class MBTAApi:
                                         if not failtime:
                                             failtime = now + timedelta(
                                                 seconds=hc_fail_threshold
-                                            )
-                                            logger.warning(
-                                                (
-                                                    "Detected a potentially stuck SSE worker "
-                                                    f"for watcher={self.watcher_type} "
-                                                    f"route={self.route or 'N/A'} "
-                                                    f"stop_id={self.stop_id or 'N/A'} "
-                                                    f"id={self.gen_unique_id()} — will restart at "
-                                                    f"{failtime.strftime('%Y-%m-%d %I:%M:%S %p %Z')}"
-                                                )
                                             )
                                 else:
                                     failtime = None
