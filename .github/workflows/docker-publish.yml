@@ -43,16 +43,6 @@ jobs:
           tags: ${{ env.REPO }}:${{ github.sha }},${{ env.REPO }}:latest,${{ env.REPO }}:dev-latest
           cache-from: type=registry,ref=${{ env.CACHE_REPO }}
           cache-to: type=registry,ref=${{ env.CACHE_REPO }},mode=max
-      - name: Run Trivy vulnerability scanner
-        uses: aquasecurity/trivy-action@b6643a29fecd7f34b3597bc6acb0a98b03d33ff8 # 0.33.1
-        with:
-          image-ref: '${{ env.REPO }}:${{ github.sha }}'
-          format: 'sarif'
-          output: 'trivy-results.sarif'
-      - name: Upload Trivy scan results to GitHub Security tab
-        uses: github/codeql-action/upload-sarif@192325c86100d080feab897ff886c34abd4c83a3 # v3
-        with:
-          sarif_file: 'trivy-results.sarif'
   test:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
@@ -110,13 +100,3 @@ jobs:
           tags: ${{ env.REPO }}:${{ github.sha }},${{ env.REPO }}:dev-latest,${{ env.REPO }}:${{ steps.sanitize.outputs.branch_tag }}
           cache-from: type=registry,ref=${{ env.CACHE_REPO }}
           cache-to: type=registry,ref=${{ env.CACHE_REPO }},mode=max
-      - name: Run Trivy vulnerability scanner
-        uses: aquasecurity/trivy-action@b6643a29fecd7f34b3597bc6acb0a98b03d33ff8 # 0.33.1
-        with:
-          image-ref: '${{ env.REPO }}:${{ github.sha }}'
-          format: 'sarif'
-          output: 'trivy-results.sarif'
-      - name: Upload Trivy scan results to GitHub Security tab
-        uses: github/codeql-action/upload-sarif@192325c86100d080feab897ff886c34abd4c83a3 # v3
-        with:
-          sarif_file: 'trivy-results.sarif'
