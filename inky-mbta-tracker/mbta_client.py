@@ -402,7 +402,9 @@ class MBTAApi:
                 await sleep(randint(20, 90))
                 now = datetime.now(ny_tz)
                 if failtime and now >= failtime:
-                    logger.info("Refreshing MBTA server side events")
+                    logger.info(
+                        "Refreshing MBTA server side events due to health check failure/scheduled restart."
+                    )
                     tg.cancel_scope.cancel()
                     return
                 if self.get_service_status():
@@ -421,16 +423,6 @@ class MBTAApi:
                                         if not failtime:
                                             failtime = now + timedelta(
                                                 seconds=hc_fail_threshold
-                                            )
-                                            logger.warning(
-                                                (
-                                                    "Detected a potentially stuck SSE worker "
-                                                    f"for watcher={self.watcher_type} "
-                                                    f"route={self.route or 'N/A'} "
-                                                    f"stop_id={self.stop_id or 'N/A'} "
-                                                    f"id={self.gen_unique_id()} — will restart at "
-                                                    f"{failtime.strftime('%Y-%m-%d %I:%M:%S %p %Z')}"
-                                                )
                                             )
                                 else:
                                     failtime = None

@@ -1319,7 +1319,10 @@ class TrackPredictor:
                                                 f"Allowed mask removed all fused probabilities for {station_id} {route_id}; no allowed historical fallback found"
                                             )
                                 # Select from fused distribution (pre-sharpen) if available
-                                if fused_norm is not None and float(np.sum(fused_norm)) > 0:
+                                if (
+                                    fused_norm is not None
+                                    and float(np.sum(fused_norm)) > 0
+                                ):
                                     best_idx = int(np.argmax(fused_norm))
                                     best_track = str(best_idx + 1)
                                     # Compute confidence from a sharpened version of fused
@@ -1341,7 +1344,7 @@ class TrackPredictor:
                                 else:
                                     # No valid fused distribution. If we selected a best_allowed earlier
                                     # we'll use it as the choice and compute a conservative confidence.
-                                    if 'best_idx' in locals():
+                                    if "best_idx" in locals():
                                         # best_idx was set from allowed historical fallback
                                         best_track = str(best_idx + 1)
                                         hist_acc = await self._get_prediction_accuracy(
@@ -1349,7 +1352,9 @@ class TrackPredictor:
                                         )
                                         w_hist = self._conf_hist_weight()
                                         # Blend existing pattern confidence with historical accuracy
-                                        confidence = (1.0 - w_hist) * confidence + w_hist * hist_acc
+                                        confidence = (
+                                            1.0 - w_hist
+                                        ) * confidence + w_hist * hist_acc
                                         model_confidence = 0.0
                                     else:
                                         # No fused info and no allowed fallback; keep original pattern result
