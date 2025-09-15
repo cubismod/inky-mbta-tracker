@@ -842,8 +842,7 @@ class TrackPredictor:
         try:
             start_time = time.time()
 
-            # Look back 3 months for historical data
-            start_date = scheduled_time - timedelta(days=90)
+            start_date = scheduled_time - timedelta(days=180)
             end_date = scheduled_time
 
             # Get assignments from same route and related routes
@@ -1407,7 +1406,7 @@ class TrackPredictor:
                 for _ in await self.get_historical_assignments(
                     station_id,
                     route_id,
-                    scheduled_time - timedelta(days=30),
+                    scheduled_time - timedelta(days=180),
                     scheduled_time,
                 )
             )
@@ -1537,7 +1536,6 @@ class TrackPredictor:
         Returns the track string or None if unable to decide.
         """
         try:
-            # Look back 180 days for counts
             end = datetime.now(UTC)
             start = end - timedelta(days=180)
             assignments = await self.get_historical_assignments(
