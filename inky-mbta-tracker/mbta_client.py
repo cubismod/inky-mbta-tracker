@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Optional
 from zoneinfo import ZoneInfo
 
 import aiohttp
+import anyio
 from aiohttp import ClientSession
 from aiohttp.client_exceptions import ClientPayloadError
 from aiosseclient import aiosseclient
@@ -867,6 +868,108 @@ class MBTAApi:
                                             scheduled_time_: datetime,
                                             tg_: TaskGroup,
                                         ) -> None:
+                                            """
+                                            Wrapper around TrackPredictor.predict_track that:
+                                            - checks the existing prediction cache and skips work if already cached
+                                            - adds a small random jitter before predicting to reduce simultaneous runs
+                                            - re-checks cache and negative-cache after jitter to be conservative
+                                            - concurrent ML predictions (when no cache) are acceptable
+                                            """
+                                            cache_key = f"track_prediction:{station_id_}:{route_id_}:{trip_id_}:{scheduled_time_.date()}"
+                                            negative_cache_key = f"negative_{cache_key}"
+
+                                            # Conservative pre-check: skip if a positive or negative cache exists
+                                            try:
+                                                cached = await check_cache(
+                                                    self.r_client, cache_key
+                                                )
+                                                if cached:
+                                                    logger.debug(
+                                                        "Skipping prediction because cached result exists",
+                                                        extra={
+                                                            "cache_key": cache_key,
+                                                            "station_id": station_id_,
+                                                            "route_id": route_id_,
+                                                            "trip_id": trip_id_,
+                                                        },
+                                                    )
+                                                    return
+                                                neg = await check_cache(
+                                                    self.r_client, negative_cache_key
+                                                )
+                                                if neg:
+                                                    logger.debug(
+                                                        "Skipping prediction because negative cache exists",
+                                                        extra={
+                                                            "negative_cache_key": negative_cache_key,
+                                                            "station_id": station_id_,
+                                                            "route_id": route_id_,
+                                                            "trip_id": trip_id_,
+                                                        },
+                                                    )
+                                                    return
+                                            except Exception:
+                                                # If cache check fails, proceed but log at debug level
+                                                logger.debug(
+                                                    "Cache check failed while deciding whether to precache; proceeding",
+                                                    exc_info=True,
+                                                )
+
+                                            # Add random jitter (ms) before predicting to reduce thundering herd.
+                                            try:
+                                                max_jitter_ms = int(
+                                                    os.getenv(
+                                                        "IMT_PRED_JITTER_MS", "200"
+                                                    )
+                                                )
+                                            except Exception:
+                                                max_jitter_ms = 200
+                                            try:
+                                                jitter_ms = randint(0, max_jitter_ms)
+                                                await anyio.sleep(jitter_ms / 1000.0)
+                                            except Exception:
+                                                # Best-effort jitter; do not block on failures
+                                                logger.debug(
+                                                    "Failed to apply jitter before prediction",
+                                                    exc_info=True,
+                                                )
+
+                                            # Re-check caches after jitter to be extra conservative
+                                            try:
+                                                cached = await check_cache(
+                                                    self.r_client, cache_key
+                                                )
+                                                if cached:
+                                                    logger.debug(
+                                                        "Skipping prediction after jitter because cached result exists",
+                                                        extra={
+                                                            "cache_key": cache_key,
+                                                            "station_id": station_id_,
+                                                            "route_id": route_id_,
+                                                            "trip_id": trip_id_,
+                                                        },
+                                                    )
+                                                    return
+                                                neg = await check_cache(
+                                                    self.r_client, negative_cache_key
+                                                )
+                                                if neg:
+                                                    logger.debug(
+                                                        "Skipping prediction after jitter because negative cache exists",
+                                                        extra={
+                                                            "negative_cache_key": negative_cache_key,
+                                                            "station_id": station_id_,
+                                                            "route_id": route_id_,
+                                                            "trip_id": trip_id_,
+                                                        },
+                                                    )
+                                                    return
+                                            except Exception:
+                                                logger.debug(
+                                                    "Cache re-check failed; proceeding to predict",
+                                                    exc_info=True,
+                                                )
+
                                             try:
                                                 pred = await self.track_predictor.predict_track(
                                                     station_id_,
@@ -887,16 +990,16 @@ class MBTAApi:
                                                     exc_info=e,
                                                 )
 
-                                    tg.start_soon(
-                                        _run_and_log_predict,
-                                        station_id,
-                                        route_id,
-                                        trip_id,
-                                        headsign,
-                                        int(item.attributes.direction_id or 0),
-                                        schedule_time,
-                                        tg,
-                                    )
+                                        tg.start_soon(
+                                            _run_and_log_predict,
+                                            station_id,
+                                            route_id,
+                                            trip_id,
+                                            headsign,
+                                            int(item.attributes.direction_id or 0),
+                                            schedule_time,
+                                            tg,
+                                        )
                                 except (ConnectionError, TimeoutError) as e:
                                     logger.error(
                                         f"Failed to generate track prediction due to connection issue: {e}",
