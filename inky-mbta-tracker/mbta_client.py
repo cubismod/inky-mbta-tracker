@@ -857,16 +857,46 @@ class MBTAApi:
                             ):
                                 try:
                                     if self.track_predictor:
-                                        tg.start_soon(
-                                            self.track_predictor.predict_track,
-                                            station_id,
-                                            route_id,
-                                            trip_id,
-                                            headsign,
-                                            int(item.attributes.direction_id or 0),
-                                            schedule_time,
-                                            tg,
-                                        )
+
+                                        async def _run_and_log_predict(
+                                            station_id_: str,
+                                            route_id_: str,
+                                            trip_id_: str,
+                                            headsign_: str,
+                                            direction_id_: int,
+                                            scheduled_time_: datetime,
+                                            tg_: TaskGroup,
+                                        ) -> None:
+                                            try:
+                                                pred = await self.track_predictor.predict_track(
+                                                    station_id_,
+                                                    route_id_,
+                                                    trip_id_,
+                                                    headsign_,
+                                                    int(direction_id_),
+                                                    scheduled_time_,
+                                                    tg_,
+                                                )
+                                                if pred:
+                                                    logger.info(
+                                                        f"Track prediction made: {pred.station_id} {pred.route_id} {pred.scheduled_time.strftime('%Y-%m-%d %H:%M')} -> {pred.track_number} (conf={pred.confidence_score:.2f}, method={pred.prediction_method})"
+                                                    )
+                                            except Exception as e:
+                                                logger.error(
+                                                    "Error running predict_track",
+                                                    exc_info=e,
+                                                )
+
+                                    tg.start_soon(
+                                        _run_and_log_predict,
+                                        station_id,
+                                        route_id,
+                                        trip_id,
+                                        headsign,
+                                        int(item.attributes.direction_id or 0),
+                                        schedule_time,
+                                        tg,
+                                    )
                                 except (ConnectionError, TimeoutError) as e:
                                     logger.error(
                                         f"Failed to generate track prediction due to connection issue: {e}",
@@ -1264,11 +1294,17 @@ async def precache_track_predictions_runner(
             async with MBTAApi(
                 r_client, watcher_type=TaskType.TRACK_PREDICTIONS
             ) as api:
-                await api._precache_track_predictions(
-                    tg=tg,
-                    routes=routes,
-                    target_stations=target_stations,
-                )
+                try:
+                    num_cached = await api._precache_track_predictions(
+                        tg=tg,
+                        routes=routes,
+                        target_stations=target_stations,
+                    )
+                    logger.info(
+                        f"Track prediction precache completed: {num_cached} predictions cached; routes={routes}, stations={target_stations}"
+                    )
+                except Exception as e:
+                    logger.error("Error during precache operation", exc_info=e)
 
         except CancelledError:
             logger.info("Track prediction precache runner cancelled")
