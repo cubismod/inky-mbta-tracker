@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import json
 import logging
 import math
@@ -33,6 +34,7 @@ from prometheus import (
     track_prediction_confidence,
     track_predictions_cached,
     track_predictions_generated,
+    track_predictions_ml_wins,
     track_predictions_validated,
 )
 from pydantic import ValidationError
@@ -43,12 +45,6 @@ from shared_types.shared_types import (
     TrackAssignment,
     TrackPrediction,
     TrackPredictionStats,
-)
-from tenacity import (
-    before_sleep_log,
-    retry,
-    retry_if_not_exception_type,
-    wait_exponential_jitter,
 )
 
 
@@ -225,6 +221,29 @@ class TrackPredictor:
             return max(0.0, d)
         except Exception:
             return 0.05
+
+    @staticmethod
+    def _ml_compare_enabled() -> bool:
+        """
+        If enabled, compare the ML ensemble prediction against the traditional
+        pattern-based prediction at runtime and choose the result with higher
+        final confidence. Controlled by env IMT_ML_COMPARE.
+        """
+        val = os.getenv("IMT_ML_COMPARE", "").strip().lower()
+        return val in {"1", "true", "yes", "on"}
+
+    @staticmethod
+    def _ml_compare_wait_ms() -> int:
+        """
+        Maximum time in milliseconds to wait for a recent ML result when doing a
+        live ML-vs-pattern comparison. If ML result isn't available within this
+        window, the code will enqueue a request and proceed using the historical
+        result. Controlled by env IMT_ML_COMPARE_WAIT_MS (default 200).
+        """
+        try:
+            return max(0, int(os.getenv("IMT_ML_COMPARE_WAIT_MS", "200")))
+        except Exception:
+            return 200
 
     @staticmethod
     def _sharpen_probs(
@@ -460,7 +479,7 @@ class TrackPredictor:
                     ),
                 }
 
-                def predict_blocking():  # type: ignore[no-untyped-def]
+                def predict_blocking() -> Optional[List[Any]]:  # type: ignore[no-untyped-def]
                     # Import inside the thread to ensure backend is respected
                     if models:
                         probs = [model.predict(features) for model in models]
@@ -644,6 +663,312 @@ class TrackPredictor:
             except Exception as e:  # noqa: BLE001
                 logger.error("Error in ML prediction worker loop", exc_info=e)
                 await anyio.sleep(0.5)
+
+    # tenacity decorator removed - using local retry/backoff inside function
+    async def fetch_upcoming_departures(
+        self,
+        session: Any,
+        route_id: str,
+        station_ids: List[str],
+        target_date: Optional[datetime] = None,
+    ) -> List[DepartureInfo]:
+        """
+        Fetch upcoming departures for specific stations on a commuter rail route.
+
+        Args:
+            session: HTTP session for API calls
+            route_id: Commuter rail route ID (e.g., "CR-Worcester")
+            station_ids: List of station IDs to fetch departures for
+            target_date: Date to fetch departures for (defaults to today)
+
+        Returns:
+            List of departure data dictionaries with scheduled times
+        """
+        # Local retry/backoff implementation (replaces tenacity decorator).
+        # This will attempt the schedule fetch a few times with exponential
+        # backoff + jitter before giving up, while still propagating CancelledError.
+        max_attempts = int(os.getenv("IMT_PRECACHE_MAX_ATTEMPTS", "5"))
+        base_backoff = float(os.getenv("IMT_PRECACHE_BASE_BACKOFF", "1.0"))
+        attempt = 0
+
+        while True:
+            try:
+                if target_date is None:
+                    target_date = datetime.now(UTC)
+                # Proceed with the normal fetch logic below on success
+                break
+            except CancelledError:
+                # Preserve cancellation semantics
+                raise
+            except Exception as e:
+                attempt += 1
+                if attempt >= max_attempts:
+                    logger.error(
+                        f"Exceeded max attempts ({max_attempts}) in fetch_upcoming_departures for route {route_id}",
+                        exc_info=e,
+                    )
+                    return []
+                # Exponential backoff with small random jitter
+                backoff = min(60.0, base_backoff * (2 ** (attempt - 1)))
+                jitter = random.random() * 0.5
+                sleep_for = backoff + jitter
+                logger.debug(
+                    f"fetch_upcoming_departures attempt {attempt}/{max_attempts} failed for route {route_id}; retrying in {sleep_for:.2f}s",
+                    exc_info=e,
+                )
+                await anyio.sleep(sleep_for)
+                # loop and retry
+
+        # Local imports to avoid top-level import diagnostics and heavy deps at module import time
+
+        date_str = target_date.date().isoformat()
+        auth_token = os.environ.get("AUTH_TOKEN", "")
+        upcoming_departures: list[DepartureInfo] = []
+
+        # Fetch schedules for all stations in a single API call
+        stations_str = ",".join(station_ids)
+
+        endpoint = f"{MBTA_V3_ENDPOINT}/schedules?filter[stop]={stations_str}&filter[route]={route_id}&filter[date]={date_str}&sort=departure_time&include=trip&api_key={auth_token}"
+
+        try:
+            async with session.get(endpoint) as response:
+                if response.status == 429:
+                    raise RateLimitExceeded()
+
+                if response.status != 200:
+                    logger.error(
+                        f"Failed to fetch schedules for {stations_str} on {route_id}: HTTP {response.status}"
+                    )
+                    return []
+
+                body = await response.text()
+                mbta_api_requests.labels("schedules").inc()
+
+                try:
+                    schedules_data = Schedules.model_validate_json(body, strict=False)
+                except ValidationError as e:
+                    logger.error(
+                        f"Unable to parse schedules for {stations_str} on {route_id}: {e}"
+                    )
+                    return []
+
+                # Process each scheduled departure
+                for schedule in schedules_data.data:
+                    if not schedule.attributes.departure_time:
+                        continue
+
+                    # Get trip information from relationships
+                    trip_id = ""
+                    if (
+                        hasattr(schedule, "relationships")
+                        and hasattr(schedule.relationships, "trip")
+                        and schedule.relationships.trip.data
+                    ):
+                        trip_id = schedule.relationships.trip.data.id
+
+                    # Get station ID from relationships
+                    station_id = ""
+                    if (
+                        hasattr(schedule, "relationships")
+                        and hasattr(schedule.relationships, "stop")
+                        and schedule.relationships.stop.data
+                    ):
+                        station_id = schedule.relationships.stop.data.id
+
+                    departure_info: DepartureInfo = {
+                        "trip_id": trip_id,
+                        "station_id": station_id,
+                        "route_id": route_id,
+                        "direction_id": schedule.attributes.direction_id,
+                        "departure_time": schedule.attributes.departure_time,
+                    }
+
+                    upcoming_departures.append(departure_info)
+
+        except (aiohttp.ClientError, TimeoutError) as e:
+            logger.error(
+                f"Error fetching schedules for {stations_str} on {route_id}: {e}"
+            )
+            return []
+
+        logger.debug(
+            f"Found {len(upcoming_departures)} upcoming departures for route {route_id} across {len(station_ids)} stations"
+        )
+        return upcoming_departures
+
+    async def precache(
+        self,
+        tg: TaskGroup,
+        routes: Optional[List[str]] = None,
+        target_stations: Optional[List[str]] = None,
+    ) -> int:
+        """
+        Precache track predictions for upcoming departures.
+
+        Args:
+            tg: TaskGroup used to schedule background prediction work
+            routes: List of route IDs to precache (defaults to all CR routes)
+            target_stations: List of station IDs to precache for (defaults to supported stations)
+
+        Returns:
+            Number of predictions cached
+        """
+        # Local import for RateLimitExceeded used in this function's error handling
+
+        if routes is None:
+            routes = [
+                "CR-Worcester",
+                "CR-Framingham",
+                "CR-Franklin",
+                "CR-Foxboro",
+                "CR-Providence",
+                "CR-Stoughton",
+                "CR-Needham",
+                "CR-Fairmount",
+                "CR-Fitchburg",
+                "CR-Lowell",
+                "CR-Haverhill",
+                "CR-Newburyport",
+                "CR-Rockport",
+                "CR-Kingston",
+                "CR-Plymouth",
+                "CR-Greenbush",
+            ]
+
+        if target_stations is None:
+            target_stations = [
+                "place-sstat",  # South Station
+                "place-north",  # North Station
+                "place-bbsta",  # Back Bay
+                "place-rugg",  # Ruggles
+            ]
+
+        predictions_cached = 0
+        current_time = datetime.now(UTC)
+
+        logger.info(
+            f"Starting precache for {len(routes)} routes and {len(target_stations)} stations"
+        )
+
+        try:
+            async with aiohttp.ClientSession() as session:
+
+                async def process_route(route_id: str) -> int:
+                    """Process a single route and return number of predictions cached."""
+                    route_predictions_cached = 0
+                    logger.debug(f"Precaching predictions for route {route_id}")
+
+                    try:
+                        # Fetch upcoming departures with actual scheduled times
+                        upcoming_departures = await self.fetch_upcoming_departures(
+                            session, route_id, target_stations, current_time
+                        )
+
+                        async def process_departure(
+                            departure_data: DepartureInfo,
+                        ) -> bool:
+                            """Process a single departure and return True if cached."""
+                            try:
+                                trip_id = departure_data["trip_id"]
+                                station_id = departure_data["station_id"]
+                                direction_id = departure_data["direction_id"]
+                                scheduled_time = datetime.fromisoformat(
+                                    departure_data["departure_time"]
+                                )
+
+                                if not trip_id:
+                                    return False  # Skip if no trip ID available
+
+                                # Check if we already have a cached prediction
+                                cache_key = f"track_prediction:{station_id}:{route_id}:{trip_id}:{scheduled_time.date()}"
+                                if await check_cache(self.redis, cache_key):
+                                    return False  # Already cached
+
+                                # Generate prediction using actual scheduled departure time
+                                prediction = await self.predict_track(
+                                    station_id=station_id,
+                                    route_id=route_id,
+                                    trip_id=trip_id,
+                                    headsign="",  # Will be fetched in predict_track method
+                                    direction_id=direction_id,
+                                    scheduled_time=scheduled_time,
+                                    tg=tg,
+                                )
+
+                                if prediction:
+                                    logger.debug(
+                                        f"Precached prediction: {station_id} {route_id} {trip_id} @ {scheduled_time.strftime('%H:%M')} -> Track {prediction.track_number}"
+                                    )
+                                    return True
+
+                                return False
+
+                            except (
+                                ConnectionError,
+                                TimeoutError,
+                                ValidationError,
+                                RateLimitExceeded,
+                            ) as e:
+                                logger.error(
+                                    f"Error precaching prediction for {departure_data.get('station_id')} {route_id} {departure_data.get('trip_id')}",
+                                    exc_info=e,
+                                )
+                                return False
+
+                        # Process departures sequentially with explicit error handling
+                        for dep in upcoming_departures:
+                            try:
+                                if await process_departure(dep):
+                                    route_predictions_cached += 1
+                            except (
+                                ConnectionError,
+                                TimeoutError,
+                                ValidationError,
+                            ) as e:
+                                logger.error(
+                                    f"Unexpected error in departure processing for {route_id}",
+                                    exc_info=e,
+                                )
+
+                    except (
+                        ConnectionError,
+                        TimeoutError,
+                        ValidationError,
+                        RateLimitExceeded,
+                    ) as e:
+                        logger.error(f"Error processing route {route_id}", exc_info=e)
+
+                    return route_predictions_cached
+
+                # Run route processing concurrently to improve precache throughput
+                route_results: list[int] = []
+
+                async def _run_route(rid: str) -> None:
+                    try:
+                        res = await process_route(rid)
+                        route_results.append(res)
+                    except Exception as e:
+                        logger.error(f"Error running route {rid}", exc_info=e)
+
+                async with anyio.create_task_group() as tg2:
+                    for rid in routes:
+                        tg2.start_soon(_run_route, rid)
+
+                # Sum up all predictions cached
+                for result in route_results:
+                    if isinstance(result, int):
+                        predictions_cached += result
+                    else:
+                        logger.error(
+                            "Unexpected non-int result in route processing",
+                            exc_info=result,
+                        )
+
+        except (ConnectionError, TimeoutError, aiohttp.ClientError) as e:
+            logger.error("Error in precache_track_predictions", exc_info=e)
+
+        logger.info(f"Precached {predictions_cached} track predictions")
+        return predictions_cached
 
     async def get_historical_assignments(
         self,
@@ -1140,22 +1465,55 @@ class TrackPredictor:
         Returns:
             TrackPrediction object or None if no prediction can be made
         """
+        # Added rich debug logging throughout this method to help diagnose
+        # missing predictions (e.g., for North Station / place-north).
         try:
+            logger.debug(
+                "predict_track called",
+                extra={
+                    "station_id": station_id,
+                    "route_id": route_id,
+                    "trip_id": trip_id,
+                    "headsign": headsign,
+                    "direction_id": direction_id,
+                    "scheduled_time": scheduled_time.isoformat(),
+                    "ml_enabled": self._ml_enabled(),
+                    "ml_compare": self._ml_compare_enabled(),
+                },
+            )
             # Only predict for commuter rail
             if not route_id.startswith("CR"):
+                logger.debug(
+                    "Route not commuter rail; skipping prediction",
+                    extra={"route_id": route_id},
+                )
                 return None
 
             cache_key = f"track_prediction:{station_id}:{route_id}:{trip_id}:{scheduled_time.date()}"
             negative_cache_key = f"negative_{cache_key}"
+            logger.debug(
+                "Checking caches",
+                extra={
+                    "cache_key": cache_key,
+                    "negative_cache_key": negative_cache_key,
+                },
+            )
             cached_prediction = await check_cache(self.redis, cache_key)
             if cached_prediction:
                 track_predictions_cached.labels(
                     station_id=station_id, route_id=route_id, instance=INSTANCE_ID
                 ).inc()
+                logger.debug(
+                    "Returning cached prediction", extra={"cache_key": cache_key}
+                )
                 return TrackPrediction.model_validate_json(cached_prediction)
 
             negative_cached = await check_cache(self.redis, negative_cache_key)
             if negative_cached:
+                logger.debug(
+                    "Negative cache hit; skipping prediction",
+                    extra={"negative_cache_key": negative_cache_key},
+                )
                 return None
 
             # it makes more sense to get the headsign client-side using the exact trip_id due to API rate limits
@@ -1165,62 +1523,114 @@ class TrackPredictor:
                     watcher_type=shared_types.shared_types.TaskType.TRACK_PREDICTIONS,
                 ) as api:
                     # Fetch headsign and stop/platform once each
-                    new_hs = await api.get_headsign(trip_id, session, tg)
-                    if new_hs:
-                        headsign = new_hs
-                    stop_data = await api.get_stop(session, station_id, tg)
-                    if (
-                        stop_data[0]
-                        and stop_data[0].data
-                        and stop_data[0].data.attributes.platform_code
-                    ):
-                        # confirmed from the MBTA that this is the platform code
-                        prediction = TrackPrediction(
-                            station_id=station_id,
-                            route_id=route_id,
-                            trip_id=trip_id,
-                            headsign=headsign,
-                            direction_id=direction_id,
-                            scheduled_time=scheduled_time,
-                            track_number=stop_data[0].data.attributes.platform_code,
-                            confidence_score=1.0,
-                            accuracy=1.0,
-                            prediction_method="platform_code",
-                            historical_matches=0,
-                            created_at=datetime.now(UTC),
+                    try:
+                        new_hs = await api.get_headsign(trip_id, session, tg)
+                        logger.debug(
+                            "Fetched headsign",
+                            extra={"trip_id": trip_id, "new_headsign": new_hs},
+                        )
+                        if new_hs:
+                            headsign = new_hs
+                    except Exception as e:
+                        logger.debug("Failed to get headsign", exc_info=e)
+
+                    try:
+                        stop_data = await api.get_stop(session, station_id, tg)
+                        logger.debug(
+                            "Fetched stop_data",
+                            extra={
+                                "station_id": station_id,
+                                "stop_data_len": len(stop_data)
+                                if isinstance(stop_data, (list, tuple))
+                                else None,
+                            },
+                        )
+                    except Exception as e:
+                        logger.debug("Failed to get stop data", exc_info=e)
+                        stop_data = None
+
+                    # If stop/platform info available, prefer platform_code which is authoritative
+                    try:
+                        if (
+                            stop_data
+                            and stop_data[0]
+                            and getattr(stop_data[0], "data", None)
+                            and getattr(stop_data[0].data, "attributes", None)
+                            and getattr(
+                                stop_data[0].data.attributes, "platform_code", None
+                            )
+                        ):
+                            platform_code = stop_data[0].data.attributes.platform_code
+                            logger.debug(
+                                "Platform code found in stop_data",
+                                extra={"platform_code": platform_code},
+                            )
+                            # confirmed from the MBTA that this is the platform code
+                            prediction = TrackPrediction(
+                                station_id=station_id,
+                                route_id=route_id,
+                                trip_id=trip_id,
+                                headsign=headsign,
+                                direction_id=direction_id,
+                                scheduled_time=scheduled_time,
+                                track_number=platform_code,
+                                confidence_score=1.0,
+                                accuracy=1.0,
+                                prediction_method="platform_code",
+                                historical_matches=0,
+                                created_at=datetime.now(UTC),
+                            )
+
+                            track_predictions_generated.labels(
+                                station_id=station_id,
+                                route_id=route_id,
+                                prediction_method="platform_code",
+                                instance=INSTANCE_ID,
+                            ).inc()
+
+                            track_prediction_confidence.labels(
+                                station_id=station_id,
+                                route_id=route_id,
+                                track_number=prediction.track_number,
+                                instance=INSTANCE_ID,
+                            ).set(1.0)
+
+                            track_number = prediction.track_number
+                            track_confidence = prediction.confidence_score
+                            logger.info(
+                                f"Generated track prediction (platform_code): {route_id} {scheduled_time.strftime('%H:%M')} {headsign} -> {track_number}"
+                                f"(confidence: {track_confidence:.2f})"
+                            )
+
+                            tg.start_soon(
+                                write_cache,
+                                self.redis,
+                                cache_key,
+                                prediction.model_dump_json(),
+                                2 * MONTH,
+                            )
+
+                            return prediction
+                        else:
+                            logger.debug(
+                                "No platform_code present in stop_data",
+                                extra={"station_id": station_id},
+                            )
+                    except Exception as e:
+                        logger.debug(
+                            "Error while checking stop_data for platform_code",
+                            exc_info=e,
                         )
 
-                        track_predictions_generated.labels(
-                            station_id=station_id,
-                            route_id=route_id,
-                            prediction_method="platform_code",
-                            instance=INSTANCE_ID,
-                        ).inc()
-
-                        track_prediction_confidence.labels(
-                            station_id=station_id,
-                            route_id=route_id,
-                            track_number=prediction.track_number,
-                            instance=INSTANCE_ID,
-                        ).set(1.0)
-
-                        track_number = prediction.track_number
-                        track_confidence = prediction.confidence_score
-                        logger.info(
-                            f"Generated track prediction: {route_id} {scheduled_time.strftime('%H:%M')} {headsign} -> {track_number}"
-                            f"(confidence: {track_confidence:.2f})"
-                        )
-
-                        tg.start_soon(
-                            write_cache,
-                            self.redis,
-                            cache_key,
-                            prediction.model_dump_json(),
-                            2 * MONTH,
-                        )
-
-                        return prediction
-
+            # Analyze historical patterns
+            logger.debug(
+                "Analyzing historical patterns",
+                extra={
+                    "station_id": station_id,
+                    "route_id": route_id,
+                    "headsign": headsign,
+                },
+            )
             patterns = await self.analyze_patterns(
                 station_id,
                 route_id,
@@ -1232,31 +1642,93 @@ class TrackPredictor:
 
             # If no patterns, enqueue ML (non-blocking) and negative-cache briefly
             if not patterns:
+                logger.debug(
+                    "No patterns returned by analyze_patterns",
+                    extra={
+                        "station_id": station_id,
+                        "route_id": route_id,
+                        "headsign": headsign,
+                    },
+                )
                 if self._ml_enabled():
-                    await self.enqueue_ml_prediction(
-                        station_id=station_id,
-                        route_id=route_id,
-                        direction_id=direction_id,
-                        scheduled_time=scheduled_time,
-                        trip_id=trip_id,
-                        headsign=headsign,
-                    )
+                    try:
+                        await self.enqueue_ml_prediction(
+                            station_id=station_id,
+                            route_id=route_id,
+                            direction_id=direction_id,
+                            scheduled_time=scheduled_time,
+                            trip_id=trip_id,
+                            headsign=headsign,
+                        )
+                        logger.debug(
+                            "Enqueued ML prediction due to no patterns",
+                            extra={
+                                "station_id": station_id,
+                                "route_id": route_id,
+                                "trip_id": trip_id,
+                            },
+                        )
+                    except Exception as e:
+                        logger.debug("Failed to enqueue ML prediction", exc_info=e)
+                await write_cache(self.redis, negative_cache_key, "True", 4 * 60)
+                logger.debug(
+                    "Wrote short negative cache because no patterns present",
+                    extra={"negative_cache_key": negative_cache_key},
+                )
+                return None
+
+            # Debug: log patterns summary
+            try:
+                logger.debug(
+                    "Patterns summary",
+                    extra={
+                        "station_id": station_id,
+                        "route_id": route_id,
+                        "patterns": patterns,
+                        "pattern_keys": list(patterns.keys()),
+                    },
+                )
+            except Exception:
+                logger.debug("Patterns present but failed to log details")
+
+            # Find the most likely track and compute margin-based confidence
+            try:
+                best_track = max(patterns.keys(), key=lambda x: patterns[x])
+            except Exception:
+                logger.debug(
+                    "Failed to select best_track from patterns",
+                    extra={"patterns": patterns},
+                )
                 await write_cache(self.redis, negative_cache_key, "True", 4 * 60)
                 return None
 
-            # Find the most likely track and compute margin-based confidence
-            best_track = max(patterns.keys(), key=lambda x: patterns[x])
             p1 = float(patterns[best_track])
             sorted_vals = sorted(patterns.values(), reverse=True)
             p2 = float(sorted_vals[1]) if len(sorted_vals) > 1 else 0.0
             confidence = 0.5 * (p1 + max(0.0, p1 - p2))
             model_confidence = confidence
 
-            # Non-blocking Bayes fusion with the latest ML result to raise confidence when possible
+            logger.debug(
+                "Pattern-derived result",
+                extra={
+                    "station_id": station_id,
+                    "route_id": route_id,
+                    "best_track": best_track,
+                    "p1": p1,
+                    "p2": p2,
+                    "initial_confidence": confidence,
+                },
+            )
+
+            # Non-blocking Bayes fusion with the latest ML result to raise confidence when possible.
+            # Additionally, if IMT_ML_COMPARE is enabled, attempt a short (configurable)
+            # wait for a recent ML result and compare the ML confidence against the
+            # pattern-derived confidence, choosing the higher-confidence result.
             used_bayes = False
             if self._ml_enabled():
                 latest_key = f"{self.ML_RESULT_LATEST_PREFIX}{station_id}:{route_id}:{direction_id}:{int(scheduled_time.timestamp())}"
                 raw_ml = await self.redis.get(latest_key)  # pyright: ignore
+                ml_res = None
                 if raw_ml:
                     try:
                         ml_res = json.loads(
@@ -1264,6 +1736,182 @@ class TrackPredictor:
                             if isinstance(raw_ml, (bytes, bytearray))
                             else str(raw_ml)
                         )
+                        logger.debug(
+                            "Found recent ML result",
+                            extra={
+                                "latest_key": latest_key,
+                                "ml_res_keys": list(ml_res.keys())
+                                if isinstance(ml_res, dict)
+                                else None,
+                            },
+                        )
+                    except Exception:
+                        ml_res = None
+                        logger.debug(
+                            "Failed to decode recent ML result",
+                            extra={"latest_key": latest_key},
+                        )
+
+                # If ML-compare mode is enabled, try to get an ML result and compare confidences.
+                if self._ml_compare_enabled():
+                    logger.debug(
+                        "ML-compare mode enabled; attempting to compare ML and pattern",
+                        extra={"station_id": station_id, "route_id": route_id},
+                    )
+                    # If no ML result is available, enqueue a request and wait briefly for it.
+                    waited_ms = 0
+                    if not ml_res:
+                        try:
+                            req_id = await self.enqueue_ml_prediction(
+                                station_id=station_id,
+                                route_id=route_id,
+                                direction_id=direction_id,
+                                scheduled_time=scheduled_time,
+                                trip_id=trip_id,
+                                headsign=headsign,
+                            )
+                            logger.debug(
+                                "Enqueued ML request for compare",
+                                extra={"req_id": req_id},
+                            )
+                        except Exception as e:
+                            logger.debug(
+                                "Failed to enqueue ML request for compare", exc_info=e
+                            )
+
+                        wait_ms = self._ml_compare_wait_ms()
+                        poll = 50  # ms
+                        while waited_ms < wait_ms:
+                            await anyio.sleep(poll / 1000.0)
+                            waited_ms += poll
+                            raw_ml = await self.redis.get(latest_key)  # pyright: ignore
+                            if raw_ml:
+                                try:
+                                    ml_res = json.loads(
+                                        raw_ml.decode()
+                                        if isinstance(raw_ml, (bytes, bytearray))
+                                        else str(raw_ml)
+                                    )
+                                    logger.debug(
+                                        "ML result arrived during compare wait",
+                                        extra={
+                                            "waited_ms": waited_ms,
+                                            "latest_key": latest_key,
+                                        },
+                                    )
+                                    break
+                                except Exception:
+                                    ml_res = None
+                                    logger.debug(
+                                        "ML result could not be parsed during compare wait",
+                                        extra={"waited_ms": waited_ms},
+                                    )
+                                    break
+                        logger.debug(
+                            "Finished waiting for ML compare",
+                            extra={
+                                "waited_ms": waited_ms,
+                                "wait_ms_config": self._ml_compare_wait_ms(),
+                            },
+                        )
+
+                    # If we obtained an ML result, compare final (blended) confidence scores.
+                    if ml_res and isinstance(ml_res, dict):
+                        try:
+                            ml_conf = float(ml_res.get("confidence", 0.0))
+                        except Exception:
+                            ml_conf = 0.0
+                        ml_track = ml_res.get("track_number")
+                        logger.debug(
+                            "ML result for compare",
+                            extra={"ml_conf": ml_conf, "ml_track": ml_track},
+                        )
+
+                        # Normalize ML track to string if necessary
+                        if isinstance(ml_track, (int, float)):
+                            ml_track = str(int(ml_track))
+                        # If ML provides a numeric track and it beats the pattern confidence, choose ML
+                        if (
+                            ml_track
+                            and isinstance(ml_track, str)
+                            and ml_track.isdigit()
+                        ):
+                            # If ML wins, adopt ML's prediction (ML confidence is already blended in worker)
+                            if ml_conf > confidence + 1e-9:
+                                logger.debug(
+                                    "ML confidence exceeds pattern confidence; promoting ML result",
+                                    extra={
+                                        "ml_conf": ml_conf,
+                                        "pattern_conf": confidence,
+                                        "ml_track": ml_track,
+                                    },
+                                )
+                                best_track = ml_track
+                                # adopt blended ML confidence
+                                confidence = ml_conf
+                                # prefer explicit model_confidence from ML result if present
+                                try:
+                                    model_confidence = float(
+                                        ml_res.get("model_confidence", model_confidence)
+                                    )
+                                except Exception:
+                                    pass
+                                # blend with historical accuracy for display consistency
+                                hist_acc = await self._get_prediction_accuracy(
+                                    station_id, route_id, best_track
+                                )
+                                w_hist = self._conf_hist_weight()
+                                old_conf = confidence
+                                confidence = (
+                                    1.0 - w_hist
+                                ) * confidence + w_hist * hist_acc
+                                logger.debug(
+                                    "Blended ML confidence with historical accuracy",
+                                    extra={
+                                        "old_conf": old_conf,
+                                        "hist_acc": hist_acc,
+                                        "w_hist": w_hist,
+                                        "final_confidence": confidence,
+                                    },
+                                )
+                                used_bayes = False
+                                # Record that ML was chosen over the historical/pattern result
+                                try:
+                                    track_predictions_ml_wins.labels(
+                                        station_id=station_id,
+                                        route_id=route_id,
+                                        instance=INSTANCE_ID,
+                                    ).inc()
+                                except Exception:
+                                    # Metric failures should not break prediction flow
+                                    logger.debug(
+                                        "Failed to increment ML-wins metric",
+                                        exc_info=True,
+                                    )
+                            else:
+                                # keep the pattern-derived result; we may still use ML for Bayes fusion below
+                                logger.debug(
+                                    "ML result did not beat pattern confidence; keeping pattern result",
+                                    extra={
+                                        "ml_conf": ml_conf,
+                                        "pattern_conf": confidence,
+                                    },
+                                )
+                        else:
+                            # invalid ML track, ignore and fall back to Bayes fusion path below
+                            logger.debug(
+                                "ML result had invalid/non-numeric track_number",
+                                extra={"ml_track": ml_track},
+                            )
+                            ml_res = None
+
+                # If ML-compare mode is NOT enabled, preserve original Bayes fusion behavior.
+                if not self._ml_compare_enabled() and ml_res:
+                    logger.debug(
+                        "Applying Bayes fusion with ML probabilities",
+                        extra={"station_id": station_id, "route_id": route_id},
+                    )
+                    try:
                         ml_probs_list = ml_res.get("probabilities")
                         if isinstance(ml_probs_list, list) and len(ml_probs_list) > 0:
                             ml_probs = np.array(ml_probs_list, dtype=np.float64)
@@ -1278,6 +1926,14 @@ class TrackPredictor:
                             s = pattern_vec.sum()
                             if s > 0:
                                 pattern_vec = pattern_vec / s
+                            logger.debug(
+                                "Pattern vec and ML probs prepared for fusion",
+                                extra={
+                                    "pattern_vec": pattern_vec.tolist(),
+                                    "ml_probs": ml_probs.tolist(),
+                                    "alpha": self._bayes_alpha(),
+                                },
+                            )
                             # Bayes fusion: posterior ∝ pattern^alpha * ml^(1-alpha)
                             alpha = self._bayes_alpha()
                             eps = 1e-9
@@ -1287,9 +1943,19 @@ class TrackPredictor:
                             total = fused.sum()
                             if total > 0:
                                 fused_norm = fused / total
+                                logger.debug(
+                                    "Fused distribution computed",
+                                    extra={"fused_norm": fused_norm.tolist()},
+                                )
                                 # Apply allowed-tracks mask before selection
                                 allowed = await self._get_allowed_tracks(
                                     station_id, route_id
+                                )
+                                logger.debug(
+                                    "Allowed tracks retrieved for fusion",
+                                    extra={
+                                        "allowed": list(allowed) if allowed else None
+                                    },
                                 )
                                 if allowed:
                                     for idx in range(fused_norm.shape[0]):
@@ -1298,6 +1964,12 @@ class TrackPredictor:
                                     t2 = float(np.sum(fused_norm))
                                     if t2 > 0:
                                         fused_norm = fused_norm / t2
+                                        logger.debug(
+                                            "Applied allowed mask to fused distribution",
+                                            extra={
+                                                "fused_norm_masked": fused_norm.tolist()
+                                            },
+                                        )
                                     else:
                                         # Allowed mask removed all mass; choose top allowed historical track
                                         best_allowed = (
@@ -1366,26 +2038,49 @@ class TrackPredictor:
                                 ) * confidence + w_hist * hist_acc
                                 used_bayes = True
                     except Exception:
+                        logger.debug("Exception during Bayes fusion", exc_info=True)
                         pass
 
             # Use station-specific confidence threshold with a hard floor of 0.25
             confidence_threshold = self._get_station_confidence_threshold(station_id)
             if confidence_threshold < 0.25:
                 confidence_threshold = 0.25
+            logger.debug(
+                "Confidence and threshold check",
+                extra={
+                    "confidence": confidence,
+                    "confidence_threshold": confidence_threshold,
+                    "best_track": best_track,
+                },
+            )
             if confidence < confidence_threshold or not best_track.isdigit():
-                if self._ml_enabled():
-                    await self.enqueue_ml_prediction(
-                        station_id=station_id,
-                        route_id=route_id,
-                        direction_id=direction_id,
-                        scheduled_time=scheduled_time,
-                        trip_id=trip_id,
-                        headsign=headsign,
-                    )
                 logger.debug(
-                    f"No prediction made for station_id={station_id}, route_id={route_id}, trip_id={trip_id}, headsign={headsign}, direction_id={direction_id}, scheduled_time={scheduled_time}, confidence={confidence}, threshold={confidence_threshold}"
+                    f"No prediction made because confidence below threshold or invalid track. station_id={station_id}, route_id={route_id}, trip_id={trip_id}, headsign={headsign}, direction_id={direction_id}, scheduled_time={scheduled_time}, confidence={confidence}, threshold={confidence_threshold}, best_track={best_track}"
                 )
+                if self._ml_enabled():
+                    try:
+                        await self.enqueue_ml_prediction(
+                            station_id=station_id,
+                            route_id=route_id,
+                            direction_id=direction_id,
+                            scheduled_time=scheduled_time,
+                            trip_id=trip_id,
+                            headsign=headsign,
+                        )
+                        logger.debug(
+                            "Enqueued ML request because pattern confidence was low",
+                            extra={"station_id": station_id, "route_id": route_id},
+                        )
+                    except Exception:
+                        logger.debug(
+                            "Failed to enqueue ML request when pattern confidence was low",
+                            exc_info=True,
+                        )
                 await write_cache(self.redis, negative_cache_key, "True", 2 * MONTH)
+                logger.debug(
+                    "Wrote longer negative cache due to low confidence",
+                    extra={"negative_cache_key": negative_cache_key},
+                )
                 return None
 
             # Determine prediction method
@@ -1401,16 +2096,23 @@ class TrackPredictor:
                 f"Predicting track for station_id={station_id}, route_id={route_id}, trip_id={trip_id}, headsign={headsign}, direction_id={direction_id}, scheduled_time={scheduled_time}, confidence={confidence}, method={method}"
             )
             # Count historical matches
-            historical_matches = sum(
-                1
-                for _ in await self.get_historical_assignments(
-                    station_id,
-                    route_id,
-                    scheduled_time - timedelta(days=180),
-                    scheduled_time,
+            try:
+                historical_matches = sum(
+                    1
+                    for _ in await self.get_historical_assignments(
+                        station_id,
+                        route_id,
+                        scheduled_time - timedelta(days=180),
+                        scheduled_time,
+                    )
                 )
+            except Exception as e:
+                logger.debug("Error counting historical matches", exc_info=e)
+                historical_matches = 0
+            logger.debug(
+                f"Historical matches={historical_matches}",
+                extra={"station_id": station_id, "route_id": route_id},
             )
-            logger.debug(f"Historical matches={historical_matches}")
 
             # Create prediction
             # Historical accuracy for predicted track
@@ -1434,6 +2136,16 @@ class TrackPredictor:
                 created_at=datetime.now(UTC),
             )
 
+            # Log an INFO-level summary each time a prediction is generated
+            try:
+                logger.info(
+                    f"Track prediction generated: {prediction.station_id} {prediction.route_id} {prediction.scheduled_time.strftime('%Y-%m-%d %H:%M')} -> {prediction.track_number} "
+                    f"(conf={prediction.confidence_score:.2f}, model_conf={prediction.model_confidence:.3f}, method={prediction.prediction_method}, historical_matches={prediction.historical_matches})"
+                )
+            except Exception:
+                # Ensure logging failures do not affect prediction flow
+                logger.debug("Failed to emit prediction INFO log", exc_info=True)
+
             # Record metrics
             track_predictions_generated.labels(
                 station_id=station_id,
@@ -1453,24 +2165,40 @@ class TrackPredictor:
             tg.start_soon(self._store_prediction, prediction)
             # If traditional confidence is weak, funnel to ML for a possible replacement
             if self._ml_enabled() and prediction.confidence_score < 0.5:
-                await self.enqueue_ml_prediction(
-                    station_id=station_id,
-                    route_id=route_id,
-                    direction_id=direction_id,
-                    scheduled_time=scheduled_time,
-                    trip_id=trip_id,
-                    headsign=headsign,
-                )
+                try:
+                    await self.enqueue_ml_prediction(
+                        station_id=station_id,
+                        route_id=route_id,
+                        direction_id=direction_id,
+                        scheduled_time=scheduled_time,
+                        trip_id=trip_id,
+                        headsign=headsign,
+                    )
+                    logger.debug(
+                        "Enqueued ML request post-prediction due to low confidence",
+                        extra={"station_id": station_id, "route_id": route_id},
+                    )
+                except Exception:
+                    logger.debug(
+                        "Failed to enqueue ML request post-prediction", exc_info=True
+                    )
             # Additionally, sample a percentage of successful predictions for ML exploration
             elif self._ml_enabled() and random.random() < self._ml_sample_prob():
-                await self.enqueue_ml_prediction(
-                    station_id=station_id,
-                    route_id=route_id,
-                    direction_id=direction_id,
-                    scheduled_time=scheduled_time,
-                    trip_id=trip_id,
-                    headsign=headsign,
-                )
+                try:
+                    await self.enqueue_ml_prediction(
+                        station_id=station_id,
+                        route_id=route_id,
+                        direction_id=direction_id,
+                        scheduled_time=scheduled_time,
+                        trip_id=trip_id,
+                        headsign=headsign,
+                    )
+                    logger.debug(
+                        "Random-sampled enqueue for ML exploration",
+                        extra={"station_id": station_id, "route_id": route_id},
+                    )
+                except Exception:
+                    logger.debug("Failed to enqueue ML for exploration", exc_info=True)
             logger.debug(
                 f"Predicted track={prediction.track_number}, station_id={station_id}, route_id={route_id}, trip_id={trip_id}, headsign={headsign}, direction_id={direction_id}, scheduled_time={scheduled_time}, confidence={confidence}, method={method}, historical_matches={historical_matches}"
             )
@@ -1759,278 +2487,3 @@ class TrackPredictor:
                 exc_info=True,
             )
             return None
-
-    @retry(
-        wait=wait_exponential_jitter(initial=5, jitter=20, max=60),
-        before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
-        retry=retry_if_not_exception_type(CancelledError),
-    )
-    async def fetch_upcoming_departures(
-        self,
-        session: Any,
-        route_id: str,
-        station_ids: List[str],
-        target_date: Optional[datetime] = None,
-    ) -> List[DepartureInfo]:
-        """
-        Fetch upcoming departures for specific stations on a commuter rail route.
-
-        Args:
-            session: HTTP session for API calls
-            route_id: Commuter rail route ID (e.g., "CR-Worcester")
-            station_ids: List of station IDs to fetch departures for
-            target_date: Date to fetch departures for (defaults to today)
-
-        Returns:
-            List of departure data dictionaries with scheduled times
-        """
-        if target_date is None:
-            target_date = datetime.now(UTC)
-
-        date_str = target_date.date().isoformat()
-        auth_token = os.environ.get("AUTH_TOKEN", "")
-        upcoming_departures: list[DepartureInfo] = []
-
-        # Fetch schedules for all stations in a single API call
-        stations_str = ",".join(station_ids)
-
-        endpoint = f"{MBTA_V3_ENDPOINT}/schedules?filter[stop]={stations_str}&filter[route]={route_id}&filter[date]={date_str}&sort=departure_time&include=trip&api_key={auth_token}"
-
-        try:
-            async with session.get(endpoint) as response:
-                if response.status == 429:
-                    raise RateLimitExceeded()
-
-                if response.status != 200:
-                    logger.error(
-                        f"Failed to fetch schedules for {stations_str} on {route_id}: HTTP {response.status}"
-                    )
-                    return []
-
-                body = await response.text()
-                mbta_api_requests.labels("schedules").inc()
-
-                try:
-                    schedules_data = Schedules.model_validate_json(body, strict=False)
-                except ValidationError as e:
-                    logger.error(
-                        f"Unable to parse schedules for {stations_str} on {route_id}: {e}"
-                    )
-                    return []
-
-                # Process each scheduled departure
-                for schedule in schedules_data.data:
-                    if not schedule.attributes.departure_time:
-                        continue
-
-                    # Parse departure time
-
-                    # Get trip information from relationships
-                    trip_id = ""
-                    if (
-                        hasattr(schedule, "relationships")
-                        and hasattr(schedule.relationships, "trip")
-                        and schedule.relationships.trip.data
-                    ):
-                        trip_id = schedule.relationships.trip.data.id
-
-                    # Get station ID from relationships
-                    station_id = ""
-                    if (
-                        hasattr(schedule, "relationships")
-                        and hasattr(schedule.relationships, "stop")
-                        and schedule.relationships.stop.data
-                    ):
-                        station_id = schedule.relationships.stop.data.id
-
-                    departure_info: DepartureInfo = {
-                        "trip_id": trip_id,
-                        "station_id": station_id,
-                        "route_id": route_id,
-                        "direction_id": schedule.attributes.direction_id,
-                        "departure_time": schedule.attributes.departure_time,
-                    }
-
-                    upcoming_departures.append(departure_info)
-
-        except (aiohttp.ClientError, TimeoutError) as e:
-            logger.error(
-                f"Error fetching schedules for {stations_str} on {route_id}: {e}"
-            )
-            return []
-
-        logger.debug(
-            f"Found {len(upcoming_departures)} upcoming departures for route {route_id} across {len(station_ids)} stations"
-        )
-        return upcoming_departures
-
-    async def precache(
-        self,
-        tg: TaskGroup,
-        routes: Optional[List[str]] = None,
-        target_stations: Optional[List[str]] = None,
-    ) -> int:
-        """
-        Precache track predictions for upcoming departures.
-
-        Args:
-            routes: List of route IDs to precache (defaults to all CR routes)
-            target_stations: List of station IDs to precache for (defaults to supported stations)
-
-        Returns:
-            Number of predictions cached
-        """
-        if routes is None:
-            routes = [
-                "CR-Worcester",
-                "CR-Framingham",
-                "CR-Franklin",
-                "CR-Foxboro",
-                "CR-Providence",
-                "CR-Stoughton",
-                "CR-Needham",
-                "CR-Fairmount",
-                "CR-Fitchburg",
-                "CR-Lowell",
-                "CR-Haverhill",
-                "CR-Newburyport",
-                "CR-Rockport",
-                "CR-Kingston",
-                "CR-Plymouth",
-                "CR-Greenbush",
-            ]
-
-        if target_stations is None:
-            target_stations = [
-                "place-sstat",  # South Station
-                "place-north",  # North Station
-                "place-bbsta",  # Back Bay
-                "place-rugg",  # Ruggles
-            ]
-
-        predictions_cached = 0
-        current_time = datetime.now(UTC)
-
-        logger.info(
-            f"Starting precache for {len(routes)} routes and {len(target_stations)} stations"
-        )
-
-        try:
-            async with aiohttp.ClientSession() as session:
-
-                async def process_route(route_id: str) -> int:
-                    """Process a single route and return number of predictions cached."""
-                    route_predictions_cached = 0
-                    logger.debug(f"Precaching predictions for route {route_id}")
-
-                    try:
-                        # Fetch upcoming departures with actual scheduled times
-                        upcoming_departures = await self.fetch_upcoming_departures(
-                            session, route_id, target_stations, current_time
-                        )
-
-                        async def process_departure(
-                            departure_data: DepartureInfo,
-                        ) -> bool:
-                            """Process a single departure and return True if cached."""
-                            try:
-                                trip_id = departure_data["trip_id"]
-                                station_id = departure_data["station_id"]
-                                direction_id = departure_data["direction_id"]
-                                scheduled_time = datetime.fromisoformat(
-                                    departure_data["departure_time"]
-                                )
-
-                                if not trip_id:
-                                    return False  # Skip if no trip ID available
-
-                                # Check if we already have a cached prediction
-                                cache_key = f"track_prediction:{station_id}:{route_id}:{trip_id}:{scheduled_time.date()}"
-                                if await check_cache(self.redis, cache_key):
-                                    return False  # Already cached
-
-                                # Generate prediction using actual scheduled departure time
-                                prediction = await self.predict_track(
-                                    station_id=station_id,
-                                    route_id=route_id,
-                                    trip_id=trip_id,
-                                    headsign="",  # Will be fetched in predict_track method
-                                    direction_id=direction_id,
-                                    scheduled_time=scheduled_time,
-                                    tg=tg,
-                                )
-
-                                if prediction:
-                                    logger.debug(
-                                        f"Precached prediction: {station_id} {route_id} {trip_id} @ {scheduled_time.strftime('%H:%M')} -> Track {prediction.track_number}"
-                                    )
-                                    return True
-
-                                return False
-
-                            except (
-                                ConnectionError,
-                                TimeoutError,
-                                ValidationError,
-                                RateLimitExceeded,
-                            ) as e:
-                                logger.error(
-                                    f"Error precaching prediction for {departure_data.get('station_id')} {route_id} {departure_data.get('trip_id')}",
-                                    exc_info=e,
-                                )
-                                return False
-
-                        # Process departures sequentially with explicit error handling
-                        for dep in upcoming_departures:
-                            try:
-                                if await process_departure(dep):
-                                    route_predictions_cached += 1
-                            except (
-                                ConnectionError,
-                                TimeoutError,
-                                ValidationError,
-                            ) as e:
-                                logger.error(
-                                    f"Unexpected error in departure processing for {route_id}",
-                                    exc_info=e,
-                                )
-
-                    except (
-                        ConnectionError,
-                        TimeoutError,
-                        ValidationError,
-                        RateLimitExceeded,
-                    ) as e:
-                        logger.error(f"Error processing route {route_id}", exc_info=e)
-
-                    return route_predictions_cached
-
-                # Run route processing concurrently to improve precache throughput
-                route_results: list[int] = []
-
-                async def _run_route(rid: str) -> None:
-                    try:
-                        res = await process_route(rid)
-                        route_results.append(res)
-                    except Exception as e:
-                        logger.error(f"Error running route {rid}", exc_info=e)
-
-                async with anyio.create_task_group() as tg2:
-                    for rid in routes:
-                        tg2.start_soon(_run_route, rid)
-
-                # Sum up all predictions cached
-                for result in route_results:
-                    if isinstance(result, int):
-                        predictions_cached += result
-                    else:
-                        logger.error(
-                            "Unexpected non-int result in route processing",
-                            exc_info=result,
-                        )
-
-        except (ConnectionError, TimeoutError, aiohttp.ClientError) as e:
-            logger.error("Error in precache_track_predictions", exc_info=e)
-
-        logger.info(f"Precached {predictions_cached} track predictions")
-        return predictions_cached
