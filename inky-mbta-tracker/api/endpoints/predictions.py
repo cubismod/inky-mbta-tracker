@@ -4,7 +4,6 @@ from typing import List
 
 from api.core import GET_DI
 from fastapi import APIRouter, HTTPException, Query, Request
-from mbta_client import determine_station_id
 from pydantic import ValidationError
 from shared_types.shared_types import TrackAssignment
 
@@ -30,10 +29,13 @@ async def generate_track_prediction(
     try:
 
         async def _generate_prediction() -> TrackPredictionResponse:
-            station_id_resolved, has_track_predictions = determine_station_id(
+            station_id_resolved = commons.track_predictor._norm_station(
                 prediction_request.station_id
             )
-            if not has_track_predictions:
+            # Check if this is a supported station
+            if not commons.track_predictor.supports_track_predictions(
+                station_id_resolved
+            ):
                 return TrackPredictionResponse(
                     success=False,
                     prediction="Predictions are not available for this station",
@@ -77,10 +79,9 @@ async def generate_chained_track_predictions(
         pred_request: PredictionRequest,
     ) -> TrackPredictionResponse:
         try:
-            station_id, has_track_predictions = determine_station_id(
-                pred_request.station_id
-            )
-            if not has_track_predictions:
+            station_id = commons.track_predictor._norm_station(pred_request.station_id)
+            # Check if this is a supported station
+            if not commons.track_predictor.supports_track_predictions(station_id):
                 return TrackPredictionResponse(
                     success=False,
                     prediction="Predictions are not available for this station",
@@ -139,8 +140,9 @@ async def get_prediction_stats(
     request: Request, station_id: str, route_id: str, commons: GET_DI
 ) -> TrackPredictionStatsResponse:
     try:
-        station_id, has_track_predictions = determine_station_id(station_id)
-        if not has_track_predictions:
+        station_id = commons.track_predictor._norm_station(station_id)
+        # Check if this is a supported station
+        if not commons.track_predictor.supports_track_predictions(station_id):
             return TrackPredictionStatsResponse(
                 success=False,
                 stats="Prediction stats are not available for this station",
@@ -172,8 +174,9 @@ async def get_historical_assignments(
     try:
         end_date = datetime.now()
         start_date = end_date - timedelta(days=days)
-        station_id, has_track_predictions = determine_station_id(station_id)
-        if not has_track_predictions:
+        station_id = commons.track_predictor._norm_station(station_id)
+        # Check if this is a supported station
+        if not commons.track_predictor.supports_track_predictions(station_id):
             return []
         assignments = await commons.track_predictor.get_historical_assignments(
             station_id, route_id, start_date, end_date

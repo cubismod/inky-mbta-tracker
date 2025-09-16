@@ -1,0 +1,192 @@
+{
+    "place-sstat": [
+        {
+            "id": "70079",
+            "type": "stop"
+        },
+        {
+            "id": "70080",
+            "type": "stop"
+        },
+        {
+            "id": "74611",
+            "type": "stop"
+        },
+        {
+            "id": "74617",
+            "type": "stop"
+        },
+        {
+            "id": "NEC-2287",
+            "type": "stop"
+        },
+        {
+            "id": "NEC-2287-01",
+            "type": "stop"
+        },
+        {
+            "id": "NEC-2287-02",
+            "type": "stop"
+        },
+        {
+            "id": "NEC-2287-03",
+            "type": "stop"
+        },
+        {
+            "id": "NEC-2287-04",
+            "type": "stop"
+        },
+        {
+            "id": "NEC-2287-05",
+            "type": "stop"
+        },
+        {
+            "id": "NEC-2287-06",
+            "type": "stop"
+        },
+        {
+            "id": "NEC-2287-07",
+            "type": "stop"
+        },
+        {
+            "id": "NEC-2287-08",
+            "type": "stop"
+        },
+        {
+            "id": "NEC-2287-09",
+            "type": "stop"
+        },
+        {
+            "id": "NEC-2287-10",
+            "type": "stop"
+        },
+        {
+            "id": "NEC-2287-11",
+            "type": "stop"
+        },
+        {
+            "id": "NEC-2287-12",
+            "type": "stop"
+        },
+        {
+            "id": "NEC-2287-13",
+            "type": "stop"
+        },
+        {
+            "id": "NEC-2287-B",
+            "type": "stop"
+        }
+    ],
+    "place-north": [
+        {
+            "id": "70026",
+            "type": "stop"
+        },
+        {
+            "id": "70027",
+            "type": "stop"
+        },
+        {
+            "id": "70205",
+            "type": "stop"
+        },
+        {
+            "id": "70206",
+            "type": "stop"
+        },
+        {
+            "id": "BNT-0000",
+            "type": "stop"
+        },
+        {
+            "id": "BNT-0000-01",
+            "type": "stop"
+        },
+        {
+            "id": "BNT-0000-02",
+            "type": "stop"
+        },
+        {
+            "id": "BNT-0000-03",
+            "type": "stop"
+        },
+        {
+            "id": "BNT-0000-04",
+            "type": "stop"
+        },
+        {
+            "id": "BNT-0000-05",
+            "type": "stop"
+        },
+        {
+            "id": "BNT-0000-06",
+            "type": "stop"
+        },
+        {
+            "id": "BNT-0000-07",
+            "type": "stop"
+        },
+        {
+            "id": "BNT-0000-08",
+            "type": "stop"
+        },
+        {
+            "id": "BNT-0000-09",
+            "type": "stop"
+        },
+        {
+            "id": "BNT-0000-10",
+            "type": "stop"
+        },
+        {
+            "id": "BNT-0000-B1",
+            "type": "stop"
+        },
+        {
+            "id": "BNT-0000-B2",
+            "type": "stop"
+        }
+    ],
+    "place-bbsta": [
+        {
+            "id": "23391",
+            "type": "stop"
+        },
+        {
+            "id": "70014",
+            "type": "stop"
+        },
+        {
+            "id": "70015",
+            "type": "stop"
+        },
+        {
+            "id": "NEC-2276",
+            "type": "stop"
+        },
+        {
+            "id": "NEC-2276-01",
+            "type": "stop"
+        },
+        {
+            "id": "NEC-2276-02",
+            "type": "stop"
+        },
+        {
+            "id": "NEC-2276-03",
+            "type": "stop"
+        },
+        {
+            "id": "NEC-2276-B",
+            "type": "stop"
+        },
+        {
+            "id": "WML-0012-05",
+            "type": "stop"
+        },
+        {
+            "id": "WML-0012-07",
+            "type": "stop"
+        }
+    ]
+}

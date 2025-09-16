@@ -37,6 +37,7 @@ class DIParams(AsyncContextManagerMixin):
             self.r_client = r_client
             self.config = load_config()
             self.track_predictor = TrackPredictor(r_client)
+            await self.track_predictor.initialize()
             try:
                 yield self
             finally:
