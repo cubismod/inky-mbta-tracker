@@ -104,6 +104,36 @@ class TrackPredictor:
     def __init__(self, r_client: Redis) -> None:
         self.redis = r_client
 
+    def _norm_station(self, station_id: str) -> str:
+        """
+        Normalize station/stop identifiers to the canonical "place-..." station ids
+        used for aggregated track data in Redis (e.g. map platform IDs like "BNT-0000"
+        to "place-north").
+
+        This ensures all Redis keys for historical/prediction data use the normalized
+        station id regardless of whether callers pass platform-level or station-level ids.
+        """
+        if not station_id:
+            return station_id
+        sid = str(station_id)
+        # North Station variants
+        if "North Station" in sid or "BNT" in sid or "place-north" in sid:
+            return "place-north"
+        # South Station variants
+        if "South Station" in sid or "NEC-2287" in sid or "place-sstat" in sid:
+            return "place-sstat"
+        # Back Bay variants
+        if "Back Bay" in sid or "NEC-1851" in sid or "place-bbsta" in sid:
+            return "place-bbsta"
+        # Ruggles variants
+        if "Ruggles" in sid or "NEC-2265" in sid or "place-rugg" in sid:
+            return "place-rugg"
+        # Providence / NEC-1851 special case
+        if "Providence" in sid or "NEC-1851" in sid:
+            return "place-NEC-1851"
+        # Default: return as-is
+        return sid
+
     async def store_historical_assignment(
         self, assignment: TrackAssignment, tg: TaskGroup
     ) -> None:
@@ -115,7 +145,7 @@ class TrackPredictor:
         """
         try:
             # Store in Redis with a key that includes station, route, and timestamp
-            key = f"track_history:{assignment.station_id}:{assignment.route_id}:{assignment.trip_id}:{assignment.scheduled_time.date()}"
+            key = f"track_history:{self._norm_station(assignment.station_id)}:{assignment.route_id}:{assignment.trip_id}:{assignment.scheduled_time.date()}"
 
             # check if the key already exists
             if await check_cache(self.redis, key):
@@ -131,9 +161,7 @@ class TrackPredictor:
             )
 
             # Also store in a time-series format for easier querying
-            time_series_key = (
-                f"track_timeseries:{assignment.station_id}:{assignment.route_id}"
-            )
+            time_series_key = f"track_timeseries:{self._norm_station(assignment.station_id)}:{assignment.route_id}"
             tg.start_soon(
                 self.redis.zadd,
                 time_series_key,
@@ -146,7 +174,7 @@ class TrackPredictor:
             redis_commands.labels("expire").inc()
 
             track_historical_assignments_stored.labels(
-                station_id=assignment.station_id,
+                station_id=self._norm_station(assignment.station_id),
                 route_id=assignment.route_id,
                 track_number=assignment.track_number or "unknown",
                 instance=INSTANCE_ID,
@@ -290,7 +318,7 @@ class TrackPredictor:
         Cached in Redis for 1 day to avoid heavy scans. Falls back to empty set
         meaning "no restriction" if nothing found.
         """
-        cache_key = f"allowed_tracks:{station_id}:{route_id}"
+        cache_key = f"allowed_tracks:{self._norm_station(station_id)}:{route_id}"
         cached = await check_cache(self.redis, cache_key)
         if cached:
             try:
@@ -590,11 +618,11 @@ class TrackPredictor:
 
                     result_key = f"{self.ML_RESULT_KEY_PREFIX}{req_id}"
                     await self.redis.set(result_key, json.dumps(result), ex=DAY)
-                    latest_key = f"{self.ML_RESULT_LATEST_PREFIX}{station_id}:{route_id}:{direction_id}:{int(scheduled_time.timestamp())}"
+                    latest_key = f"{self.ML_RESULT_LATEST_PREFIX}{self._norm_station(station_id)}:{route_id}:{direction_id}:{int(scheduled_time.timestamp())}"
                     await self.redis.set(latest_key, json.dumps(result), ex=DAY)
 
                     # Persist a TrackPrediction entry conditionally replacing a weak traditional result
-                    cache_key = f"track_prediction:{station_id}:{route_id}:{trip_id}:{scheduled_time.date()}"
+                    cache_key = f"track_prediction:{self._norm_station(station_id)}:{route_id}:{trip_id}:{scheduled_time.date()}"
                     do_write = False
                     existing_json = await check_cache(self.redis, cache_key)
                     if existing_json:
@@ -879,14 +907,17 @@ class TrackPredictor:
                                 if not trip_id:
                                     return False  # Skip if no trip ID available
 
-                                # Check if we already have a cached prediction
-                                cache_key = f"track_prediction:{station_id}:{route_id}:{trip_id}:{scheduled_time.date()}"
+                                # Normalize station id so Redis keys use canonical station identifiers
+                                norm_station_id = self._norm_station(station_id)
+
+                                # Check if we already have a cached prediction (use normalized station id)
+                                cache_key = f"track_prediction:{norm_station_id}:{route_id}:{trip_id}:{scheduled_time.date()}"
                                 if await check_cache(self.redis, cache_key):
                                     return False  # Already cached
 
-                                # Generate prediction using actual scheduled departure time
+                                # Generate prediction using actual scheduled departure time (pass normalized station id)
                                 prediction = await self.predict_track(
-                                    station_id=station_id,
+                                    station_id=norm_station_id,
                                     route_id=route_id,
                                     trip_id=trip_id,
                                     headsign="",  # Will be fetched in predict_track method
@@ -1001,7 +1032,9 @@ class TrackPredictor:
             ) -> List[TrackAssignment]:
                 """Fetch assignments for a single route."""
                 route_results: list[TrackAssignment] = []
-                time_series_key = f"track_timeseries:{station_id}:{current_route}"
+                time_series_key = (
+                    f"track_timeseries:{self._norm_station(station_id)}:{current_route}"
+                )
 
                 # Get assignments within the time range
                 assignments = await self.redis.zrangebyscore(
@@ -1489,7 +1522,7 @@ class TrackPredictor:
                 )
                 return None
 
-            cache_key = f"track_prediction:{station_id}:{route_id}:{trip_id}:{scheduled_time.date()}"
+            cache_key = f"track_prediction:{self._norm_station(station_id)}:{route_id}:{trip_id}:{scheduled_time.date()}"
             negative_cache_key = f"negative_{cache_key}"
             logger.debug(
                 "Checking caches",
@@ -1726,7 +1759,7 @@ class TrackPredictor:
             # pattern-derived confidence, choosing the higher-confidence result.
             used_bayes = False
             if self._ml_enabled():
-                latest_key = f"{self.ML_RESULT_LATEST_PREFIX}{station_id}:{route_id}:{direction_id}:{int(scheduled_time.timestamp())}"
+                latest_key = f"{self.ML_RESULT_LATEST_PREFIX}{self._norm_station(station_id)}:{route_id}:{direction_id}:{int(scheduled_time.timestamp())}"
                 raw_ml = await self.redis.get(latest_key)  # pyright: ignore
                 ml_res = None
                 if raw_ml:
@@ -2213,7 +2246,7 @@ class TrackPredictor:
     async def _store_prediction(self, prediction: TrackPrediction) -> None:
         """Store a prediction for later validation."""
         try:
-            key = f"track_prediction:{prediction.station_id}:{prediction.route_id}:{prediction.trip_id}:{prediction.scheduled_time.date()}"
+            key = f"track_prediction:{self._norm_station(prediction.station_id)}:{prediction.route_id}:{prediction.trip_id}:{prediction.scheduled_time.date()}"
             await write_cache(
                 self.redis,
                 key,
@@ -2237,7 +2270,7 @@ class TrackPredictor:
         """Get historical prediction accuracy for a specific track."""
         try:
             # Get recent prediction validation results
-            accuracy_key = f"track_accuracy:{station_id}:{route_id}:{track_number}"
+            accuracy_key = f"track_accuracy:{self._norm_station(station_id)}:{route_id}:{track_number}"
             accuracy_data = await self.redis.get(accuracy_key)
 
             if accuracy_data:
@@ -2302,14 +2335,14 @@ class TrackPredictor:
         """
         try:
             # Check if this prediction has already been validated
-            validation_key = f"track_validation:{station_id}:{route_id}:{trip_id}:{scheduled_time.date()}"
+            validation_key = f"track_validation:{self._norm_station(station_id)}:{route_id}:{trip_id}:{scheduled_time.date()}"
             if await check_cache(self.redis, validation_key):
                 logger.debug(
-                    f"Prediction already validated for {station_id} {route_id} {trip_id} on {scheduled_time.date()}"
+                    f"Prediction already validated for {self._norm_station(station_id)} {route_id} {trip_id} on {scheduled_time.date()}"
                 )
                 return
 
-            key = f"track_prediction:{station_id}:{route_id}:{trip_id}:{scheduled_time.date()}"
+            key = f"track_prediction:{self._norm_station(station_id)}:{route_id}:{trip_id}:{scheduled_time.date()}"
             prediction_data = await check_cache(self.redis, key)
 
             if not prediction_data:
@@ -2380,7 +2413,7 @@ class TrackPredictor:
         Stored format is a simple "correct:total" string per station/route/track.
         """
         try:
-            key = f"track_accuracy:{station_id}:{route_id}:{track_number}"
+            key = f"track_accuracy:{self._norm_station(station_id)}:{route_id}:{track_number}"
             raw = await self.redis.get(key)
             correct = 0
             total = 0

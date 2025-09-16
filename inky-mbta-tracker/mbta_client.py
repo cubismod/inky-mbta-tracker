@@ -875,7 +875,11 @@ class MBTAApi:
                                             - re-checks cache and negative-cache after jitter to be conservative
                                             - concurrent ML predictions (when no cache) are acceptable
                                             """
-                                            cache_key = f"track_prediction:{station_id_}:{route_id_}:{trip_id_}:{scheduled_time_.date()}"
+                                            # Normalize station id to canonical station for Redis keys
+                                            norm_station_id, _ = determine_station_id(
+                                                station_id_
+                                            )
+                                            cache_key = f"track_prediction:{norm_station_id}:{route_id_}:{trip_id_}:{scheduled_time_.date()}"
                                             negative_cache_key = f"negative_{cache_key}"
 
                                             # Conservative pre-check: skip if a positive or negative cache exists
@@ -888,7 +892,7 @@ class MBTAApi:
                                                         "Skipping prediction because cached result exists",
                                                         extra={
                                                             "cache_key": cache_key,
-                                                            "station_id": station_id_,
+                                                            "station_id": norm_station_id,
                                                             "route_id": route_id_,
                                                             "trip_id": trip_id_,
                                                         },
@@ -902,7 +906,7 @@ class MBTAApi:
                                                         "Skipping prediction because negative cache exists",
                                                         extra={
                                                             "negative_cache_key": negative_cache_key,
-                                                            "station_id": station_id_,
+                                                            "station_id": norm_station_id,
                                                             "route_id": route_id_,
                                                             "trip_id": trip_id_,
                                                         },
@@ -944,7 +948,7 @@ class MBTAApi:
                                                         "Skipping prediction after jitter because cached result exists",
                                                         extra={
                                                             "cache_key": cache_key,
-                                                            "station_id": station_id_,
+                                                            "station_id": norm_station_id,
                                                             "route_id": route_id_,
                                                             "trip_id": trip_id_,
                                                         },
@@ -958,7 +962,7 @@ class MBTAApi:
                                                         "Skipping prediction after jitter because negative cache exists",
                                                         extra={
                                                             "negative_cache_key": negative_cache_key,
-                                                            "station_id": station_id_,
+                                                            "station_id": norm_station_id,
                                                             "route_id": route_id_,
                                                             "trip_id": trip_id_,
                                                         },
@@ -972,7 +976,7 @@ class MBTAApi:
 
                                             try:
                                                 pred = await self.track_predictor.predict_track(
-                                                    station_id_,
+                                                    norm_station_id,
                                                     route_id_,
                                                     trip_id_,
                                                     headsign_,
