@@ -876,8 +876,10 @@ class MBTAApi:
                                             - concurrent ML predictions (when no cache) are acceptable
                                             """
                                             # Normalize station id to canonical station for Redis keys
-                                            norm_station_id, _ = determine_station_id(
-                                                station_id_
+                                            norm_station_id = (
+                                                self.track_predictor._norm_station(
+                                                    station_id_
+                                                )
                                             )
                                             cache_key = f"track_prediction:{norm_station_id}:{route_id_}:{trip_id_}:{scheduled_time_.date()}"
                                             negative_cache_key = f"negative_{cache_key}"

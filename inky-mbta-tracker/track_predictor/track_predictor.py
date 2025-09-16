@@ -9,20 +9,21 @@ import uuid
 from asyncio import CancelledError
 from collections import defaultdict
 from datetime import UTC, datetime, timedelta
-from typing import Any, Dict, List, Optional, TypedDict
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Set, TypedDict
 
 import aiohttp
 import anyio
 import numpy as np
 import shared_types.shared_types
 import textdistance
-from anyio import to_thread
+from anyio import open_file, to_thread
 from anyio.abc import TaskGroup
 from consts import DAY, INSTANCE_ID, MBTA_V3_ENDPOINT, MONTH, WEEK, YEAR
 from exceptions import RateLimitExceeded
 from huggingface_hub import hf_hub_download
 from keras import Model
-from mbta_client import MBTAApi
+from mbta_client import MBTAApi, determine_station_id
 from mbta_responses import Schedules
 from metaphone import doublemetaphone
 from numpy.typing import NDArray
@@ -103,36 +104,107 @@ class TrackPredictor:
 
     def __init__(self, r_client: Redis) -> None:
         self.redis = r_client
+        self._child_stations_map: Dict[str, str] = {}
+        self._supported_stations: Set[str] = set()
+        self._initialized = False
+        self._initialization_lock = anyio.Lock()
+
+    async def _load_child_stations_map(self) -> Dict[str, str]:
+        """Load the child stations JSON file and create a mapping from child -> parent."""
+        try:
+            child_stations_path = Path(__file__).parent.parent / "child_stations.json"
+            async with await open_file(child_stations_path) as f:
+                content = await f.read()
+                data = json.loads(content)
+
+            # Create reverse mapping: child_id -> parent_station_id
+            mapping = {}
+            for parent_station, children in data.items():
+                for child in children:
+                    mapping[child["id"]] = parent_station
+            return mapping
+        except Exception as e:
+            logger.warning(f"Failed to load child stations mapping: {e}")
+            return {}
+
+    async def initialize(self) -> None:
+        """Initialize the TrackPredictor by loading child stations mapping."""
+        if self._initialized:
+            return
+
+        self._child_stations_map = await self._load_child_stations_map()
+        # Pre-compute supported stations set for fast lookups
+        self._supported_stations = (
+            set(self._child_stations_map.values())
+            if self._child_stations_map
+            else set()
+        )
+        self._initialized = True
+
+    async def _ensure_initialized(self) -> None:
+        """Ensure the TrackPredictor is initialized, using lazy initialization."""
+        if self._initialized:
+            return
+
+        async with self._initialization_lock:
+            # Double-check after acquiring the lock
+            if self._initialized:
+                return
+            await self.initialize()
 
     def _norm_station(self, station_id: str) -> str:
         """
-        Normalize station/stop identifiers to the canonical "place-..." station ids
-        used for aggregated track data in Redis (e.g. map platform IDs like "BNT-0000"
-        to "place-north").
-
-        This ensures all Redis keys for historical/prediction data use the normalized
-        station id regardless of whether callers pass platform-level or station-level ids.
+        Normalize station/stop identifiers to canonical 'place-...' station ids
+        using the child_stations.json lookup table as the source of truth.
         """
         if not station_id:
             return station_id
+
         sid = str(station_id)
-        # North Station variants
-        if "North Station" in sid or "BNT" in sid or "place-north" in sid:
-            return "place-north"
-        # South Station variants
-        if "South Station" in sid or "NEC-2287" in sid or "place-sstat" in sid:
-            return "place-sstat"
-        # Back Bay variants
-        if "Back Bay" in sid or "NEC-1851" in sid or "place-bbsta" in sid:
-            return "place-bbsta"
-        # Ruggles variants
-        if "Ruggles" in sid or "NEC-2265" in sid or "place-rugg" in sid:
-            return "place-rugg"
-        # Providence / NEC-1851 special case
-        if "Providence" in sid or "NEC-1851" in sid:
-            return "place-NEC-1851"
-        # Default: return as-is
+
+        # Use fallback if not initialized (for synchronous contexts)
+        if not self._initialized:
+            # Fallback to determine_station_id for compatibility
+            try:
+                resolved, has = determine_station_id(sid)
+                if resolved and has:
+                    return resolved
+            except Exception:
+                pass
+            return sid
+
+        # First check if this ID is directly in our child stations mapping
+        if sid in self._child_stations_map:
+            return self._child_stations_map[sid]
+
+        # If already a place-* ID, return as-is
+        if sid.startswith("place-"):
+            return sid
+
+        # Fallback to determine_station_id for other cases
+        try:
+            resolved, has = determine_station_id(sid)
+            if resolved and has:
+                return resolved
+        except Exception:
+            pass
+
+        # Final fallback - return the original ID
         return sid
+
+    def supports_track_predictions(self, station_id: str) -> bool:
+        """
+        Check if a station supports track predictions based on our child_stations.json mapping.
+        Returns True if the normalized station ID is in our supported stations list.
+        """
+        if not self._initialized:
+            # Fallback check for known stations when not initialized
+            normalized_station = self._norm_station(station_id)
+            return normalized_station in {"place-north", "place-sstat", "place-bbsta"}
+
+        normalized_station = self._norm_station(station_id)
+        # Use pre-computed supported stations set for fast lookup
+        return normalized_station in self._supported_stations
 
     async def store_historical_assignment(
         self, assignment: TrackAssignment, tg: TaskGroup
@@ -143,6 +215,9 @@ class TrackPredictor:
         Args:
             assignment: The track assignment data to store
         """
+        # Ensure we're initialized before using normalization
+        await self._ensure_initialized()
+
         try:
             # Store in Redis with a key that includes station, route, and timestamp
             key = f"track_history:{self._norm_station(assignment.station_id)}:{assignment.route_id}:{assignment.trip_id}:{assignment.scheduled_time.date()}"
@@ -318,6 +393,8 @@ class TrackPredictor:
         Cached in Redis for 1 day to avoid heavy scans. Falls back to empty set
         meaning "no restriction" if nothing found.
         """
+        # Ensure we're initialized before using normalization
+        await self._ensure_initialized()
         cache_key = f"allowed_tracks:{self._norm_station(station_id)}:{route_id}"
         cached = await check_cache(self.redis, cache_key)
         if cached:
@@ -597,7 +674,7 @@ class TrackPredictor:
 
                     result = {
                         "id": req_id,
-                        "station_id": station_id,
+                        "station_id": self._norm_station(station_id),
                         "route_id": route_id,
                         "direction_id": direction_id,
                         "scheduled_time": scheduled_time.isoformat(),
@@ -644,7 +721,7 @@ class TrackPredictor:
 
                     if do_write:
                         prediction = TrackPrediction(
-                            station_id=station_id,
+                            station_id=self._norm_station(station_id),
                             route_id=route_id,
                             trip_id=trip_id,
                             headsign=headsign,
@@ -673,13 +750,13 @@ class TrackPredictor:
                         )
 
                         track_predictions_generated.labels(
-                            station_id=station_id,
+                            station_id=self._norm_station(station_id),
                             route_id=route_id,
                             prediction_method="ml_ensemble",
                             instance=INSTANCE_ID,
                         ).inc()
                         track_prediction_confidence.labels(
-                            station_id=station_id,
+                            station_id=self._norm_station(station_id),
                             route_id=route_id,
                             track_number=track_number,
                             instance=INSTANCE_ID,
@@ -1022,6 +1099,9 @@ class TrackPredictor:
         Returns:
             List of historical track assignments
         """
+        # Ensure we're initialized before using normalization
+        await self._ensure_initialized()
+
         try:
             routes_to_check = [route_id]
             if include_related_routes and route_id in ROUTE_FAMILIES:
@@ -1197,6 +1277,9 @@ class TrackPredictor:
         Returns:
             Dictionary mapping track identifiers to probability scores
         """
+        # Ensure we're initialized before using normalization
+        await self._ensure_initialized()
+
         try:
             start_time = time.time()
 
@@ -1498,6 +1581,8 @@ class TrackPredictor:
         Returns:
             TrackPrediction object or None if no prediction can be made
         """
+        # Ensure we're initialized before prediction
+        await self._ensure_initialized()
         # Added rich debug logging throughout this method to help diagnose
         # missing predictions (e.g., for North Station / place-north).
         try:
@@ -1534,7 +1619,9 @@ class TrackPredictor:
             cached_prediction = await check_cache(self.redis, cache_key)
             if cached_prediction:
                 track_predictions_cached.labels(
-                    station_id=station_id, route_id=route_id, instance=INSTANCE_ID
+                    station_id=self._norm_station(station_id),
+                    route_id=route_id,
+                    instance=INSTANCE_ID,
                 ).inc()
                 logger.debug(
                     "Returning cached prediction", extra={"cache_key": cache_key}
@@ -1600,7 +1687,7 @@ class TrackPredictor:
                             )
                             # confirmed from the MBTA that this is the platform code
                             prediction = TrackPrediction(
-                                station_id=station_id,
+                                station_id=self._norm_station(station_id),
                                 route_id=route_id,
                                 trip_id=trip_id,
                                 headsign=headsign,
@@ -1615,14 +1702,14 @@ class TrackPredictor:
                             )
 
                             track_predictions_generated.labels(
-                                station_id=station_id,
+                                station_id=self._norm_station(station_id),
                                 route_id=route_id,
                                 prediction_method="platform_code",
                                 instance=INSTANCE_ID,
                             ).inc()
 
                             track_prediction_confidence.labels(
-                                station_id=station_id,
+                                station_id=self._norm_station(station_id),
                                 route_id=route_id,
                                 track_number=prediction.track_number,
                                 instance=INSTANCE_ID,
@@ -1911,7 +1998,7 @@ class TrackPredictor:
                                 # Record that ML was chosen over the historical/pattern result
                                 try:
                                     track_predictions_ml_wins.labels(
-                                        station_id=station_id,
+                                        station_id=self._norm_station(station_id),
                                         route_id=route_id,
                                         instance=INSTANCE_ID,
                                     ).inc()
@@ -2153,7 +2240,7 @@ class TrackPredictor:
                 station_id, route_id, best_track
             )
             prediction = TrackPrediction(
-                station_id=station_id,
+                station_id=self._norm_station(station_id),
                 route_id=route_id,
                 trip_id=trip_id,
                 headsign=headsign,
@@ -2181,14 +2268,14 @@ class TrackPredictor:
 
             # Record metrics
             track_predictions_generated.labels(
-                station_id=station_id,
+                station_id=self._norm_station(station_id),
                 route_id=route_id,
                 prediction_method=method,
                 instance=INSTANCE_ID,
             ).inc()
 
             track_prediction_confidence.labels(
-                station_id=station_id,
+                station_id=self._norm_station(station_id),
                 route_id=route_id,
                 track_number=best_track,
                 instance=INSTANCE_ID,
@@ -2245,6 +2332,8 @@ class TrackPredictor:
 
     async def _store_prediction(self, prediction: TrackPrediction) -> None:
         """Store a prediction for later validation."""
+        # Ensure we're initialized before using normalization
+        await self._ensure_initialized()
         try:
             key = f"track_prediction:{self._norm_station(prediction.station_id)}:{prediction.route_id}:{prediction.trip_id}:{prediction.scheduled_time.date()}"
             await write_cache(

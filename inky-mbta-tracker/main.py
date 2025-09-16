@@ -199,9 +199,9 @@ async def __main__() -> None:
 
             # Start ML worker only if enabled via env IMT_ML
             if os.getenv("IMT_ML", "").strip().lower() in {"1", "true", "yes", "on"}:
-                tg.start_soon(
-                    TrackPredictor(get_redis(redis_pool)).ml_prediction_worker
-                )
+                track_predictor = TrackPredictor(get_redis(redis_pool))
+                await track_predictor.initialize()
+                tg.start_soon(track_predictor.ml_prediction_worker)
 
             # consumer
             tg.start_soon(process_queue_async, receive_stream, tg)
