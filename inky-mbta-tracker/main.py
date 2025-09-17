@@ -120,8 +120,8 @@ def get_next_backup_time(now: Optional[datetime] = None) -> datetime:
     try:
         hour_str, minute_str = backup_time.split(":", 1)
         hour, minute = int(hour_str), int(minute_str)
-    except Exception:
-        # Fallback to 03:00 on parse error
+    except ValueError:
+        # Fallback to 03:00 on parse error (invalid integer parsing)
         hour, minute = 3, 0
 
     candidate = now.replace(hour=hour, minute=minute, second=0, microsecond=0)

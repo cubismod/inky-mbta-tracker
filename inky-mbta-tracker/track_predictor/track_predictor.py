@@ -403,7 +403,10 @@ class TrackPredictor:
             tracks = {a.track_number for a in assignments if a.track_number}
             await write_cache(self.redis, cache_key, json.dumps(sorted(tracks)), DAY)
             return set(tracks)
-        except Exception:
+        except (ConnectionError, TimeoutError, ValueError) as e:
+            # If we can't fetch history due to connectivity or parsing errors,
+            # return an empty set (permissive fallback).
+            logger.debug("Unable to build allowed tracks from history", exc_info=e)
             return set()
 
     @staticmethod
@@ -514,7 +517,8 @@ class TrackPredictor:
                     for model_path in model_paths
                 ]  # pyright: ignore
                 # model = keras.saving.load_model("hf://cubis/mbta-track-predictor")
-            except Exception as e:  # noqa: BLE001 (surface errors to logs)
+            except (OSError, ImportError, RuntimeError) as e:  # noqa: BLE001 (surface errors to logs)
+                # Narrow to errors that can happen while downloading/loading model artifacts
                 logger.error("Failed to load ML model", exc_info=e)
                 raise
             return models
@@ -523,8 +527,9 @@ class TrackPredictor:
         logger.info("Starting ML prediction worker: loading model…")
         try:
             models = await to_thread.run_sync(load_models_blocking)
-        except Exception:
-            logger.error("ML worker disabled due to model load failure.")
+        except (OSError, RuntimeError) as e:
+            # Loading model failed for an expected runtime/IO reason — disable worker
+            logger.error("ML worker disabled due to model load failure.", exc_info=e)
             return
         logger.info("ML model loaded. Worker ready.")
 
@@ -704,7 +709,8 @@ class TrackPredictor:
                             else:
                                 if confidence > existing.confidence_score:
                                     do_write = True
-                        except Exception:
+                        except (ValidationError, ValueError, TypeError):
+                            # If parsing the existing cache fails, decide conservatively by confidence
                             do_write = confidence >= 0.5
                     else:
                         do_write = confidence >= 0.5
@@ -730,7 +736,8 @@ class TrackPredictor:
                         negative_cache_key = f"negative_{cache_key}"
                         try:
                             await self.redis.delete(negative_cache_key)  # pyright: ignore
-                        except Exception:
+                        except (ConnectionError, TimeoutError, RedisError, OSError):
+                            # best-effort negative cache cleanup; ignore transient failures
                             pass
                         await write_cache(
                             self.redis,
@@ -1321,7 +1328,8 @@ class TrackPredictor:
                 modal_track = None
                 if modal_counts:
                     modal_track = max(modal_counts.items(), key=lambda x: x[1])[0]
-            except Exception:
+            except (AttributeError, TypeError):
+                # Defensive: unexpected assignment shape or missing attributes
                 modal_track = None
 
             for assignment in assignments:
@@ -1351,8 +1359,8 @@ class TrackPredictor:
                             )
                             / 60
                         )
-                    except Exception:
-                        # Fallback to hour/minute arithmetic if scheduled_time is missing
+                    except (AttributeError, TypeError, ValueError):
+                        # Fallback to hour/minute arithmetic if scheduled_time is missing or malformed
                         time_diff_minutes = abs(
                             assignment.hour * 60
                             + assignment.minute
@@ -1442,7 +1450,8 @@ class TrackPredictor:
                         )
                         / 60
                     )
-                except Exception:
+                except (AttributeError, TypeError, ValueError):
+                    # If scheduled_time is missing or invalid, use hour/minute fallback
                     time_diff_minutes = abs(
                         assignment.hour * 60
                         + assignment.minute
@@ -1810,10 +1819,12 @@ class TrackPredictor:
             # Find the most likely track and compute margin-based confidence
             try:
                 best_track = max(patterns.keys(), key=lambda x: patterns[x])
-            except Exception:
+            except (ValueError, TypeError) as e:
+                # empty or malformed patterns dict; negative-cache briefly and bail out
                 logger.debug(
                     "Failed to select best_track from patterns",
                     extra={"patterns": patterns},
+                    exc_info=e,
                 )
                 await write_cache(self.redis, negative_cache_key, "True", 4 * 60)
                 return None
@@ -1916,11 +1927,12 @@ class TrackPredictor:
                                         },
                                     )
                                     break
-                                except Exception:
+                                except (json.JSONDecodeError, TypeError, ValueError) as e:
                                     ml_res = None
                                     logger.debug(
                                         "ML result could not be parsed during compare wait",
                                         extra={"waited_ms": waited_ms},
+                                        exc_info=e,
                                     )
                                     break
                         logger.debug(
@@ -1935,7 +1947,7 @@ class TrackPredictor:
                     if ml_res and isinstance(ml_res, dict):
                         try:
                             ml_conf = float(ml_res.get("confidence", 0.0))
-                        except Exception:
+                        except (TypeError, ValueError):
                             ml_conf = 0.0
                         ml_track = ml_res.get("track_number")
                         logger.debug(
@@ -1999,11 +2011,11 @@ class TrackPredictor:
                                         route_id=route_id,
                                         instance=INSTANCE_ID,
                                     ).inc()
-                                except Exception:
-                                    # Metric failures should not break prediction flow
+                                except (AttributeError, RuntimeError, ValueError) as e:
+                                    # Metric failures should not break prediction flow; log debug with context
                                     logger.debug(
                                         "Failed to increment ML-wins metric",
-                                        exc_info=True,
+                                        exc_info=e,
                                     )
                             else:
                                 # keep the pattern-derived result; we may still use ML for Bayes fusion below
@@ -2154,8 +2166,9 @@ class TrackPredictor:
                                     1.0 - w_hist
                                 ) * confidence + w_hist * hist_acc
                                 used_bayes = True
-                    except Exception:
-                        logger.debug("Exception during Bayes fusion", exc_info=True)
+                    except (ValueError, TypeError, RuntimeError) as e:
+                        # Fusion may raise numeric/type errors if shapes mismatch or invalid data
+                        logger.debug("Exception during Bayes fusion", exc_info=e)
                         pass
 
             # Use station-specific confidence threshold with a hard floor of 0.25
@@ -2188,10 +2201,11 @@ class TrackPredictor:
                             "Enqueued ML request because pattern confidence was low",
                             extra={"station_id": station_id, "route_id": route_id},
                         )
-                    except Exception:
+                    except (ConnectionError, TimeoutError, RedisError) as e:
+                        # Redis/enqueue related failures; log and continue
                         logger.debug(
                             "Failed to enqueue ML request when pattern confidence was low",
-                            exc_info=True,
+                            exc_info=e,
                         )
                 await write_cache(self.redis, negative_cache_key, "True", 2 * MONTH)
                 logger.debug(
@@ -2398,7 +2412,9 @@ class TrackPredictor:
             # return most frequent; ties resolved by smallest track string
             best = max(sorted(counts.items(), key=lambda x: x[0]), key=lambda x: x[1])
             return best[0]
-        except Exception:
+        except (ConnectionError, TimeoutError, ValueError) as e:
+            # Errors fetching historical assignments or processing counts -> no decision
+            logger.debug("Unable to choose top allowed track", exc_info=e)
             return None
 
     async def validate_prediction(
@@ -2514,7 +2530,8 @@ class TrackPredictor:
                     if len(parts) == 2:
                         correct = int(parts[0])
                         total = int(parts[1])
-                except Exception:
+                except (ValueError, TypeError, AttributeError):
+                    # Malformed stored accuracy value; reset counters
                     correct = 0
                     total = 0
             total += 1
