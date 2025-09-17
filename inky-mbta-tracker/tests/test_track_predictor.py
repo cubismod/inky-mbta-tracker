@@ -371,5 +371,66 @@ class TestExpandedTimeWindows:
         assert len(expected_patterns) == 9  # Verify we have all expected pattern types
 
 
+class TestStationNormalizationAndSupport:
+    """Tests for station normalization and supports_track_predictions behavior."""
+
+    @pytest.fixture
+    def predictor_initialized(self) -> TrackPredictor:
+        """TrackPredictor pre-initialized with a simple child station map."""
+        p = TrackPredictor(cast(AsyncRedis, MagicMock()))
+        # Simulate loaded child_stations mapping and supported stations
+        p._child_stations_map = {"NEC-2287": "place-sstat", "BNT-0000": "place-north"}
+        p._supported_stations = {"place-sstat", "place-north", "place-bbsta"}
+        p._initialized = True
+        return p
+
+    @pytest.fixture
+    def predictor_uninitialized(self) -> TrackPredictor:
+        """TrackPredictor not initialized (uses fallback behavior)."""
+        p = TrackPredictor(cast(AsyncRedis, MagicMock()))
+        p._initialized = False
+        return p
+
+    def test_normalize_child_id_when_initialized(
+        self, predictor_initialized: TrackPredictor
+    ) -> None:
+        """Child stop IDs should map to canonical place-* IDs when initialized."""
+        p = predictor_initialized
+        assert p.normalize_station("NEC-2287") == "place-sstat"
+        assert p.normalize_station("BNT-0000") == "place-north"
+        # place-* IDs should be returned as-is
+        assert p.normalize_station("place-sstat") == "place-sstat"
+        # Unknown IDs should fall back to the original value
+        assert p.normalize_station("UNKNOWN-STOP") == "UNKNOWN-STOP"
+
+    def test_supports_track_predictions_when_initialized(
+        self, predictor_initialized: TrackPredictor
+    ) -> None:
+        """supports_track_predictions should consult the precomputed supported set when initialized."""
+        p = predictor_initialized
+        assert p.supports_track_predictions("NEC-2287") is True
+        assert p.supports_track_predictions("place-north") is True
+        assert p.supports_track_predictions("some-other-stop") is False
+
+    def test_normalize_and_supports_when_not_initialized(
+        self, predictor_uninitialized: TrackPredictor
+    ) -> None:
+        """
+        When not initialized the predictor should fall back to the lightweight
+        determine_station_id behavior and the small built-in supported set.
+        """
+        p = predictor_uninitialized
+        # The fallback supports a few canonical place-* ids; these should be True
+        assert p.supports_track_predictions("place-north") is True
+        assert p.supports_track_predictions("place-sstat") is True
+        assert p.supports_track_predictions("place-bbsta") is True
+
+        # The fallback normalize (via determine_station_id) should resolve common stop tokens
+        # mbta_client.determine_station_id contains rules for NEC-2287 -> place-sstat etc.
+        resolved = p.normalize_station("NEC-2287")
+        assert isinstance(resolved, str)
+        assert p.supports_track_predictions("NEC-2287") is True
+
+
 if __name__ == "__main__":
     pytest.main([__file__])
