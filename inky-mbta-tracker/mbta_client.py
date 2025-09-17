@@ -928,7 +928,7 @@ class MBTAApi:
                                                         "IMT_PRED_JITTER_MS", "200"
                                                     )
                                                 )
-                                            except Exception:
+                                            except (ValueError, TypeError):
                                                 max_jitter_ms = 200
                                             try:
                                                 jitter_ms = randint(0, max_jitter_ms)
