@@ -71,7 +71,13 @@ async def get_vehicles_sse(request: Request) -> StreamingResponse:
                     try:
                         data = await get_vehicles_data(commons.r_client)
                         yield f"data: {json.dumps(data)}\n\n"
-                    except (ConnectionError, TimeoutError, ValueError, RuntimeError, OSError) as e:
+                    except (
+                        ConnectionError,
+                        TimeoutError,
+                        ValueError,
+                        RuntimeError,
+                        OSError,
+                    ) as e:
                         # These are expected transient/operational errors for SSE: network, timeout,
                         # JSON/serialization failures, or runtime issues. Do not break the stream.
                         logger.error("Error producing SSE vehicles data", exc_info=e)
