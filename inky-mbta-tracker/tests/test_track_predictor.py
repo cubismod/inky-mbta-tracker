@@ -321,7 +321,6 @@ class TestExpandedTimeWindows:
                     "Providence",
                     0,
                     datetime(2024, 1, 15, 10, 15, tzinfo=UTC),  # 45 minutes later
-                    tg,
                 )
                 tg.cancel_scope.cancel()
 
@@ -360,8 +359,15 @@ class TestStationNormalizationAndSupport:
         """TrackPredictor pre-initialized with a simple child station map."""
         p = TrackPredictor(cast(AsyncRedis, MagicMock()))
         # Simulate loaded child_stations mapping and supported stations
-        p._child_stations_map = {"NEC-2287": "place-sstat", "BNT-0000": "place-north"}
-        p._supported_stations = {"place-sstat", "place-north", "place-bbsta"}
+        p.station_manager._child_stations_map = {
+            "NEC-2287": "place-sstat",
+            "BNT-0000": "place-north",
+        }
+        p.station_manager._supported_stations = {
+            "place-sstat",
+            "place-north",
+            "place-bbsta",
+        }
         return p
 
     @pytest.fixture

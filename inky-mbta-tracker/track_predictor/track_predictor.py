@@ -1,30 +1,19 @@
-import json
 import logging
-import os
 import random
 import time
-import uuid
-from asyncio import CancelledError
-from collections import defaultdict
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, TypedDict
+from typing import Any, Dict, List, Optional
 
 import aiohttp
 import anyio
 import numpy as np
 import shared_types.shared_types
-from anyio import open_file, to_thread
 from anyio.abc import TaskGroup
-from consts import DAY, INSTANCE_ID, MBTA_V3_ENDPOINT, MONTH, WEEK, YEAR
+from consts import INSTANCE_ID, MBTA_V3_ENDPOINT, MONTH, YEAR
 from exceptions import RateLimitExceeded
-from huggingface_hub import hf_hub_download
-from keras import Model
-from mbta_client import MBTAApi, determine_station_id
-from mbta_responses import Schedules
+from mbta_client import MBTAApi
 from numpy.typing import NDArray
 from prometheus import (
-    mbta_api_requests,
     redis_commands,
     track_historical_assignments_stored,
     track_pattern_analysis_duration,
@@ -32,17 +21,23 @@ from prometheus import (
     track_predictions_cached,
     track_predictions_generated,
     track_predictions_ml_wins,
-    track_predictions_validated,
 )
 from pydantic import ValidationError
 from redis.asyncio import Redis
 from redis.exceptions import RedisError
 from redis_cache import check_cache, write_cache
 from shared_types.shared_types import (
-    MLPredictionRequest,
     TrackAssignment,
     TrackPrediction,
     TrackPredictionStats,
+)
+
+# Extracted modules
+from .api_client import (
+    DepartureInfo,
+    fetch_upcoming_departures,
+    get_default_routes,
+    get_default_target_stations,
 )
 
 # Local ML / helper utilities extracted for testability
@@ -50,7 +45,6 @@ from .ml import (
     bayes_alpha,
     conf_gamma,
     conf_hist_weight,
-    cyclical_time_features,
     margin_confidence,
     ml_compare_enabled,
     ml_compare_wait_ms,
@@ -58,11 +52,19 @@ from .ml import (
     ml_replace_delta,
     ml_sample_prob,
     sharpen_probs,
-    vocab_get_or_add,
 )
+from .ml_queue import create_ml_queue
 
 # Pattern-scoring helpers separated for easier testing
 from .pattern import compute_assignment_scores, compute_final_probabilities
+from .redis_ops import (
+    choose_top_allowed_track,
+    get_allowed_tracks,
+    get_prediction_accuracy,
+    get_prediction_stats,
+    store_prediction,
+)
+from .stations import StationManager
 from .utils import (
     EXPRESS_KEYWORDS as _EXPRESS_KEYWORDS,
 )
@@ -72,17 +74,10 @@ from .utils import (
 from .utils import (
     STATION_CONFIDENCE_THRESHOLDS as _STATION_CONFIDENCE_THRESHOLDS,
 )
-
-
-class DepartureInfo(TypedDict):
-    """Typed representation of an upcoming departure returned from schedules."""
-
-    trip_id: str
-    station_id: str
-    route_id: str
-    direction_id: int
-    departure_time: str
-
+from .utils import (
+    get_station_confidence_threshold,
+)
+from .validation import validate_prediction
 
 logger = logging.getLogger(__name__)
 
@@ -122,69 +117,26 @@ class TrackPredictor:
 
     def __init__(self, r_client: Redis) -> None:
         self.redis = r_client
-        self._child_stations_map: Dict[str, str] = {}
-        self._supported_stations: Set[str] = set()
-
-    async def _load_child_stations_map(self) -> Dict[str, str]:
-        """Load the child stations JSON file and create a mapping from child -> parent."""
-        try:
-            child_stations_path = Path("child_stations.json")
-            async with await open_file(child_stations_path) as f:
-                content = await f.read()
-                data = json.loads(content)
-
-            # Create reverse mapping: child_id -> parent_station_id
-            mapping = {}
-            for parent_station, children in data.items():
-                for child in children:
-                    mapping[child["id"]] = parent_station
-            return mapping
-        except (json.JSONDecodeError, FileNotFoundError, PermissionError) as e:
-            logger.warning("Failed to load child stations mapping", exc_info=e)
-            return {}
+        self.station_manager = StationManager()
+        self.ml_queue = create_ml_queue(r_client, self.normalize_station)
 
     async def initialize(self) -> None:
         """Initialize the TrackPredictor by loading child stations mapping."""
-        self._child_stations_map = await self._load_child_stations_map()
-        self._supported_stations = (
-            set(self._child_stations_map.values())
-            if self._child_stations_map
-            else set()
-        )
+        await self.station_manager.initialize()
 
     def normalize_station(self, station_id: str) -> str:
         """
         Normalize station/stop identifiers to canonical 'place-...' station ids
         using the child_stations.json lookup table as the source of truth.
         """
-        if not station_id:
-            return station_id
-
-        # First check if this ID is directly in our child stations mapping
-        if station_id in self._child_stations_map:
-            return self._child_stations_map[station_id]
-
-        # If already a place-* ID, return as-is
-        if station_id.startswith("place-"):
-            return station_id
-
-        try:
-            resolved, has = determine_station_id(station_id)
-            if resolved and has:
-                return resolved
-        except (TypeError, ValueError):
-            # determine_station_id is simple but protect against unexpected input types
-            pass
-
-        return station_id
+        return self.station_manager.normalize_station(station_id)
 
     def supports_track_predictions(self, station_id: str) -> bool:
         """
         Check if a station supports track predictions based on our child_stations.json mapping.
         Returns True if the normalized station ID is in our supported stations list.
         """
-        normalized_station = self.normalize_station(station_id)
-        return normalized_station in self._supported_stations
+        return self.station_manager.supports_track_predictions(station_id)
 
     async def store_historical_assignment(
         self, assignment: TrackAssignment, tg: TaskGroup
@@ -304,7 +256,7 @@ class TrackPredictor:
 
     @staticmethod
     def _sharpen_probs(
-        vec: NDArray[np.floating[Any]],
+        vec: Optional[NDArray[np.floating[Any]]],
         gamma: float,
     ) -> Optional[NDArray[np.floating[Any]]]:
         """Sharpen a probability vector by exponentiation and renormalization (delegated).
@@ -312,12 +264,13 @@ class TrackPredictor:
         The wrapper accepts an Optional array to satisfy callers that may pass None;
         if None is provided this returns None rather than delegating to the helper.
         """
-
+        if vec is None:
+            return None
         return sharpen_probs(vec, gamma)
 
     @staticmethod
     def _margin_confidence(
-        vec: NDArray[np.floating[Any]],
+        vec: Optional[NDArray[np.floating[Any]]],
         index: int,
     ) -> float:
         """Compute margin-based confidence (delegated).
@@ -325,39 +278,15 @@ class TrackPredictor:
         Accept an Optional input for compatibility with callers that may pass None.
         When vec is None, return a conservative confidence of 0.0.
         """
+        if vec is None:
+            return 0.0
         return margin_confidence(vec, index)
 
     async def _get_allowed_tracks(self, station_id: str, route_id: str) -> set[str]:
-        """Return a set of allowed track numbers for a station/route based on recent history.
-
-        Cached in Redis for 1 day to avoid heavy scans. Falls back to empty set
-        meaning "no restriction" if nothing found.
-        """
-        cache_key = f"allowed_tracks:{self.normalize_station(station_id)}:{route_id}"
-        cached = await check_cache(self.redis, cache_key)
-        if cached:
-            try:
-                lst = json.loads(cached)
-                return set(str(x) for x in lst)
-            except (json.JSONDecodeError, TypeError):
-                # cached value couldn't be parsed or isn't iterable as expected
-                pass
-
-        # Build from historical assignments over the last 180 days
-        try:
-            end = datetime.now(UTC)
-            start = end - timedelta(days=180)
-            assignments = await self.get_historical_assignments(
-                station_id, route_id, start, end
-            )
-            tracks = {a.track_number for a in assignments if a.track_number}
-            await write_cache(self.redis, cache_key, json.dumps(sorted(tracks)), DAY)
-            return set(tracks)
-        except (ConnectionError, TimeoutError, ValueError) as e:
-            # If we can't fetch history due to connectivity or parsing errors,
-            # return an empty set (permissive fallback).
-            logger.debug("Unable to build allowed tracks from history", exc_info=e)
-            return set()
+        """Return a set of allowed track numbers for a station/route based on recent history."""
+        return await get_allowed_tracks(
+            self.redis, self.normalize_station(station_id), route_id
+        )
 
     @staticmethod
     def _ml_enabled() -> bool:
@@ -380,32 +309,15 @@ class TrackPredictor:
         Other modules can call this to request a prediction; the ML worker
         will write the result to Redis when ready for asynchronous consumers.
         """
-        rid = request_id or str(uuid.uuid4())
-        payload = MLPredictionRequest(
-            id=rid,
+        return await self.ml_queue.enqueue_ml_prediction(
             station_id=station_id,
             route_id=route_id,
-            direction_id=int(direction_id),
+            direction_id=direction_id,
             scheduled_time=scheduled_time,
-            trip_id=trip_id or "",
-            headsign=headsign or "",
+            trip_id=trip_id,
+            headsign=headsign,
+            request_id=request_id,
         )
-        await self.redis.lpush(self.ML_QUEUE_KEY, payload.model_dump_json())  # pyright:ignore
-        return rid
-
-    @staticmethod
-    def _cyclical_time_features(ts: datetime) -> dict[str, float]:
-        """Compute cyclical encodings for hour/minute/day_of_week and raw timestamp (delegated)."""
-        return cyclical_time_features(ts)
-
-    async def _vocab_get_or_add(self, key: str, token: str) -> int:
-        """Get a stable integer index for a token from a Redis hash, adding if missing.
-
-        This maintains consistent integer ids for categorical features like station_id
-        and route_id across ML predictions.
-        """
-        # Delegate to shared ml helper which handles redis access
-        return await vocab_get_or_add(self.redis, key, token)
 
     async def ml_prediction_worker(self) -> None:
         """
@@ -414,284 +326,8 @@ class TrackPredictor:
 
         Runs blocking model load/inference in an anyio thread.
         """
-        if not self._ml_enabled():
-            logger.info("ML worker not started: IMT_ML not enabled")
-            return
+        await self.ml_queue.ml_prediction_worker()
 
-        def load_models_blocking() -> List[Model]:
-            # Set backend before importing keras
-            import keras
-
-            models: List[Model] = list()
-
-            filenames = [
-                f"track_prediction_ensemble_model_{i}_best.keras" for i in range(5)
-            ]
-            model_paths = [
-                hf_hub_download("cubis/mbta-track-predictor", filename)
-                for filename in filenames
-            ]
-
-            try:
-                # Load without compiling to avoid requiring custom loss/metrics
-                models = [
-                    keras.saving.load_model(model_path, compile=False)
-                    for model_path in model_paths
-                ]  # pyright: ignore
-                # model = keras.saving.load_model("hf://cubis/mbta-track-predictor")
-            except (OSError, ImportError, RuntimeError) as e:  # noqa: BLE001 (surface errors to logs)
-                # Narrow to errors that can happen while downloading/loading model artifacts
-                logger.error("Failed to load ML model", exc_info=e)
-                raise
-            return models
-
-        # Load model once in a worker thread
-        logger.info("Starting ML prediction worker: loading model…")
-        try:
-            models = await to_thread.run_sync(load_models_blocking)
-        except (OSError, RuntimeError) as e:
-            # Loading model failed for an expected runtime/IO reason — disable worker
-            logger.error("ML worker disabled due to model load failure.", exc_info=e)
-            return
-        logger.info("ML model loaded. Worker ready.")
-
-        # Consume requests
-        while True:
-            try:
-                item = await self.redis.brpop([self.ML_QUEUE_KEY], timeout=5)  # pyright:ignore
-                redis_commands.labels("brpop").inc()
-                if not item:
-                    continue
-
-                _, raw = item
-                payload = MLPredictionRequest.model_validate_json(raw)
-
-                req_id = payload.id
-                station_id = payload.station_id
-                route_id = payload.route_id
-                direction_id = payload.direction_id
-                scheduled_time = payload.scheduled_time
-                trip_id = payload.trip_id
-                headsign = payload.headsign
-
-                # Vocab lookups
-                station_idx = await self._vocab_get_or_add(
-                    self.ML_STATION_VOCAB_KEY, station_id
-                )
-                route_idx = await self._vocab_get_or_add(
-                    self.ML_ROUTE_VOCAB_KEY, route_id
-                )
-
-                feats = self._cyclical_time_features(scheduled_time)
-
-                # Prepare tensors
-                features = {
-                    "station_id": np.array([station_idx], dtype=np.int64),
-                    "route_id": np.array([route_idx], dtype=np.int64),
-                    "direction_id": np.array([direction_id], dtype=np.int64),
-                    "hour_sin": np.array([feats["hour_sin"]], dtype=np.float32),
-                    "hour_cos": np.array([feats["hour_cos"]], dtype=np.float32),
-                    "minute_sin": np.array([feats["minute_sin"]], dtype=np.float32),
-                    "minute_cos": np.array([feats["minute_cos"]], dtype=np.float32),
-                    "day_sin": np.array([feats["day_sin"]], dtype=np.float32),
-                    "day_cos": np.array([feats["day_cos"]], dtype=np.float32),
-                    "scheduled_timestamp": np.array(
-                        [feats["scheduled_timestamp"]], dtype=np.float32
-                    ),
-                }
-
-                def predict_blocking() -> Optional[List[Any]]:  # type: ignore[no-untyped-def]
-                    # Import inside the thread to ensure backend is respected
-                    if models:
-                        probs = [model.predict(features) for model in models]
-                        return probs
-
-                probs = await to_thread.run_sync(predict_blocking)
-                # Each model returns class probabilities shaped like (1, num_classes).
-                # Take per-model argmax, then majority vote across models,
-                # and compute mean probabilities for confidence reporting.
-                model_top_classes: list[int] = []
-                flat_probs: list[np.ndarray] = []
-                for p in probs or []:
-                    arr = np.array(p)
-                    try:
-                        if arr.ndim == 2 and arr.shape[0] == 1:
-                            flat = arr[0]
-                        elif arr.ndim == 1:
-                            flat = arr
-                        else:
-                            flat = arr.reshape(-1)
-                        idx = int(np.argmax(flat))
-                        model_top_classes.append(idx)
-                        flat_probs.append(flat.astype(np.float32))
-                    except (ValueError, IndexError, TypeError):
-                        # Skip malformed model output
-                        continue
-
-                if model_top_classes:
-                    # Majority vote; ties resolve to smallest index via argmax
-                    predicted_track = int(np.bincount(model_top_classes).argmax())
-                    # Mean probabilities across models for confidence
-                    mean_probs = (
-                        np.mean(np.stack(flat_probs, axis=0), axis=0)
-                        if flat_probs
-                        else None
-                    )
-                    # Apply allowed-tracks mask from history, and reselect from masked distribution
-                    if mean_probs is not None:
-                        allowed = await self._get_allowed_tracks(station_id, route_id)
-                        if allowed:
-                            masked = mean_probs.copy()
-                            for idx in range(masked.shape[0]):
-                                if str(idx + 1) not in allowed:
-                                    masked[idx] = 0.0
-                            total = float(np.sum(masked))
-                            # If masking removed all probability mass, keep original mean_probs
-                            if total > 0:
-                                mean_probs = masked / total
-                                predicted_track = int(np.argmax(mean_probs))
-                            else:
-                                # Try to pick top allowed track from history as fallback
-                                best_allowed = await self._choose_top_allowed_track(
-                                    station_id, route_id, allowed
-                                )
-                                if best_allowed:
-                                    logger.info(
-                                        f"Allowed mask removed ML probs for {station_id} {route_id}; falling back to most frequent allowed track {best_allowed}"
-                                    )
-                                    predicted_track = int(best_allowed) - 1
-                                    track_number = best_allowed
-                                else:
-                                    logger.debug(
-                                        f"Allowed-tracks mask removed all probabilities for {station_id} {route_id}; keeping original mean_probs"
-                                    )
-                    # Compute model confidence (pre-sharpen, pre-history)
-                    model_confidence = self._margin_confidence(
-                        mean_probs, predicted_track
-                    )
-                    # Sharpened margin-based display confidence around the selected class
-                    probs_for_conf = self._sharpen_probs(mean_probs, self._conf_gamma())
-                    confidence = self._margin_confidence(
-                        probs_for_conf, predicted_track
-                    )
-                    track_number = str(predicted_track + 1)  # 1-based for MBTA tracks
-                    # Drop very low-confidence ML predictions
-                    if confidence < 0.25:
-                        logger.debug(
-                            f"Dropping low-confidence ML prediction for {station_id} {route_id} at {scheduled_time}: track={track_number}, confidence={confidence:.3f}"
-                        )
-                        continue
-                    # Historical accuracy for predicted track number
-                    hist_acc = await self._get_prediction_accuracy(
-                        station_id, route_id, track_number
-                    )
-                    # Blend confidence with historical accuracy
-                    w_hist = self._conf_hist_weight()
-                    confidence = (1.0 - w_hist) * confidence + w_hist * hist_acc
-
-                    result = {
-                        "id": req_id,
-                        "station_id": self.normalize_station(station_id),
-                        "route_id": route_id,
-                        "direction_id": direction_id,
-                        "scheduled_time": scheduled_time.isoformat(),
-                        "predicted_track_index": predicted_track,
-                        "track_number": track_number,
-                        "confidence": confidence,
-                        "model_confidence": model_confidence,
-                        "accuracy": hist_acc,
-                        "probabilities": mean_probs.tolist()
-                        if mean_probs is not None
-                        else None,
-                        "model": "hf://cubis/mbta-track-predictor",
-                        "backend": os.environ.get("KERAS_BACKEND", "jax"),
-                        "created_at": datetime.now(UTC).isoformat(),
-                        "station_vocab_index": station_idx,
-                        "route_vocab_index": route_idx,
-                    }
-
-                    result_key = f"{self.ML_RESULT_KEY_PREFIX}{req_id}"
-                    await self.redis.set(result_key, json.dumps(result), ex=DAY)
-                    latest_key = f"{self.ML_RESULT_LATEST_PREFIX}{self.normalize_station(station_id)}:{route_id}:{direction_id}:{int(scheduled_time.timestamp())}"
-                    await self.redis.set(latest_key, json.dumps(result), ex=DAY)
-
-                    # Persist a TrackPrediction entry conditionally replacing a weak traditional result
-                    cache_key = f"track_prediction:{self.normalize_station(station_id)}:{route_id}:{trip_id}:{scheduled_time.date()}"
-                    do_write = False
-                    existing_json = await check_cache(self.redis, cache_key)
-                    if existing_json:
-                        try:
-                            existing = TrackPrediction.model_validate_json(
-                                existing_json
-                            )
-                            delta = self._ml_replace_delta()
-                            if existing.prediction_method != "ml_ensemble":
-                                if confidence > (existing.confidence_score + delta):
-                                    do_write = True
-                            else:
-                                if confidence > existing.confidence_score:
-                                    do_write = True
-                        except (ValidationError, ValueError, TypeError):
-                            # If parsing the existing cache fails, decide conservatively by confidence
-                            do_write = confidence >= 0.5
-                    else:
-                        do_write = confidence >= 0.5
-
-                    if do_write:
-                        prediction = TrackPrediction(
-                            station_id=self.normalize_station(station_id),
-                            route_id=route_id,
-                            trip_id=trip_id,
-                            headsign=headsign,
-                            direction_id=direction_id,
-                            scheduled_time=scheduled_time,
-                            track_number=track_number,
-                            confidence_score=confidence,
-                            accuracy=hist_acc,
-                            model_confidence=model_confidence,
-                            display_confidence=confidence,
-                            prediction_method="ml_ensemble",
-                            historical_matches=0,
-                            created_at=datetime.now(UTC),
-                        )
-
-                        negative_cache_key = f"negative_{cache_key}"
-                        try:
-                            await self.redis.delete(negative_cache_key)  # pyright: ignore
-                        except (ConnectionError, TimeoutError, RedisError, OSError):
-                            # best-effort negative cache cleanup; ignore transient failures
-                            pass
-                        await write_cache(
-                            self.redis,
-                            cache_key,
-                            prediction.model_dump_json(),
-                            2 * MONTH,
-                        )
-
-                        track_predictions_generated.labels(
-                            station_id=self.normalize_station(station_id),
-                            route_id=route_id,
-                            prediction_method="ml_ensemble",
-                            instance=INSTANCE_ID,
-                        ).inc()
-                        track_prediction_confidence.labels(
-                            station_id=self.normalize_station(station_id),
-                            route_id=route_id,
-                            track_number=track_number,
-                            instance=INSTANCE_ID,
-                        ).set(confidence)
-                    # redis_commands.labels("set").inc()
-
-            except ValidationError as e:
-                logger.error("Unable to validate model", exc_info=e)
-            except (
-                RuntimeError,
-                OSError,
-            ) as e:  # keep worker alive for recoverable runtime errors
-                logger.error("Error in ML prediction worker loop", exc_info=e)
-                await anyio.sleep(0.5)
-
-    # tenacity decorator removed - using local retry/backoff inside function
     async def fetch_upcoming_departures(
         self,
         session: Any,
@@ -711,119 +347,9 @@ class TrackPredictor:
         Returns:
             List of departure data dictionaries with scheduled times
         """
-        # Local retry/backoff implementation (replaces tenacity decorator).
-        # This will attempt the schedule fetch a few times with exponential
-        # backoff + jitter before giving up, while still propagating CancelledError.
-        max_attempts = int(os.getenv("IMT_PRECACHE_MAX_ATTEMPTS", "5"))
-        base_backoff = float(os.getenv("IMT_PRECACHE_BASE_BACKOFF", "1.0"))
-        attempt = 0
-
-        while True:
-            try:
-                if target_date is None:
-                    target_date = datetime.now(UTC)
-                # Proceed with the normal fetch logic below on success
-                break
-            except CancelledError:
-                # Preserve cancellation semantics
-                raise
-            except Exception as e:
-                attempt += 1
-                if attempt >= max_attempts:
-                    logger.error(
-                        f"Exceeded max attempts ({max_attempts}) in fetch_upcoming_departures for route {route_id}",
-                        exc_info=e,
-                    )
-                    return []
-                # Exponential backoff with small random jitter
-                backoff = min(60.0, base_backoff * (2 ** (attempt - 1)))
-                jitter = random.random() * 0.5
-                sleep_for = backoff + jitter
-                logger.debug(
-                    f"fetch_upcoming_departures attempt {attempt}/{max_attempts} failed for route {route_id}; retrying in {sleep_for:.2f}s",
-                    exc_info=e,
-                )
-                await anyio.sleep(sleep_for)
-                # loop and retry
-
-        # Local imports to avoid top-level import diagnostics and heavy deps at module import time
-
-        date_str = target_date.date().isoformat()
-        auth_token = os.environ.get("AUTH_TOKEN", "")
-        upcoming_departures: list[DepartureInfo] = []
-
-        # Fetch schedules for all stations in a single API call
-        stations_str = ",".join(station_ids)
-
-        endpoint = f"{MBTA_V3_ENDPOINT}/schedules?filter[stop]={stations_str}&filter[route]={route_id}&filter[date]={date_str}&sort=departure_time&include=trip&api_key={auth_token}"
-
-        try:
-            async with session.get(endpoint) as response:
-                if response.status == 429:
-                    raise RateLimitExceeded()
-
-                if response.status != 200:
-                    logger.error(
-                        f"Failed to fetch schedules for {stations_str} on {route_id}: HTTP {response.status}"
-                    )
-                    return []
-
-                body = await response.text()
-                mbta_api_requests.labels("schedules").inc()
-
-                try:
-                    schedules_data = Schedules.model_validate_json(body, strict=False)
-                except ValidationError as e:
-                    logger.error(
-                        f"Unable to parse schedules for {stations_str} on {route_id}",
-                        exc_info=e,
-                    )
-                    return []
-
-                # Process each scheduled departure
-                for schedule in schedules_data.data:
-                    if not schedule.attributes.departure_time:
-                        continue
-
-                    # Get trip information from relationships
-                    trip_id = ""
-                    if (
-                        hasattr(schedule, "relationships")
-                        and hasattr(schedule.relationships, "trip")
-                        and schedule.relationships.trip.data
-                    ):
-                        trip_id = schedule.relationships.trip.data.id
-
-                    # Get station ID from relationships
-                    station_id = ""
-                    if (
-                        hasattr(schedule, "relationships")
-                        and hasattr(schedule.relationships, "stop")
-                        and schedule.relationships.stop.data
-                    ):
-                        station_id = schedule.relationships.stop.data.id
-
-                    departure_info: DepartureInfo = {
-                        "trip_id": trip_id,
-                        "station_id": station_id,
-                        "route_id": route_id,
-                        "direction_id": schedule.attributes.direction_id,
-                        "departure_time": schedule.attributes.departure_time,
-                    }
-
-                    upcoming_departures.append(departure_info)
-
-        except (aiohttp.ClientError, TimeoutError) as e:
-            logger.error(
-                f"Error fetching schedules for {stations_str} on {route_id}",
-                exc_info=e,
-            )
-            return []
-
-        logger.debug(
-            f"Found {len(upcoming_departures)} upcoming departures for route {route_id} across {len(station_ids)} stations"
+        return await fetch_upcoming_departures(
+            session, route_id, station_ids, target_date
         )
-        return upcoming_departures
 
     async def precache(
         self,
@@ -845,32 +371,10 @@ class TrackPredictor:
         # Local import for RateLimitExceeded used in this function's error handling
 
         if routes is None:
-            routes = [
-                "CR-Worcester",
-                "CR-Framingham",
-                "CR-Franklin",
-                "CR-Foxboro",
-                "CR-Providence",
-                "CR-Stoughton",
-                "CR-Needham",
-                "CR-Fairmount",
-                "CR-Fitchburg",
-                "CR-Lowell",
-                "CR-Haverhill",
-                "CR-Newburyport",
-                "CR-Rockport",
-                "CR-Kingston",
-                "CR-Plymouth",
-                "CR-Greenbush",
-            ]
+            routes = get_default_routes()
 
         if target_stations is None:
-            target_stations = [
-                "place-sstat",  # South Station
-                "place-north",  # North Station
-                "place-bbsta",  # Back Bay
-                "place-rugg",  # Ruggles
-            ]
+            target_stations = get_default_target_stations()
 
         predictions_cached = 0
         current_time = datetime.now(UTC)
@@ -1023,75 +527,17 @@ class TrackPredictor:
         Returns:
             List of historical track assignments
         """
-        try:
-            routes_to_check = [route_id]
-            if include_related_routes and route_id in ROUTE_FAMILIES:
-                routes_to_check.extend(ROUTE_FAMILIES[route_id])
+        from .redis_ops import get_historical_assignments
 
-            async def fetch_route_assignments(
-                current_route: str,
-            ) -> List[TrackAssignment]:
-                """Fetch assignments for a single route."""
-                route_results: list[TrackAssignment] = []
-                time_series_key = f"track_timeseries:{self.normalize_station(station_id)}:{current_route}"
-
-                # Get assignments within the time range
-                assignments = await self.redis.zrangebyscore(
-                    time_series_key, start_date.timestamp(), end_date.timestamp()
-                )
-                redis_commands.labels("zrangebyscore").inc()
-
-                if not assignments:
-                    return route_results
-
-                # Fetch all assignment data
-                async def fetch_assignment_data(
-                    assignment_key: bytes,
-                ) -> Optional[TrackAssignment]:
-                    try:
-                        assignment_data = await check_cache(
-                            self.redis, assignment_key.decode()
-                        )
-                        if assignment_data:
-                            return TrackAssignment.model_validate_json(assignment_data)
-                    except ValidationError as e:
-                        logger.error("Failed to parse assignment data", exc_info=e)
-                    return None
-
-                for assignment_key in assignments:
-                    try:
-                        result = await fetch_assignment_data(assignment_key)
-                        if isinstance(result, TrackAssignment):
-                            route_results.append(result)
-                    except (ConnectionError, TimeoutError) as e:
-                        logger.error("Error fetching assignment data", exc_info=e)
-
-                return route_results
-
-            # Fetch assignments for all routes concurrently
-            results: list[TrackAssignment] = []
-
-            for route in routes_to_check:
-                try:
-                    route_results = await fetch_route_assignments(route)
-                    results.extend(route_results)
-                except (ConnectionError, TimeoutError) as e:
-                    logger.error("Error fetching route assignments", exc_info=e)
-
-            return results
-
-        except (ConnectionError, TimeoutError) as e:
-            logger.error(
-                "Failed to retrieve historical assignments due to Redis connection issue",
-                exc_info=e,
-            )
-            return []
-        except ValidationError as e:
-            logger.error(
-                "Failed to retrieve historical assignments due to validation error",
-                exc_info=e,
-            )
-            return []
+        return await get_historical_assignments(
+            self.redis,
+            self.normalize_station(station_id),
+            route_id,
+            start_date,
+            end_date,
+            include_related_routes,
+            ROUTE_FAMILIES,
+        )
 
     def _enhanced_headsign_similarity(self, headsign1: str, headsign2: str) -> float:
         """
@@ -1131,9 +577,7 @@ class TrackPredictor:
 
         This allows thresholds to be tested independently of TrackPredictor.
         """
-        from .utils import get_station_confidence_threshold as _thr
-
-        return _thr(station_id)
+        return get_station_confidence_threshold(station_id)
 
     async def analyze_patterns(
         self,
@@ -1177,7 +621,9 @@ class TrackPredictor:
 
             # Accuracy lookup injected to compute final probabilities
             async def _accuracy_lookup(track: str) -> float:
-                return await self._get_prediction_accuracy(station_id, route_id, track)
+                return await get_prediction_accuracy(
+                    self.redis, station_id, route_id, track
+                )
 
             # Convert scores -> normalized distribution accounting for sample-size and accuracy
             total = await compute_final_probabilities(
@@ -1502,31 +948,18 @@ class TrackPredictor:
             # pattern-derived confidence, choosing the higher-confidence result.
             used_bayes = False
             if self._ml_enabled():
-                latest_key = f"{self.ML_RESULT_LATEST_PREFIX}{self.normalize_station(station_id)}:{route_id}:{direction_id}:{int(scheduled_time.timestamp())}"
-                raw_ml = await self.redis.get(latest_key)  # pyright: ignore
-                ml_res = None
-                if raw_ml:
-                    try:
-                        ml_res = json.loads(
-                            raw_ml.decode()
-                            if isinstance(raw_ml, (bytes, bytearray))
-                            else str(raw_ml)
-                        )
-                        logger.debug(
-                            "Found recent ML result",
-                            extra={
-                                "latest_key": latest_key,
-                                "ml_res_keys": list(ml_res.keys())
-                                if isinstance(ml_res, dict)
-                                else None,
-                            },
-                        )
-                    except (json.JSONDecodeError, TypeError):
-                        ml_res = None
-                        logger.debug(
-                            "Failed to decode recent ML result",
-                            extra={"latest_key": latest_key},
-                        )
+                ml_res = await self.ml_queue.get_latest_ml_result(
+                    station_id, route_id, direction_id, scheduled_time
+                )
+                if ml_res:
+                    logger.debug(
+                        "Found recent ML result",
+                        extra={
+                            "ml_res_keys": list(ml_res.keys())
+                            if isinstance(ml_res, dict)
+                            else None,
+                        },
+                    )
 
                 # If ML-compare mode is enabled, try to get an ML result and compare confidences.
                 if self._ml_compare_enabled():
@@ -1560,34 +993,15 @@ class TrackPredictor:
                         while waited_ms < wait_ms:
                             await anyio.sleep(poll / 1000.0)
                             waited_ms += poll
-                            raw_ml = await self.redis.get(latest_key)  # pyright: ignore
-                            if raw_ml:
-                                try:
-                                    ml_res = json.loads(
-                                        raw_ml.decode()
-                                        if isinstance(raw_ml, (bytes, bytearray))
-                                        else str(raw_ml)
-                                    )
-                                    logger.debug(
-                                        "ML result arrived during compare wait",
-                                        extra={
-                                            "waited_ms": waited_ms,
-                                            "latest_key": latest_key,
-                                        },
-                                    )
-                                    break
-                                except (
-                                    json.JSONDecodeError,
-                                    TypeError,
-                                    ValueError,
-                                ) as e:
-                                    ml_res = None
-                                    logger.debug(
-                                        "ML result could not be parsed during compare wait",
-                                        extra={"waited_ms": waited_ms},
-                                        exc_info=e,
-                                    )
-                                    break
+                            ml_res = await self.ml_queue.get_latest_ml_result(
+                                station_id, route_id, direction_id, scheduled_time
+                            )
+                            if ml_res:
+                                logger.debug(
+                                    "ML result arrived during compare wait",
+                                    extra={"waited_ms": waited_ms},
+                                )
+                                break
                         logger.debug(
                             "Finished waiting for ML compare",
                             extra={
@@ -1639,8 +1053,8 @@ class TrackPredictor:
                                     # If parsing fails, keep previous model_confidence
                                     pass
                                 # blend with historical accuracy for display consistency
-                                hist_acc = await self._get_prediction_accuracy(
-                                    station_id, route_id, best_track
+                                hist_acc = await get_prediction_accuracy(
+                                    self.redis, station_id, route_id, best_track
                                 )
                                 w_hist = self._conf_hist_weight()
                                 old_conf = confidence
@@ -1754,10 +1168,8 @@ class TrackPredictor:
                                         )
                                     else:
                                         # Allowed mask removed all mass; choose top allowed historical track
-                                        best_allowed = (
-                                            await self._choose_top_allowed_track(
-                                                station_id, route_id, allowed
-                                            )
+                                        best_allowed = await choose_top_allowed_track(
+                                            self.redis, station_id, route_id, allowed
                                         )
                                         if best_allowed:
                                             logger.info(
@@ -1790,8 +1202,8 @@ class TrackPredictor:
                                         fused_norm, best_idx
                                     )
                                     # Blend with historical accuracy for the chosen track
-                                    hist_acc = await self._get_prediction_accuracy(
-                                        station_id, route_id, best_track
+                                    hist_acc = await get_prediction_accuracy(
+                                        self.redis, station_id, route_id, best_track
                                     )
                                     w_hist = self._conf_hist_weight()
                                 else:
@@ -1800,8 +1212,8 @@ class TrackPredictor:
                                     if "best_idx" in locals():
                                         # best_idx was set from allowed historical fallback
                                         best_track = str(best_idx + 1)
-                                        hist_acc = await self._get_prediction_accuracy(
-                                            station_id, route_id, best_track
+                                        hist_acc = await get_prediction_accuracy(
+                                            self.redis, station_id, route_id, best_track
                                         )
                                         w_hist = self._conf_hist_weight()
                                         # Blend existing pattern confidence with historical accuracy
@@ -1811,8 +1223,8 @@ class TrackPredictor:
                                         model_confidence = 0.0
                                     else:
                                         # No fused info and no allowed fallback; keep original pattern result
-                                        hist_acc = await self._get_prediction_accuracy(
-                                            station_id, route_id, best_track
+                                        hist_acc = await get_prediction_accuracy(
+                                            self.redis, station_id, route_id, best_track
                                         )
                                         w_hist = self._conf_hist_weight()
                                 confidence = (
@@ -1901,8 +1313,8 @@ class TrackPredictor:
 
             # Create prediction
             # Historical accuracy for predicted track
-            hist_acc = await self._get_prediction_accuracy(
-                station_id, route_id, best_track
+            hist_acc = await get_prediction_accuracy(
+                self.redis, station_id, route_id, best_track
             )
             prediction = TrackPrediction(
                 station_id=self.normalize_station(station_id),
@@ -1947,7 +1359,7 @@ class TrackPredictor:
             ).set(confidence)
 
             # Store prediction for later validation
-            tg.start_soon(self._store_prediction, prediction)
+            tg.start_soon(store_prediction, self.redis, prediction)
             # If traditional confidence is weak, funnel to ML for a possible replacement
             if self._ml_enabled() and prediction.confidence_score < 0.5:
                 try:
@@ -1995,79 +1407,6 @@ class TrackPredictor:
             await write_cache(self.redis, negative_cache_key, "True", 2 * MONTH)
             return None
 
-    async def _store_prediction(self, prediction: TrackPrediction) -> None:
-        """Store a prediction for later validation."""
-        try:
-            key = f"track_prediction:{self.normalize_station(prediction.station_id)}:{prediction.route_id}:{prediction.trip_id}:{prediction.scheduled_time.date()}"
-            await write_cache(
-                self.redis,
-                key,
-                prediction.model_dump_json(),
-                WEEK,  # Store for 1 week
-            )
-        except (ConnectionError, TimeoutError) as e:
-            logger.error(
-                "Failed to store prediction due to Redis connection issue",
-                exc_info=e,
-            )
-        except ValidationError as e:
-            logger.error(
-                "Failed to store prediction due to validation error",
-                exc_info=e,
-            )
-
-    async def _get_prediction_accuracy(
-        self, station_id: str, route_id: str, track_number: str
-    ) -> float:
-        """Get historical prediction accuracy for a specific track."""
-        try:
-            # Get recent prediction validation results
-            accuracy_key = f"track_accuracy:{self.normalize_station(station_id)}:{route_id}:{track_number}"
-            accuracy_data = await self.redis.get(accuracy_key)
-
-            if accuracy_data:
-                # Parse stored accuracy data (format: "correct:total")
-                parts = accuracy_data.decode().split(":")
-                if len(parts) == 2:
-                    correct = int(parts[0])
-                    total = int(parts[1])
-                    if total > 0:
-                        return correct / total
-
-            # Default accuracy for new tracks (slightly conservative)
-            return 0.7
-
-        except (ConnectionError, TimeoutError, ValueError) as e:
-            logger.error("Failed to get prediction accuracy", exc_info=e)
-            return 0.7  # Default accuracy
-
-    async def _choose_top_allowed_track(
-        self, station_id: str, route_id: str, allowed: set[str]
-    ) -> Optional[str]:
-        """Choose the most frequent historical track among the allowed set.
-
-        Returns the track string or None if unable to decide.
-        """
-        try:
-            end = datetime.now(UTC)
-            start = end - timedelta(days=180)
-            assignments = await self.get_historical_assignments(
-                station_id, route_id, start, end
-            )
-            counts: dict[str, int] = defaultdict(int)
-            for a in assignments:
-                if a.track_number and a.track_number in allowed:
-                    counts[a.track_number] += 1
-            if not counts:
-                return None
-            # return most frequent; ties resolved by smallest track string
-            best = max(sorted(counts.items(), key=lambda x: x[0]), key=lambda x: x[1])
-            return best[0]
-        except (ConnectionError, TimeoutError, ValueError) as e:
-            # Errors fetching historical assignments or processing counts -> no decision
-            logger.debug("Unable to choose top allowed track", exc_info=e)
-            return None
-
     async def validate_prediction(
         self,
         station_id: str,
@@ -2087,192 +1426,18 @@ class TrackPredictor:
             scheduled_time: The scheduled departure time
             actual_track_number: The actual track number assigned
         """
-        try:
-            # Check if this prediction has already been validated
-            validation_key = f"track_validation:{self.normalize_station(station_id)}:{route_id}:{trip_id}:{scheduled_time.date()}"
-            if await check_cache(self.redis, validation_key):
-                logger.debug(
-                    f"Prediction already validated for {self.normalize_station(station_id)} {route_id} {trip_id} on {scheduled_time.date()}"
-                )
-                return
-
-            key = f"track_prediction:{self.normalize_station(station_id)}:{route_id}:{trip_id}:{scheduled_time.date()}"
-            prediction_data = await check_cache(self.redis, key)
-
-            if not prediction_data:
-                return
-
-            prediction = TrackPrediction.model_validate_json(prediction_data)
-
-            # Check if prediction was correct
-            is_correct = prediction.track_number == actual_track_number
-
-            # Update statistics
-            tg.start_soon(
-                self._update_prediction_stats,
-                station_id,
-                route_id,
-                is_correct,
-                prediction.confidence_score,
-            )
-
-            # Update per-track historical accuracy for the predicted track
-            if prediction.track_number:
-                tg.start_soon(
-                    self._update_track_accuracy,
-                    station_id,
-                    route_id,
-                    prediction.track_number,
-                    is_correct,
-                )
-
-            # Record validation metric
-            result = "correct" if is_correct else "incorrect"
-            track_predictions_validated.labels(
-                station_id=station_id,
-                route_id=route_id,
-                result=result,
-                instance=INSTANCE_ID,
-            ).inc()
-
-            # Mark as validated to prevent duplicate processing
-            tg.start_soon(
-                write_cache,
-                self.redis,
-                validation_key,
-                "validated",
-                WEEK,
-            )
-
-            logger.info(
-                f"Validated prediction for {station_id} {route_id}: {'CORRECT' if is_correct else 'INCORRECT'}"
-            )
-
-        except (ConnectionError, TimeoutError) as e:
-            logger.error(
-                "Failed to validate prediction due to Redis connection issue",
-                exc_info=e,
-            )
-        except ValidationError as e:
-            logger.error(
-                "Failed to validate prediction due to validation error",
-                exc_info=e,
-            )
-
-    async def _update_track_accuracy(
-        self, station_id: str, route_id: str, track_number: str, is_correct: bool
-    ) -> None:
-        """Update per-track accuracy counters used by _get_prediction_accuracy.
-
-        Stored format is a simple "correct:total" string per station/route/track.
-        """
-        try:
-            key = f"track_accuracy:{self.normalize_station(station_id)}:{route_id}:{track_number}"
-            raw = await self.redis.get(key)
-            correct = 0
-            total = 0
-            if raw:
-                try:
-                    parts = (
-                        raw.decode().split(":")
-                        if isinstance(raw, (bytes, bytearray))
-                        else str(raw).split(":")
-                    )
-                    if len(parts) == 2:
-                        correct = int(parts[0])
-                        total = int(parts[1])
-                except (ValueError, TypeError, AttributeError):
-                    # Malformed stored accuracy value; reset counters
-                    correct = 0
-                    total = 0
-            total += 1
-            if is_correct:
-                correct += 1
-            await write_cache(self.redis, key, f"{correct}:{total}", 30 * DAY)
-        except (ConnectionError, TimeoutError) as e:
-            logger.error(
-                "Failed to update per-track accuracy due to Redis connection issue",
-                exc_info=e,
-            )
-        except (ConnectionError, TimeoutError, OSError) as e:
-            # Limit to expected redis/network related errors; treat others as failures elsewhere
-            logger.error("Failed to update per-track accuracy", exc_info=e)
-
-    async def _update_prediction_stats(
-        self, station_id: str, route_id: str, is_correct: bool, confidence: float
-    ) -> None:
-        """Update prediction statistics."""
-        try:
-            stats_key = f"track_stats:{station_id}:{route_id}"
-            stats_data = await check_cache(self.redis, stats_key)
-
-            if stats_data:
-                stats = TrackPredictionStats.model_validate_json(stats_data)
-            else:
-                stats = TrackPredictionStats(
-                    station_id=station_id,
-                    route_id=route_id,
-                    total_predictions=0,
-                    correct_predictions=0,
-                    accuracy_rate=0.0,
-                    last_updated=datetime.now(UTC),
-                    prediction_counts_by_track={},
-                    average_confidence=0.0,
-                )
-
-            # Update stats
-            stats.total_predictions += 1
-            if is_correct:
-                stats.correct_predictions += 1
-            stats.accuracy_rate = stats.correct_predictions / stats.total_predictions
-            stats.last_updated = datetime.now(UTC)
-
-            # Update average confidence
-            old_total = (stats.total_predictions - 1) * stats.average_confidence
-            stats.average_confidence = (
-                old_total + confidence
-            ) / stats.total_predictions
-
-            # Store updated stats
-            await write_cache(
-                self.redis,
-                stats_key,
-                stats.model_dump_json(),
-                30 * DAY,  # Store for 30 days
-            )
-
-        except (ConnectionError, TimeoutError) as e:
-            logger.error(
-                "Failed to update prediction stats due to Redis connection issue",
-                exc_info=e,
-            )
-        except ValidationError as e:
-            logger.error(
-                "Failed to update prediction stats due to validation error",
-                exc_info=e,
-            )
+        await validate_prediction(
+            self.redis,
+            self.normalize_station(station_id),
+            route_id,
+            trip_id,
+            scheduled_time,
+            actual_track_number,
+            tg,
+        )
 
     async def get_prediction_stats(
         self, station_id: str, route_id: str
     ) -> Optional[TrackPredictionStats]:
         """Get prediction statistics for a station and route."""
-        try:
-            stats_key = f"track_stats:{station_id}:{route_id}"
-            stats_data = await check_cache(self.redis, stats_key)
-
-            if stats_data:
-                return TrackPredictionStats.model_validate_json(stats_data)
-            return None
-
-        except (ConnectionError, TimeoutError) as e:
-            logger.error(
-                "Failed to get prediction stats due to Redis connection issue",
-                exc_info=e,
-            )
-            return None
-        except ValidationError as e:
-            logger.error(
-                "Failed to get prediction stats due to validation error",
-                exc_info=e,
-            )
-            return None
+        return await get_prediction_stats(self.redis, station_id, route_id)
