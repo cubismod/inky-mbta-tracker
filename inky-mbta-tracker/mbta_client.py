@@ -933,10 +933,10 @@ class MBTAApi:
                                             try:
                                                 jitter_ms = randint(0, max_jitter_ms)
                                                 await anyio.sleep(jitter_ms / 1000.0)
-                                            except Exception:
-                                                # Best-effort jitter; do not block on failures
+                                            except CancelledError:
+                                                # Best-effort jitter; do not block on cancellation
                                                 logger.debug(
-                                                    "Failed to apply jitter before prediction",
+                                                    "Prediction jitter sleep was cancelled",
                                                     exc_info=True,
                                                 )
 
