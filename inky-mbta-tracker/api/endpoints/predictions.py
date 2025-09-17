@@ -29,7 +29,7 @@ async def generate_track_prediction(
     try:
 
         async def _generate_prediction() -> TrackPredictionResponse:
-            station_id_resolved = commons.track_predictor._norm_station(
+            station_id_resolved = commons.track_predictor.normalize_station(
                 prediction_request.station_id
             )
             # Check if this is a supported station
@@ -79,7 +79,9 @@ async def generate_chained_track_predictions(
         pred_request: PredictionRequest,
     ) -> TrackPredictionResponse:
         try:
-            station_id = commons.track_predictor._norm_station(pred_request.station_id)
+            station_id = commons.track_predictor.normalize_station(
+                pred_request.station_id
+            )
             # Check if this is a supported station
             if not commons.track_predictor.supports_track_predictions(station_id):
                 return TrackPredictionResponse(
@@ -140,7 +142,7 @@ async def get_prediction_stats(
     request: Request, station_id: str, route_id: str, commons: GET_DI
 ) -> TrackPredictionStatsResponse:
     try:
-        station_id = commons.track_predictor._norm_station(station_id)
+        station_id = commons.track_predictor.normalize_station(station_id)
         # Check if this is a supported station
         if not commons.track_predictor.supports_track_predictions(station_id):
             return TrackPredictionStatsResponse(
@@ -174,7 +176,7 @@ async def get_historical_assignments(
     try:
         end_date = datetime.now()
         start_date = end_date - timedelta(days=days)
-        station_id = commons.track_predictor._norm_station(station_id)
+        station_id = commons.track_predictor.normalize_station(station_id)
         # Check if this is a supported station
         if not commons.track_predictor.supports_track_predictions(station_id):
             return []
