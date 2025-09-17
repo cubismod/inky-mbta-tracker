@@ -122,8 +122,8 @@ class TrackPredictor:
                 for child in children:
                     mapping[child["id"]] = parent_station
             return mapping
-        except Exception as e:
-            logger.warning(f"Failed to load child stations mapping: {e}")
+        except (json.JSONDecodeError, FileNotFoundError, PermissionError) as e:
+            logger.warning("Failed to load child stations mapping", exc_info=e)
             return {}
 
     async def initialize(self) -> None:
@@ -161,17 +161,6 @@ class TrackPredictor:
 
         sid = str(station_id)
 
-        # Use fallback if not initialized (for synchronous contexts)
-        if not self._initialized:
-            # Fallback to determine_station_id for compatibility
-            try:
-                resolved, has = determine_station_id(sid)
-                if resolved and has:
-                    return resolved
-            except Exception:
-                pass
-            return sid
-
         # First check if this ID is directly in our child stations mapping
         if sid in self._child_stations_map:
             return self._child_stations_map[sid]
@@ -180,12 +169,12 @@ class TrackPredictor:
         if sid.startswith("place-"):
             return sid
 
-        # Fallback to determine_station_id for other cases
         try:
             resolved, has = determine_station_id(sid)
             if resolved and has:
                 return resolved
-        except Exception:
+        except (TypeError, ValueError):
+            # determine_station_id is simple but protect against unexpected input types
             pass
 
         # Final fallback - return the original ID
@@ -260,13 +249,13 @@ class TrackPredictor:
 
         except (ConnectionError, TimeoutError) as e:
             logger.error(
-                f"Failed to store track assignment due to Redis connection issue: {e}",
-                exc_info=True,
+                "Failed to store track assignment due to Redis connection issue",
+                exc_info=e,
             )
         except ValidationError as e:
             logger.error(
-                f"Failed to store track assignment due to validation error: {e}",
-                exc_info=True,
+                "Failed to store track assignment due to validation error",
+                exc_info=e,
             )
 
     # ------------------------------
@@ -285,7 +274,7 @@ class TrackPredictor:
         """Read sharpening gamma from env; default to 1.3."""
         try:
             return float(os.getenv("IMT_ML_CONF_GAMMA", "1.3"))
-        except Exception:
+        except (ValueError, TypeError):
             return 1.3
 
     @staticmethod
@@ -294,7 +283,7 @@ class TrackPredictor:
         try:
             w = float(os.getenv("IMT_CONF_HIST_WEIGHT", "0.3"))
             return min(1.0, max(0.0, w))
-        except Exception:
+        except (ValueError, TypeError):
             return 0.3
 
     @staticmethod
@@ -303,7 +292,7 @@ class TrackPredictor:
         try:
             a = float(os.getenv("IMT_BAYES_ALPHA", "0.65"))
             return min(1.0, max(0.0, a))
-        except Exception:
+        except (ValueError, TypeError):
             return 0.65
 
     @staticmethod
@@ -312,7 +301,7 @@ class TrackPredictor:
         try:
             p = float(os.getenv("IMT_ML_SAMPLE_PCT", "0.1"))
             return min(1.0, max(0.0, p))
-        except Exception:
+        except (ValueError, TypeError):
             return 0.1
 
     @staticmethod
@@ -321,7 +310,7 @@ class TrackPredictor:
         try:
             d = float(os.getenv("IMT_ML_REPLACE_DELTA", "0.05"))
             return max(0.0, d)
-        except Exception:
+        except (ValueError, TypeError):
             return 0.05
 
     @staticmethod
@@ -344,7 +333,7 @@ class TrackPredictor:
         """
         try:
             return max(0, int(os.getenv("IMT_ML_COMPARE_WAIT_MS", "200")))
-        except Exception:
+        except (ValueError, TypeError):
             return 200
 
     @staticmethod
@@ -400,7 +389,8 @@ class TrackPredictor:
             try:
                 lst = json.loads(cached)
                 return set(str(x) for x in lst)
-            except Exception:
+            except (json.JSONDecodeError, TypeError):
+                # cached value couldn't be parsed or isn't iterable as expected
                 pass
 
         # Build from historical assignments over the last 180 days
@@ -607,7 +597,8 @@ class TrackPredictor:
                         idx = int(np.argmax(flat))
                         model_top_classes.append(idx)
                         flat_probs.append(flat.astype(np.float32))
-                    except Exception:
+                    except (ValueError, IndexError, TypeError):
+                        # Skip malformed model output
                         continue
 
                 if model_top_classes:
@@ -764,7 +755,10 @@ class TrackPredictor:
 
             except ValidationError as e:
                 logger.error("Unable to validate model", exc_info=e)
-            except Exception as e:  # noqa: BLE001
+            except (
+                RuntimeError,
+                OSError,
+            ) as e:  # keep worker alive for recoverable runtime errors
                 logger.error("Error in ML prediction worker loop", exc_info=e)
                 await anyio.sleep(0.5)
 
@@ -852,7 +846,8 @@ class TrackPredictor:
                     schedules_data = Schedules.model_validate_json(body, strict=False)
                 except ValidationError as e:
                     logger.error(
-                        f"Unable to parse schedules for {stations_str} on {route_id}: {e}"
+                        f"Unable to parse schedules for {stations_str} on {route_id}",
+                        exc_info=e,
                     )
                     return []
 
@@ -891,7 +886,8 @@ class TrackPredictor:
 
         except (aiohttp.ClientError, TimeoutError) as e:
             logger.error(
-                f"Error fetching schedules for {stations_str} on {route_id}: {e}"
+                f"Error fetching schedules for {stations_str} on {route_id}",
+                exc_info=e,
             )
             return []
 
@@ -1160,14 +1156,14 @@ class TrackPredictor:
 
         except (ConnectionError, TimeoutError) as e:
             logger.error(
-                f"Failed to retrieve historical assignments due to Redis connection issue: {e}",
-                exc_info=True,
+                "Failed to retrieve historical assignments due to Redis connection issue",
+                exc_info=e,
             )
             return []
         except ValidationError as e:
             logger.error(
-                f"Failed to retrieve historical assignments due to validation error: {e}",
-                exc_info=True,
+                "Failed to retrieve historical assignments due to validation error",
+                exc_info=e,
             )
             return []
 
@@ -1543,14 +1539,14 @@ class TrackPredictor:
 
         except (ConnectionError, TimeoutError) as e:
             logger.error(
-                f"Failed to analyze patterns due to Redis connection issue: {e}",
-                exc_info=True,
+                "Failed to analyze patterns due to Redis connection issue",
+                exc_info=e,
             )
             return {}
         except ValidationError as e:
             logger.error(
-                f"Failed to analyze patterns due to validation error: {e}",
-                exc_info=True,
+                "Failed to analyze patterns due to validation error",
+                exc_info=e,
             )
             return {}
 
@@ -1648,7 +1644,8 @@ class TrackPredictor:
                         )
                         if new_hs:
                             headsign = new_hs
-                    except Exception as e:
+                    except (aiohttp.ClientError, TimeoutError) as e:
+                        # network / client-related issues while fetching headsign
                         logger.debug("Failed to get headsign", exc_info=e)
 
                     try:
@@ -1662,7 +1659,8 @@ class TrackPredictor:
                                 else None,
                             },
                         )
-                    except Exception as e:
+                    except (aiohttp.ClientError, TimeoutError) as e:
+                        # Treat stop fetch failures as transient and continue
                         logger.debug("Failed to get stop data", exc_info=e)
                         stop_data = None
 
@@ -1805,7 +1803,8 @@ class TrackPredictor:
                         "pattern_keys": list(patterns.keys()),
                     },
                 )
-            except Exception:
+            except (AttributeError, TypeError):
+                # Logging failed due to unexpected pattern structure; continue
                 logger.debug("Patterns present but failed to log details")
 
             # Find the most likely track and compute margin-based confidence
@@ -1862,7 +1861,7 @@ class TrackPredictor:
                                 else None,
                             },
                         )
-                    except Exception:
+                    except (json.JSONDecodeError, TypeError):
                         ml_res = None
                         logger.debug(
                             "Failed to decode recent ML result",
@@ -1971,7 +1970,8 @@ class TrackPredictor:
                                     model_confidence = float(
                                         ml_res.get("model_confidence", model_confidence)
                                     )
-                                except Exception:
+                                except (ValueError, TypeError):
+                                    # If parsing fails, keep previous model_confidence
                                     pass
                                 # blend with historical accuracy for display consistency
                                 hist_acc = await self._get_prediction_accuracy(
@@ -2223,7 +2223,8 @@ class TrackPredictor:
                         scheduled_time,
                     )
                 )
-            except Exception as e:
+            except (ConnectionError, TimeoutError) as e:
+                # If historical lookups fail due to Redis issues, treat as zero matches
                 logger.debug("Error counting historical matches", exc_info=e)
                 historical_matches = 0
             logger.debug(
@@ -2341,13 +2342,13 @@ class TrackPredictor:
             )
         except (ConnectionError, TimeoutError) as e:
             logger.error(
-                f"Failed to store prediction due to Redis connection issue: {e}",
-                exc_info=True,
+                "Failed to store prediction due to Redis connection issue",
+                exc_info=e,
             )
         except ValidationError as e:
             logger.error(
-                f"Failed to store prediction due to validation error: {e}",
-                exc_info=True,
+                "Failed to store prediction due to validation error",
+                exc_info=e,
             )
 
     async def _get_prediction_accuracy(
@@ -2482,13 +2483,13 @@ class TrackPredictor:
 
         except (ConnectionError, TimeoutError) as e:
             logger.error(
-                f"Failed to validate prediction due to Redis connection issue: {e}",
-                exc_info=True,
+                "Failed to validate prediction due to Redis connection issue",
+                exc_info=e,
             )
         except ValidationError as e:
             logger.error(
-                f"Failed to validate prediction due to validation error: {e}",
-                exc_info=True,
+                "Failed to validate prediction due to validation error",
+                exc_info=e,
             )
 
     async def _update_track_accuracy(
@@ -2522,10 +2523,11 @@ class TrackPredictor:
             await write_cache(self.redis, key, f"{correct}:{total}", 30 * DAY)
         except (ConnectionError, TimeoutError) as e:
             logger.error(
-                f"Failed to update per-track accuracy due to Redis connection issue: {e}",
-                exc_info=True,
+                "Failed to update per-track accuracy due to Redis connection issue",
+                exc_info=e,
             )
-        except Exception as e:  # noqa: BLE001
+        except (ConnectionError, TimeoutError, OSError) as e:
+            # Limit to expected redis/network related errors; treat others as failures elsewhere
             logger.error("Failed to update per-track accuracy", exc_info=e)
 
     async def _update_prediction_stats(
@@ -2573,13 +2575,13 @@ class TrackPredictor:
 
         except (ConnectionError, TimeoutError) as e:
             logger.error(
-                f"Failed to update prediction stats due to Redis connection issue: {e}",
-                exc_info=True,
+                "Failed to update prediction stats due to Redis connection issue",
+                exc_info=e,
             )
         except ValidationError as e:
             logger.error(
-                f"Failed to update prediction stats due to validation error: {e}",
-                exc_info=True,
+                "Failed to update prediction stats due to validation error",
+                exc_info=e,
             )
 
     async def get_prediction_stats(
@@ -2596,13 +2598,13 @@ class TrackPredictor:
 
         except (ConnectionError, TimeoutError) as e:
             logger.error(
-                f"Failed to get prediction stats due to Redis connection issue: {e}",
-                exc_info=True,
+                "Failed to get prediction stats due to Redis connection issue",
+                exc_info=e,
             )
             return None
         except ValidationError as e:
             logger.error(
-                f"Failed to get prediction stats due to validation error: {e}",
-                exc_info=True,
+                "Failed to get prediction stats due to validation error",
+                exc_info=e,
             )
             return None
