@@ -106,13 +106,11 @@ class TrackPredictor:
         self.redis = r_client
         self._child_stations_map: Dict[str, str] = {}
         self._supported_stations: Set[str] = set()
-        self._initialized = False
-        self._initialization_lock = anyio.Lock()
 
     async def _load_child_stations_map(self) -> Dict[str, str]:
         """Load the child stations JSON file and create a mapping from child -> parent."""
         try:
-            child_stations_path = Path(__file__).parent.parent / "child_stations.json"
+            child_stations_path = Path("child_stations.json")
             async with await open_file(child_stations_path) as f:
                 content = await f.read()
                 data = json.loads(content)
@@ -129,28 +127,12 @@ class TrackPredictor:
 
     async def initialize(self) -> None:
         """Initialize the TrackPredictor by loading child stations mapping."""
-        if self._initialized:
-            return
-
         self._child_stations_map = await self._load_child_stations_map()
-        # Pre-compute supported stations set for fast lookups
         self._supported_stations = (
             set(self._child_stations_map.values())
             if self._child_stations_map
             else set()
         )
-        self._initialized = True
-
-    async def _ensure_initialized(self) -> None:
-        """Ensure the TrackPredictor is initialized, using lazy initialization."""
-        if self._initialized:
-            return
-
-        async with self._initialization_lock:
-            # Double-check after acquiring the lock
-            if self._initialized:
-                return
-            await self.initialize()
 
     def normalize_station(self, station_id: str) -> str:
         """
@@ -160,39 +142,30 @@ class TrackPredictor:
         if not station_id:
             return station_id
 
-        sid = str(station_id)
-
         # First check if this ID is directly in our child stations mapping
-        if sid in self._child_stations_map:
-            return self._child_stations_map[sid]
+        if station_id in self._child_stations_map:
+            return self._child_stations_map[station_id]
 
         # If already a place-* ID, return as-is
-        if sid.startswith("place-"):
-            return sid
+        if station_id.startswith("place-"):
+            return station_id
 
         try:
-            resolved, has = determine_station_id(sid)
+            resolved, has = determine_station_id(station_id)
             if resolved and has:
                 return resolved
         except (TypeError, ValueError):
             # determine_station_id is simple but protect against unexpected input types
             pass
 
-        # Final fallback - return the original ID
-        return sid
+        return station_id
 
     def supports_track_predictions(self, station_id: str) -> bool:
         """
         Check if a station supports track predictions based on our child_stations.json mapping.
         Returns True if the normalized station ID is in our supported stations list.
         """
-        if not self._initialized:
-            # Fallback check for known stations when not initialized
-            normalized_station = self.normalize_station(station_id)
-            return normalized_station in {"place-north", "place-sstat", "place-bbsta"}
-
         normalized_station = self.normalize_station(station_id)
-        # Use pre-computed supported stations set for fast lookup
         return normalized_station in self._supported_stations
 
     async def store_historical_assignment(
@@ -204,9 +177,6 @@ class TrackPredictor:
         Args:
             assignment: The track assignment data to store
         """
-        # Ensure we're initialized before using normalization
-        await self._ensure_initialized()
-
         try:
             # Store in Redis with a key that includes station, route, and timestamp
             key = f"track_history:{self.normalize_station(assignment.station_id)}:{assignment.route_id}:{assignment.trip_id}:{assignment.scheduled_time.date()}"
@@ -215,13 +185,13 @@ class TrackPredictor:
             if await check_cache(self.redis, key):
                 return
 
-            # Store for 6 months for analysis
+            # Store for 1 yr for later ML-analysis/pattern matching
             tg.start_soon(
                 write_cache,
                 self.redis,
                 key,
                 assignment.model_dump_json(),
-                1 * YEAR,  # 1 year
+                1 * YEAR,
             )
 
             # Also store in a time-series format for easier querying
@@ -339,15 +309,13 @@ class TrackPredictor:
 
     @staticmethod
     def _sharpen_probs(
-        vec: Optional[NDArray[np.floating[Any]]],
+        vec: NDArray[np.floating[Any]],
         gamma: float,
     ) -> Optional[NDArray[np.floating[Any]]]:
         """Sharpen a probability vector by exponentiation and renormalization.
 
         Selection should be based on the original vector; the sharpened vector is for confidence only.
         """
-        if vec is None:
-            return None
         if gamma <= 0 or not np.isfinite(gamma):
             gamma = 1.0
         v = np.clip(vec.astype(np.float64), 1e-12, 1.0)
@@ -357,12 +325,10 @@ class TrackPredictor:
 
     @staticmethod
     def _margin_confidence(
-        vec: Optional[NDArray[np.floating[Any]]],
+        vec: NDArray[np.floating[Any]],
         index: int,
     ) -> float:
         """Compute 0.5*(p1 + margin) where margin = p1 - p2 around a chosen index."""
-        if vec is None:
-            return 0.0
         n = vec.size
         if n == 0 or index < 0 or index >= n:
             return 0.0
@@ -382,8 +348,6 @@ class TrackPredictor:
         Cached in Redis for 1 day to avoid heavy scans. Falls back to empty set
         meaning "no restriction" if nothing found.
         """
-        # Ensure we're initialized before using normalization
-        await self._ensure_initialized()
         cache_key = f"allowed_tracks:{self.normalize_station(station_id)}:{route_id}"
         cached = await check_cache(self.redis, cache_key)
         if cached:

@@ -78,8 +78,6 @@ async def get_vehicles_sse(request: Request) -> StreamingResponse:
                         RuntimeError,
                         OSError,
                     ) as e:
-                        # These are expected transient/operational errors for SSE: network, timeout,
-                        # JSON/serialization failures, or runtime issues. Do not break the stream.
                         logger.error("Error producing SSE vehicles data", exc_info=e)
                         # comment as heartbeat so client keeps connection
                         yield ": error fetching data\n\n"
