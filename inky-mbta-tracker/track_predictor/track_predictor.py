@@ -39,6 +39,7 @@ from prometheus import (
 )
 from pydantic import ValidationError
 from redis.asyncio import Redis
+from redis.exceptions import RedisError
 from redis_cache import check_cache, write_cache
 from shared_types.shared_types import (
     MLPredictionRequest,
@@ -1927,7 +1928,11 @@ class TrackPredictor:
                                         },
                                     )
                                     break
-                                except (json.JSONDecodeError, TypeError, ValueError) as e:
+                                except (
+                                    json.JSONDecodeError,
+                                    TypeError,
+                                    ValueError,
+                                ) as e:
                                     ml_res = None
                                     logger.debug(
                                         "ML result could not be parsed during compare wait",
