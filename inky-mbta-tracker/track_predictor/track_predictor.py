@@ -1,6 +1,5 @@
 import json
 import logging
-import math
 import os
 import random
 import time
@@ -15,7 +14,6 @@ import aiohttp
 import anyio
 import numpy as np
 import shared_types.shared_types
-import textdistance
 from anyio import open_file, to_thread
 from anyio.abc import TaskGroup
 from consts import DAY, INSTANCE_ID, MBTA_V3_ENDPOINT, MONTH, WEEK, YEAR
@@ -24,7 +22,6 @@ from huggingface_hub import hf_hub_download
 from keras import Model
 from mbta_client import MBTAApi, determine_station_id
 from mbta_responses import Schedules
-from metaphone import doublemetaphone
 from numpy.typing import NDArray
 from prometheus import (
     mbta_api_requests,
@@ -46,6 +43,34 @@ from shared_types.shared_types import (
     TrackAssignment,
     TrackPrediction,
     TrackPredictionStats,
+)
+
+# Local ML / helper utilities extracted for testability
+from .ml import (
+    bayes_alpha,
+    conf_gamma,
+    conf_hist_weight,
+    cyclical_time_features,
+    margin_confidence,
+    ml_compare_enabled,
+    ml_compare_wait_ms,
+    ml_enabled,
+    ml_replace_delta,
+    ml_sample_prob,
+    sharpen_probs,
+    vocab_get_or_add,
+)
+
+# Pattern-scoring helpers separated for easier testing
+from .pattern import compute_assignment_scores, compute_final_probabilities
+from .utils import (
+    EXPRESS_KEYWORDS as _EXPRESS_KEYWORDS,
+)
+from .utils import (
+    LOCAL_KEYWORDS as _LOCAL_KEYWORDS,
+)
+from .utils import (
+    STATION_CONFIDENCE_THRESHOLDS as _STATION_CONFIDENCE_THRESHOLDS,
 )
 
 
@@ -81,17 +106,10 @@ ROUTE_FAMILIES: dict[str, list[str]] = {
     "CR-Greenbush": ["CR-Kingston", "CR-Plymouth", "CR-Greenbush"],
 }
 
-# Service type patterns
-EXPRESS_KEYWORDS: list[str] = ["express", "limited", "direct"]
-LOCAL_KEYWORDS: list[str] = ["local", "all stops", "stopping"]
 
-# Station-specific confidence thresholds
-STATION_CONFIDENCE_THRESHOLDS: dict[str, float] = {
-    "place-sstat": 0.25,  # South Station - high volume, lower threshold
-    "place-north": 0.25,  # North Station - high volume, lower threshold
-    "place-bbsta": 0.30,  # Back Bay - medium volume
-    "default": 0.35,  # Smaller stations need higher confidence
-}
+EXPRESS_KEYWORDS: list[str] = list(_EXPRESS_KEYWORDS)
+LOCAL_KEYWORDS: list[str] = list(_LOCAL_KEYWORDS)
+STATION_CONFIDENCE_THRESHOLDS: dict[str, float] = dict(_STATION_CONFIDENCE_THRESHOLDS)
 
 
 class TrackPredictor:
@@ -242,47 +260,28 @@ class TrackPredictor:
 
     @staticmethod
     def _conf_gamma() -> float:
-        """Read sharpening gamma from env; default to 1.3."""
-        try:
-            return float(os.getenv("IMT_ML_CONF_GAMMA", "1.3"))
-        except (ValueError, TypeError):
-            return 1.3
+        """Read sharpening gamma from env; delegated to ml helper."""
+        return conf_gamma()
 
     @staticmethod
     def _conf_hist_weight() -> float:
         """Weight for blending historical accuracy into confidence (0..1)."""
-        try:
-            w = float(os.getenv("IMT_CONF_HIST_WEIGHT", "0.3"))
-            return min(1.0, max(0.0, w))
-        except (ValueError, TypeError):
-            return 0.3
+        return conf_hist_weight()
 
     @staticmethod
     def _bayes_alpha() -> float:
         """Blend weight for pattern vs ML in Bayes fusion (0..1)."""
-        try:
-            a = float(os.getenv("IMT_BAYES_ALPHA", "0.65"))
-            return min(1.0, max(0.0, a))
-        except (ValueError, TypeError):
-            return 0.65
+        return bayes_alpha()
 
     @staticmethod
     def _ml_sample_prob() -> float:
         """Fraction of successful traditional predictions to enqueue for ML as exploration."""
-        try:
-            p = float(os.getenv("IMT_ML_SAMPLE_PCT", "0.1"))
-            return min(1.0, max(0.0, p))
-        except (ValueError, TypeError):
-            return 0.1
+        return ml_sample_prob()
 
     @staticmethod
     def _ml_replace_delta() -> float:
         """Minimum improvement required for ML to overwrite an existing prediction."""
-        try:
-            d = float(os.getenv("IMT_ML_REPLACE_DELTA", "0.05"))
-            return max(0.0, d)
-        except (ValueError, TypeError):
-            return 0.05
+        return ml_replace_delta()
 
     @staticmethod
     def _ml_compare_enabled() -> bool:
@@ -291,8 +290,7 @@ class TrackPredictor:
         pattern-based prediction at runtime and choose the result with higher
         final confidence. Controlled by env IMT_ML_COMPARE.
         """
-        val = os.getenv("IMT_ML_COMPARE", "").strip().lower()
-        return val in {"1", "true", "yes", "on"}
+        return ml_compare_enabled()
 
     @staticmethod
     def _ml_compare_wait_ms() -> int:
@@ -302,45 +300,32 @@ class TrackPredictor:
         window, the code will enqueue a request and proceed using the historical
         result. Controlled by env IMT_ML_COMPARE_WAIT_MS (default 200).
         """
-        try:
-            return max(0, int(os.getenv("IMT_ML_COMPARE_WAIT_MS", "200")))
-        except (ValueError, TypeError):
-            return 200
+        return ml_compare_wait_ms()
 
     @staticmethod
     def _sharpen_probs(
         vec: NDArray[np.floating[Any]],
         gamma: float,
     ) -> Optional[NDArray[np.floating[Any]]]:
-        """Sharpen a probability vector by exponentiation and renormalization.
+        """Sharpen a probability vector by exponentiation and renormalization (delegated).
 
-        Selection should be based on the original vector; the sharpened vector is for confidence only.
+        The wrapper accepts an Optional array to satisfy callers that may pass None;
+        if None is provided this returns None rather than delegating to the helper.
         """
-        if gamma <= 0 or not np.isfinite(gamma):
-            gamma = 1.0
-        v = np.clip(vec.astype(np.float64), 1e-12, 1.0)
-        v = np.power(v, gamma)
-        s = v.sum()
-        return (v / s) if s > 0 else v
+
+        return sharpen_probs(vec, gamma)
 
     @staticmethod
     def _margin_confidence(
         vec: NDArray[np.floating[Any]],
         index: int,
     ) -> float:
-        """Compute 0.5*(p1 + margin) where margin = p1 - p2 around a chosen index."""
-        n = vec.size
-        if n == 0 or index < 0 or index >= n:
-            return 0.0
-        p1 = float(vec[index])
-        if n == 1:
-            return p1
-        # compute max of others
-        mask = np.ones(n, dtype=bool)
-        mask[index] = False
-        p2 = float(np.max(vec[mask])) if np.any(mask) else 0.0
-        margin = max(0.0, p1 - p2)
-        return 0.5 * (p1 + margin)
+        """Compute margin-based confidence (delegated).
+
+        Accept an Optional input for compatibility with callers that may pass None.
+        When vec is None, return a conservative confidence of 0.0.
+        """
+        return margin_confidence(vec, index)
 
     async def _get_allowed_tracks(self, station_id: str, route_id: str) -> set[str]:
         """Return a set of allowed track numbers for a station/route based on recent history.
@@ -376,8 +361,7 @@ class TrackPredictor:
 
     @staticmethod
     def _ml_enabled() -> bool:
-        val = os.getenv("IMT_ML", "").strip().lower()
-        return val in {"1", "true", "yes", "on"}
+        return ml_enabled()
 
     async def enqueue_ml_prediction(
         self,
@@ -411,23 +395,8 @@ class TrackPredictor:
 
     @staticmethod
     def _cyclical_time_features(ts: datetime) -> dict[str, float]:
-        """Compute cyclical encodings for hour/minute/day_of_week and raw timestamp."""
-        # Use local time where scheduled_time is assumed to be timezone-aware
-        hour = ts.hour
-        minute = ts.minute
-        dow = ts.weekday()  # 0..6
-        hour_angle = 2 * math.pi * (hour / 24.0)
-        minute_angle = 2 * math.pi * (minute / 60.0)
-        day_angle = 2 * math.pi * (dow / 7.0)
-        return {
-            "hour_sin": math.sin(hour_angle),
-            "hour_cos": math.cos(hour_angle),
-            "minute_sin": math.sin(minute_angle),
-            "minute_cos": math.cos(minute_angle),
-            "day_sin": math.sin(day_angle),
-            "day_cos": math.cos(day_angle),
-            "scheduled_timestamp": ts.timestamp(),
-        }
+        """Compute cyclical encodings for hour/minute/day_of_week and raw timestamp (delegated)."""
+        return cyclical_time_features(ts)
 
     async def _vocab_get_or_add(self, key: str, token: str) -> int:
         """Get a stable integer index for a token from a Redis hash, adding if missing.
@@ -435,20 +404,8 @@ class TrackPredictor:
         This maintains consistent integer ids for categorical features like station_id
         and route_id across ML predictions.
         """
-        idx = await self.redis.hget(key, token)  # pyright: ignore
-        redis_commands.labels("hget").inc()
-        if idx is not None:
-            try:
-                return int(idx) if isinstance(idx, (bytes, bytearray)) else int(idx)
-            except (TypeError, ValueError):
-                pass
-
-        # Assign next index
-        next_id = await self.redis.hlen(key)  # pyright: ignore
-        redis_commands.labels("hlen").inc()
-        await self.redis.hset(key, token, str(next_id))  # pyright: ignore
-        redis_commands.labels("hset").inc()
-        return int(next_id)
+        # Delegate to shared ml helper which handles redis access
+        return await vocab_get_or_add(self.redis, key, token)
 
     async def ml_prediction_worker(self) -> None:
         """
@@ -1066,9 +1023,6 @@ class TrackPredictor:
         Returns:
             List of historical track assignments
         """
-        # Ensure we're initialized before using normalization
-        await self._ensure_initialized()
-
         try:
             routes_to_check = [route_id]
             if include_related_routes and route_id in ROUTE_FAMILIES:
@@ -1141,84 +1095,45 @@ class TrackPredictor:
 
     def _enhanced_headsign_similarity(self, headsign1: str, headsign2: str) -> float:
         """
-        Enhanced headsign similarity using multiple matching algorithms.
+        Delegates enhanced headsign similarity computation to the utils module.
 
-        Returns a score between 0.0 and 1.0.
+        Kept as an instance method for call-site compatibility but delegates the
+        actual algorithm to a pure helper to make unit testing straightforward.
         """
-        if not headsign1 or not headsign2:
-            return 0.0
 
-        # Normalize strings
-        h1 = headsign1.lower().strip()
-        h2 = headsign2.lower().strip()
+        from .utils import enhanced_headsign_similarity as _ehs
 
-        if h1 == h2:
-            return 1.0
-
-        # Multiple similarity measures with weights
-        levenshtein_sim = textdistance.levenshtein.normalized_similarity(h1, h2)
-        jaccard_sim = textdistance.jaccard.normalized_similarity(h1.split(), h2.split())
-
-        # Phonetic similarity using metaphone
-        try:
-            metaphone1 = doublemetaphone(h1)
-            metaphone2 = doublemetaphone(h2)
-            phonetic_match = 0.0
-            if metaphone1[0] and metaphone2[0] and metaphone1[0] == metaphone2[0]:
-                phonetic_match = 0.8
-            elif metaphone1[1] and metaphone2[1] and metaphone1[1] == metaphone2[1]:
-                phonetic_match = 0.6
-        except (AttributeError, TypeError, ValueError):
-            phonetic_match = 0.0
-
-        # Token-based similarity for destination matching
-        token_sim = 0.0
-        tokens1 = set(h1.split())
-        tokens2 = set(h2.split())
-        if tokens1 and tokens2:
-            intersection = len(tokens1.intersection(tokens2))
-            union = len(tokens1.union(tokens2))
-            token_sim = intersection / union if union > 0 else 0.0
-
-        # Weighted combination
-        combined_score = (
-            0.4 * levenshtein_sim
-            + 0.25 * jaccard_sim
-            + 0.2 * phonetic_match
-            + 0.15 * token_sim
-        )
-
-        return min(1.0, combined_score)
+        return _ehs(headsign1, headsign2)
 
     def _detect_service_type(self, headsign: str) -> str:
         """
-        Detect service type from headsign (express, local, etc.).
+        Delegate detection of service type to utils.
+
+
         """
-        headsign_lower = headsign.lower()
+        from .utils import detect_service_type as _detect
 
-        for keyword in EXPRESS_KEYWORDS:
-            if keyword in headsign_lower:
-                return "express"
-
-        for keyword in LOCAL_KEYWORDS:
-            if keyword in headsign_lower:
-                return "local"
-
-        return "regular"
+        return _detect(headsign)
 
     def _is_weekend_service(self, day_of_week: int) -> bool:
         """
-        Check if the day represents weekend service.
+        Delegate weekend detection to utils.
+
+        Keeps logic centralized and testable.
         """
-        return day_of_week in [5, 6]  # Saturday, Sunday
+        from .utils import is_weekend_service as _is_wkend
+
+        return _is_wkend(day_of_week)
 
     def _get_station_confidence_threshold(self, station_id: str) -> float:
         """
-        Get station-specific confidence threshold.
+        Delegate station-specific threshold lookup to utils.
+
+        This allows thresholds to be tested independently of TrackPredictor.
         """
-        return STATION_CONFIDENCE_THRESHOLDS.get(
-            station_id, STATION_CONFIDENCE_THRESHOLDS["default"]
-        )
+        from .utils import get_station_confidence_threshold as _thr
+
+        return _thr(station_id)
 
     async def analyze_patterns(
         self,
@@ -1227,31 +1142,20 @@ class TrackPredictor:
         trip_headsign: str,
         direction_id: int,
         scheduled_time: datetime,
-        tg: TaskGroup,
     ) -> Dict[str, float]:
         """
         Analyze historical patterns to determine track assignment probabilities.
 
-        Args:
-            station_id: The station ID
-            route_id: The route ID
-            trip_headsign: The trip headsign
-            direction_id: The direction ID
-            scheduled_time: The scheduled departure time
-
-        Returns:
-            Dictionary mapping track identifiers to probability scores
+        This implementation delegates core scoring to the `pattern` helpers which
+        are pure and unit-testable. It then uses an injected async accuracy lookup
+        to convert the scored results into a normalized probability distribution.
         """
-        # Ensure we're initialized before using normalization
-        await self._ensure_initialized()
+        start_time = time.time()
 
         try:
-            start_time = time.time()
-
+            # Fetch historical assignments (may include related routes)
             start_date = scheduled_time - timedelta(days=180)
             end_date = scheduled_time
-
-            # Get assignments from same route and related routes
             assignments = await self.get_historical_assignments(
                 station_id, route_id, start_date, end_date, include_related_routes=True
             )
@@ -1260,256 +1164,39 @@ class TrackPredictor:
                 logger.debug(
                     f"No historical assignments found for station_id={station_id}, route_id={route_id}, trip_id={trip_headsign}, direction_id={direction_id}, scheduled_time={scheduled_time}"
                 )
-                return {}
-
-            # Analyze patterns by different criteria with expanded windows
-            patterns: dict[str, dict[str, int]] = {
-                "exact_match": defaultdict(int),  # Same headsign, time, direction
-                "headsign_match": defaultdict(int),  # Same headsign, direction
-                "platform_consistency": defaultdict(
-                    int
-                ),  # Consistency with station's modal platform
-                "time_match_30": defaultdict(int),  # Same time window (±30 min)
-                "time_match_60": defaultdict(int),  # Extended time window (±60 min)
-                "time_match_120": defaultdict(int),  # Wide time window (±120 min)
-                "direction_match": defaultdict(int),  # Same direction
-                "day_of_week_match": defaultdict(int),  # Same day of week
-                "service_type_match": defaultdict(int),  # Same service type
-                "weekend_pattern_match": defaultdict(int),  # Weekend vs weekday pattern
-            }
-
-            target_dow = scheduled_time.weekday()
-            target_hour = scheduled_time.hour
-            target_minute = scheduled_time.minute
-            target_service_type = self._detect_service_type(trip_headsign)
-            target_is_weekend = self._is_weekend_service(target_dow)
-
-            # Compute modal track (most common historical track) to capture platform consistency
-            try:
-                modal_counts: dict[str, int] = defaultdict(int)
-                for a in assignments:
-                    if a.track_number:
-                        modal_counts[a.track_number] += 1
-                modal_track = None
-                if modal_counts:
-                    modal_track = max(modal_counts.items(), key=lambda x: x[1])[0]
-            except (AttributeError, TypeError):
-                # Defensive: unexpected assignment shape or missing attributes
-                modal_track = None
-
-            for assignment in assignments:
-                if not assignment.track_number:
-                    continue
-
-                if assignment.track_number:
-                    # Use enhanced headsign similarity
-                    headsign_similarity = self._enhanced_headsign_similarity(
-                        trip_headsign, assignment.headsign
-                    )
-
-                    assignment_service_type = self._detect_service_type(
-                        assignment.headsign
-                    )
-                    assignment_is_weekend = self._is_weekend_service(
-                        assignment.day_of_week
-                    )
-
-                    # Calculate time differences using actual datetimes (minutes)
-                    try:
-                        time_diff_minutes = int(
-                            abs(
-                                (
-                                    assignment.scheduled_time - scheduled_time
-                                ).total_seconds()
-                            )
-                            / 60
-                        )
-                    except (AttributeError, TypeError, ValueError):
-                        # Fallback to hour/minute arithmetic if scheduled_time is missing or malformed
-                        time_diff_minutes = abs(
-                            assignment.hour * 60
-                            + assignment.minute
-                            - target_hour * 60
-                            - target_minute
-                        )
-
-                    # Exact match (enhanced similarity + time + direction)
-                    # Exact match window: within 60 minutes and same direction
-                    if (
-                        headsign_similarity > 0.6
-                        and assignment.direction_id == direction_id
-                        and time_diff_minutes <= 60
-                    ):
-                        score = 15 * headsign_similarity  # Graduated scoring
-                        patterns["exact_match"][assignment.track_number] += int(score)
-                        logger.debug(
-                            f"Exact match found (score={score}, similarity={headsign_similarity:.2f})"
-                        )
-
-                    # Headsign match (lowered threshold)
-                    if (
-                        headsign_similarity > 0.5  # Lowered from 0.7
-                        and assignment.direction_id == direction_id
-                    ):
-                        score = 8 * headsign_similarity  # Graduated scoring
-                        patterns["headsign_match"][assignment.track_number] += int(
-                            score
-                        )
-                        logger.debug(
-                            f"Headsign match found (score={score}, similarity={headsign_similarity:.2f})"
-                        )
-
-                    # Multiple time windows with different weights
-                    if time_diff_minutes <= 30:
-                        patterns["time_match_30"][assignment.track_number] += 5
-                    elif time_diff_minutes <= 60:
-                        patterns["time_match_60"][assignment.track_number] += 3
-                    elif time_diff_minutes <= 120:
-                        patterns["time_match_120"][assignment.track_number] += 2
-
-                    # Direction match
-                    if assignment.direction_id == direction_id:
-                        patterns["direction_match"][assignment.track_number] += 2
-
-                    # Service type match (express vs local)
-                    if target_service_type == assignment_service_type:
-                        patterns["service_type_match"][assignment.track_number] += 3
-
-                    # Weekend vs weekday pattern matching
-                    if target_is_weekend == assignment_is_weekend:
-                        patterns["weekend_pattern_match"][assignment.track_number] += 2
-
-                    # Day of week match (reduced weight due to weekend pattern)
-                    if assignment.day_of_week == target_dow:
-                        patterns["day_of_week_match"][assignment.track_number] += 1
-
-                    # Platform / track consistency (bonus if assignment matches modal track)
-                    if modal_track and assignment.track_number == modal_track:
-                        patterns["platform_consistency"][assignment.track_number] += 4
-
-            # Combine all patterns with weights and time decay
-            combined_scores: dict[str, float] = defaultdict(float)
-            sample_counts: dict[str, int] = defaultdict(int)
-
-            # Apply time-based weighting to historical data
-            for assignment in assignments:
-                if not assignment.track_number:
-                    continue
-
-                # Time decay factor (recent data weighted more heavily)
-                days_old = (scheduled_time - assignment.scheduled_time).days
-                time_decay = max(0.1, 1.0 - (days_old / 90.0))  # 90-day decay
-
-                # Calculate enhanced pattern matches
-                headsign_similarity = self._enhanced_headsign_similarity(
-                    trip_headsign, assignment.headsign
-                )
-
-                assignment_service_type = self._detect_service_type(assignment.headsign)
-                assignment_is_weekend = self._is_weekend_service(assignment.day_of_week)
-
-                try:
-                    time_diff_minutes = int(
-                        abs(
-                            (assignment.scheduled_time - scheduled_time).total_seconds()
-                        )
-                        / 60
-                    )
-                except (AttributeError, TypeError, ValueError):
-                    # If scheduled_time is missing or invalid, use hour/minute fallback
-                    time_diff_minutes = abs(
-                        assignment.hour * 60
-                        + assignment.minute
-                        - target_hour * 60
-                        - target_minute
-                    )
-
-                base_score = 0.0
-
-                # Exact match with enhanced similarity
-                if (
-                    headsign_similarity > 0.6
-                    and assignment.direction_id == direction_id
-                    and time_diff_minutes <= 60
-                ):
-                    base_score = 15 * headsign_similarity
-                # Strong headsign match
-                elif (
-                    headsign_similarity > 0.5
-                    and assignment.direction_id == direction_id
-                ):
-                    base_score = 8 * headsign_similarity
-                # Extended time windows
-                elif time_diff_minutes <= 30:
-                    base_score = 5.0
-                elif time_diff_minutes <= 60:
-                    base_score = 3.0
-                elif time_diff_minutes <= 120:
-                    base_score = 2.0
-                elif assignment.direction_id == direction_id:
-                    base_score = 2.0
-                elif target_is_weekend == assignment_is_weekend:
-                    base_score = 2.0  # Weekend/weekday pattern match
-                elif assignment.day_of_week == target_dow:
-                    base_score = 1.0  # Basic day match
-
-                # Bonus for service type match
-                if target_service_type == assignment_service_type and base_score > 0:
-                    base_score = base_score * 1.2  # 20% bonus
-
-                if base_score > 0:
-                    combined_scores[assignment.track_number] += base_score * time_decay
-                    sample_counts[assignment.track_number] += 1
-
-                # Convert to probabilities with confidence adjustments
-            if combined_scores:
-                total_score = sum(combined_scores.values())
-                total: dict[str, float] = {}
-                for track, score in combined_scores.items():
-                    base_prob = score / total_score
-                    sample_size = sample_counts[track]
-
-                    # Sample size confidence (more samples = higher confidence)
-                    sample_confidence = min(1.0, sample_size / 10.0)
-
-                    # Historical accuracy factor
-                    accuracy = await self._get_prediction_accuracy(
-                        station_id, route_id, track
-                    )
-
-                    # Combined confidence adjustment
-                    confidence_factor = 0.3 + 0.4 * sample_confidence + 0.3 * accuracy
-                    adjusted_prob = base_prob * confidence_factor
-                    total[track] = adjusted_prob
-
-                # Renormalize after confidence adjustments
-                adj_total = sum(total.values())
-                if adj_total > 0:
-                    total = {track: prob / adj_total for track, prob in total.items()}
-                logger.debug(
-                    f"Calculated pattern for station_id={station_id}, route_id={route_id}, trip_id={trip_headsign}, direction_id={direction_id}"
-                )
-                logger.debug(f"Total score={total_score}, total={total}")
-
-                # Record analysis duration
                 duration = time.time() - start_time
                 track_pattern_analysis_duration.labels(
                     station_id=station_id, route_id=route_id, instance=INSTANCE_ID
                 ).set(duration)
+                return {}
 
-                return total
-
-            logger.debug(
-                f"No patterns found for station_id={station_id}, route_id={route_id}, trip_id={trip_headsign}, direction_id={direction_id}, scheduled_time={scheduled_time}"
+            # Compute combined scores and sample counts using pure helper
+            combined_scores, sample_counts, _patterns = compute_assignment_scores(
+                assignments, trip_headsign, direction_id, scheduled_time
             )
 
-            # Record analysis duration even for no patterns
+            # Accuracy lookup injected to compute final probabilities
+            async def _accuracy_lookup(track: str) -> float:
+                return await self._get_prediction_accuracy(station_id, route_id, track)
+
+            # Convert scores -> normalized distribution accounting for sample-size and accuracy
+            total = await compute_final_probabilities(
+                combined_scores, sample_counts, _accuracy_lookup
+            )
+
+            # Record analysis duration metric
             duration = time.time() - start_time
             track_pattern_analysis_duration.labels(
                 station_id=station_id, route_id=route_id, instance=INSTANCE_ID
             ).set(duration)
 
-            return {}
+            if total:
+                logger.debug(
+                    f"Calculated pattern for station_id={station_id}, route_id={route_id}, trip_id={trip_headsign}, direction_id={direction_id}"
+                )
+                logger.debug(f"Total score distribution={total}")
+
+            return total
 
         except (ConnectionError, TimeoutError) as e:
             logger.error(
@@ -1548,8 +1235,6 @@ class TrackPredictor:
         Returns:
             TrackPrediction object or None if no prediction can be made
         """
-        # Ensure we're initialized before prediction
-        await self._ensure_initialized()
         # Added rich debug logging throughout this method to help diagnose
         # missing predictions (e.g., for North Station / place-north).
         try:
@@ -1726,7 +1411,6 @@ class TrackPredictor:
                 headsign,
                 direction_id,
                 scheduled_time,
-                tg,
             )
 
             # If no patterns, enqueue ML (non-blocking) and negative-cache briefly
@@ -2313,8 +1997,6 @@ class TrackPredictor:
 
     async def _store_prediction(self, prediction: TrackPrediction) -> None:
         """Store a prediction for later validation."""
-        # Ensure we're initialized before using normalization
-        await self._ensure_initialized()
         try:
             key = f"track_prediction:{self.normalize_station(prediction.station_id)}:{prediction.route_id}:{prediction.trip_id}:{prediction.scheduled_time.date()}"
             await write_cache(
