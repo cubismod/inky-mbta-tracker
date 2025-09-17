@@ -1111,9 +1111,7 @@ class TrackPredictor:
             ) -> List[TrackAssignment]:
                 """Fetch assignments for a single route."""
                 route_results: list[TrackAssignment] = []
-                time_series_key = (
-                    f"track_timeseries:{self.normalize_station(station_id)}:{current_route}"
-                )
+                time_series_key = f"track_timeseries:{self.normalize_station(station_id)}:{current_route}"
 
                 # Get assignments within the time range
                 assignments = await self.redis.zrangebyscore(
