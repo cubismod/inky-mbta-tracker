@@ -877,7 +877,7 @@ class MBTAApi:
                                             """
                                             # Normalize station id to canonical station for Redis keys
                                             norm_station_id = (
-                                                self.track_predictor._norm_station(
+                                                self.track_predictor.normalize_station(
                                                     station_id_
                                                 )
                                             )
