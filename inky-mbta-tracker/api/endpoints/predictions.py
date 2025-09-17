@@ -32,7 +32,6 @@ async def generate_track_prediction(
             station_id_resolved = commons.track_predictor.normalize_station(
                 prediction_request.station_id
             )
-            # Check if this is a supported station
             if not commons.track_predictor.supports_track_predictions(
                 station_id_resolved
             ):
@@ -82,7 +81,6 @@ async def generate_chained_track_predictions(
             station_id = commons.track_predictor.normalize_station(
                 pred_request.station_id
             )
-            # Check if this is a supported station
             if not commons.track_predictor.supports_track_predictions(station_id):
                 return TrackPredictionResponse(
                     success=False,
@@ -143,7 +141,6 @@ async def get_prediction_stats(
 ) -> TrackPredictionStatsResponse:
     try:
         station_id = commons.track_predictor.normalize_station(station_id)
-        # Check if this is a supported station
         if not commons.track_predictor.supports_track_predictions(station_id):
             return TrackPredictionStatsResponse(
                 success=False,
@@ -177,7 +174,6 @@ async def get_historical_assignments(
         end_date = datetime.now()
         start_date = end_date - timedelta(days=days)
         station_id = commons.track_predictor.normalize_station(station_id)
-        # Check if this is a supported station
         if not commons.track_predictor.supports_track_predictions(station_id):
             return []
         assignments = await commons.track_predictor.get_historical_assignments(

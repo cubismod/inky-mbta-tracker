@@ -176,10 +176,10 @@ async def collect_alerts(
 
                     except Exception as e:
                         logger.error(
-                            f"Error processing alert in batch {batch_num}: {e}",
-                            exc_info=True,
+                            f"Error processing alert in batch {batch_num}",
+                            exc_info=e,
                         )
-                        logger.error(f"Problematic alert data: {a}")
+                        logger.debug("Problematic alert data", extra={"alert": a})
                         continue
             else:
                 logger.debug(f"Batch {batch_num}: No alerts received from MBTA API")
