@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 import json
 import logging
 import math
@@ -152,7 +151,7 @@ class TrackPredictor:
                 return
             await self.initialize()
 
-    def _norm_station(self, station_id: str) -> str:
+    def normalize_station(self, station_id: str) -> str:
         """
         Normalize station/stop identifiers to canonical 'place-...' station ids
         using the child_stations.json lookup table as the source of truth.
@@ -199,10 +198,10 @@ class TrackPredictor:
         """
         if not self._initialized:
             # Fallback check for known stations when not initialized
-            normalized_station = self._norm_station(station_id)
+            normalized_station = self.normalize_station(station_id)
             return normalized_station in {"place-north", "place-sstat", "place-bbsta"}
 
-        normalized_station = self._norm_station(station_id)
+        normalized_station = self.normalize_station(station_id)
         # Use pre-computed supported stations set for fast lookup
         return normalized_station in self._supported_stations
 
@@ -220,7 +219,7 @@ class TrackPredictor:
 
         try:
             # Store in Redis with a key that includes station, route, and timestamp
-            key = f"track_history:{self._norm_station(assignment.station_id)}:{assignment.route_id}:{assignment.trip_id}:{assignment.scheduled_time.date()}"
+            key = f"track_history:{self.normalize_station(assignment.station_id)}:{assignment.route_id}:{assignment.trip_id}:{assignment.scheduled_time.date()}"
 
             # check if the key already exists
             if await check_cache(self.redis, key):
@@ -236,7 +235,7 @@ class TrackPredictor:
             )
 
             # Also store in a time-series format for easier querying
-            time_series_key = f"track_timeseries:{self._norm_station(assignment.station_id)}:{assignment.route_id}"
+            time_series_key = f"track_timeseries:{self.normalize_station(assignment.station_id)}:{assignment.route_id}"
             tg.start_soon(
                 self.redis.zadd,
                 time_series_key,
@@ -249,7 +248,7 @@ class TrackPredictor:
             redis_commands.labels("expire").inc()
 
             track_historical_assignments_stored.labels(
-                station_id=self._norm_station(assignment.station_id),
+                station_id=self.normalize_station(assignment.station_id),
                 route_id=assignment.route_id,
                 track_number=assignment.track_number or "unknown",
                 instance=INSTANCE_ID,
@@ -395,7 +394,7 @@ class TrackPredictor:
         """
         # Ensure we're initialized before using normalization
         await self._ensure_initialized()
-        cache_key = f"allowed_tracks:{self._norm_station(station_id)}:{route_id}"
+        cache_key = f"allowed_tracks:{self.normalize_station(station_id)}:{route_id}"
         cached = await check_cache(self.redis, cache_key)
         if cached:
             try:
@@ -674,7 +673,7 @@ class TrackPredictor:
 
                     result = {
                         "id": req_id,
-                        "station_id": self._norm_station(station_id),
+                        "station_id": self.normalize_station(station_id),
                         "route_id": route_id,
                         "direction_id": direction_id,
                         "scheduled_time": scheduled_time.isoformat(),
@@ -695,11 +694,11 @@ class TrackPredictor:
 
                     result_key = f"{self.ML_RESULT_KEY_PREFIX}{req_id}"
                     await self.redis.set(result_key, json.dumps(result), ex=DAY)
-                    latest_key = f"{self.ML_RESULT_LATEST_PREFIX}{self._norm_station(station_id)}:{route_id}:{direction_id}:{int(scheduled_time.timestamp())}"
+                    latest_key = f"{self.ML_RESULT_LATEST_PREFIX}{self.normalize_station(station_id)}:{route_id}:{direction_id}:{int(scheduled_time.timestamp())}"
                     await self.redis.set(latest_key, json.dumps(result), ex=DAY)
 
                     # Persist a TrackPrediction entry conditionally replacing a weak traditional result
-                    cache_key = f"track_prediction:{self._norm_station(station_id)}:{route_id}:{trip_id}:{scheduled_time.date()}"
+                    cache_key = f"track_prediction:{self.normalize_station(station_id)}:{route_id}:{trip_id}:{scheduled_time.date()}"
                     do_write = False
                     existing_json = await check_cache(self.redis, cache_key)
                     if existing_json:
@@ -721,7 +720,7 @@ class TrackPredictor:
 
                     if do_write:
                         prediction = TrackPrediction(
-                            station_id=self._norm_station(station_id),
+                            station_id=self.normalize_station(station_id),
                             route_id=route_id,
                             trip_id=trip_id,
                             headsign=headsign,
@@ -750,13 +749,13 @@ class TrackPredictor:
                         )
 
                         track_predictions_generated.labels(
-                            station_id=self._norm_station(station_id),
+                            station_id=self.normalize_station(station_id),
                             route_id=route_id,
                             prediction_method="ml_ensemble",
                             instance=INSTANCE_ID,
                         ).inc()
                         track_prediction_confidence.labels(
-                            station_id=self._norm_station(station_id),
+                            station_id=self.normalize_station(station_id),
                             route_id=route_id,
                             track_number=track_number,
                             instance=INSTANCE_ID,
@@ -985,7 +984,7 @@ class TrackPredictor:
                                     return False  # Skip if no trip ID available
 
                                 # Normalize station id so Redis keys use canonical station identifiers
-                                norm_station_id = self._norm_station(station_id)
+                                norm_station_id = self.normalize_station(station_id)
 
                                 # Check if we already have a cached prediction (use normalized station id)
                                 cache_key = f"track_prediction:{norm_station_id}:{route_id}:{trip_id}:{scheduled_time.date()}"
@@ -1113,7 +1112,7 @@ class TrackPredictor:
                 """Fetch assignments for a single route."""
                 route_results: list[TrackAssignment] = []
                 time_series_key = (
-                    f"track_timeseries:{self._norm_station(station_id)}:{current_route}"
+                    f"track_timeseries:{self.normalize_station(station_id)}:{current_route}"
                 )
 
                 # Get assignments within the time range
@@ -1607,7 +1606,7 @@ class TrackPredictor:
                 )
                 return None
 
-            cache_key = f"track_prediction:{self._norm_station(station_id)}:{route_id}:{trip_id}:{scheduled_time.date()}"
+            cache_key = f"track_prediction:{self.normalize_station(station_id)}:{route_id}:{trip_id}:{scheduled_time.date()}"
             negative_cache_key = f"negative_{cache_key}"
             logger.debug(
                 "Checking caches",
@@ -1619,7 +1618,7 @@ class TrackPredictor:
             cached_prediction = await check_cache(self.redis, cache_key)
             if cached_prediction:
                 track_predictions_cached.labels(
-                    station_id=self._norm_station(station_id),
+                    station_id=self.normalize_station(station_id),
                     route_id=route_id,
                     instance=INSTANCE_ID,
                 ).inc()
@@ -1687,7 +1686,7 @@ class TrackPredictor:
                             )
                             # confirmed from the MBTA that this is the platform code
                             prediction = TrackPrediction(
-                                station_id=self._norm_station(station_id),
+                                station_id=self.normalize_station(station_id),
                                 route_id=route_id,
                                 trip_id=trip_id,
                                 headsign=headsign,
@@ -1702,14 +1701,14 @@ class TrackPredictor:
                             )
 
                             track_predictions_generated.labels(
-                                station_id=self._norm_station(station_id),
+                                station_id=self.normalize_station(station_id),
                                 route_id=route_id,
                                 prediction_method="platform_code",
                                 instance=INSTANCE_ID,
                             ).inc()
 
                             track_prediction_confidence.labels(
-                                station_id=self._norm_station(station_id),
+                                station_id=self.normalize_station(station_id),
                                 route_id=route_id,
                                 track_number=prediction.track_number,
                                 instance=INSTANCE_ID,
@@ -1846,7 +1845,7 @@ class TrackPredictor:
             # pattern-derived confidence, choosing the higher-confidence result.
             used_bayes = False
             if self._ml_enabled():
-                latest_key = f"{self.ML_RESULT_LATEST_PREFIX}{self._norm_station(station_id)}:{route_id}:{direction_id}:{int(scheduled_time.timestamp())}"
+                latest_key = f"{self.ML_RESULT_LATEST_PREFIX}{self.normalize_station(station_id)}:{route_id}:{direction_id}:{int(scheduled_time.timestamp())}"
                 raw_ml = await self.redis.get(latest_key)  # pyright: ignore
                 ml_res = None
                 if raw_ml:
@@ -1998,7 +1997,7 @@ class TrackPredictor:
                                 # Record that ML was chosen over the historical/pattern result
                                 try:
                                     track_predictions_ml_wins.labels(
-                                        station_id=self._norm_station(station_id),
+                                        station_id=self.normalize_station(station_id),
                                         route_id=route_id,
                                         instance=INSTANCE_ID,
                                     ).inc()
@@ -2240,7 +2239,7 @@ class TrackPredictor:
                 station_id, route_id, best_track
             )
             prediction = TrackPrediction(
-                station_id=self._norm_station(station_id),
+                station_id=self.normalize_station(station_id),
                 route_id=route_id,
                 trip_id=trip_id,
                 headsign=headsign,
@@ -2268,14 +2267,14 @@ class TrackPredictor:
 
             # Record metrics
             track_predictions_generated.labels(
-                station_id=self._norm_station(station_id),
+                station_id=self.normalize_station(station_id),
                 route_id=route_id,
                 prediction_method=method,
                 instance=INSTANCE_ID,
             ).inc()
 
             track_prediction_confidence.labels(
-                station_id=self._norm_station(station_id),
+                station_id=self.normalize_station(station_id),
                 route_id=route_id,
                 track_number=best_track,
                 instance=INSTANCE_ID,
@@ -2335,7 +2334,7 @@ class TrackPredictor:
         # Ensure we're initialized before using normalization
         await self._ensure_initialized()
         try:
-            key = f"track_prediction:{self._norm_station(prediction.station_id)}:{prediction.route_id}:{prediction.trip_id}:{prediction.scheduled_time.date()}"
+            key = f"track_prediction:{self.normalize_station(prediction.station_id)}:{prediction.route_id}:{prediction.trip_id}:{prediction.scheduled_time.date()}"
             await write_cache(
                 self.redis,
                 key,
@@ -2359,7 +2358,7 @@ class TrackPredictor:
         """Get historical prediction accuracy for a specific track."""
         try:
             # Get recent prediction validation results
-            accuracy_key = f"track_accuracy:{self._norm_station(station_id)}:{route_id}:{track_number}"
+            accuracy_key = f"track_accuracy:{self.normalize_station(station_id)}:{route_id}:{track_number}"
             accuracy_data = await self.redis.get(accuracy_key)
 
             if accuracy_data:
@@ -2424,14 +2423,14 @@ class TrackPredictor:
         """
         try:
             # Check if this prediction has already been validated
-            validation_key = f"track_validation:{self._norm_station(station_id)}:{route_id}:{trip_id}:{scheduled_time.date()}"
+            validation_key = f"track_validation:{self.normalize_station(station_id)}:{route_id}:{trip_id}:{scheduled_time.date()}"
             if await check_cache(self.redis, validation_key):
                 logger.debug(
-                    f"Prediction already validated for {self._norm_station(station_id)} {route_id} {trip_id} on {scheduled_time.date()}"
+                    f"Prediction already validated for {self.normalize_station(station_id)} {route_id} {trip_id} on {scheduled_time.date()}"
                 )
                 return
 
-            key = f"track_prediction:{self._norm_station(station_id)}:{route_id}:{trip_id}:{scheduled_time.date()}"
+            key = f"track_prediction:{self.normalize_station(station_id)}:{route_id}:{trip_id}:{scheduled_time.date()}"
             prediction_data = await check_cache(self.redis, key)
 
             if not prediction_data:
@@ -2502,7 +2501,7 @@ class TrackPredictor:
         Stored format is a simple "correct:total" string per station/route/track.
         """
         try:
-            key = f"track_accuracy:{self._norm_station(station_id)}:{route_id}:{track_number}"
+            key = f"track_accuracy:{self.normalize_station(station_id)}:{route_id}:{track_number}"
             raw = await self.redis.get(key)
             correct = 0
             total = 0
