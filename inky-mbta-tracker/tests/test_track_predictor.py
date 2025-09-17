@@ -7,6 +7,12 @@ import pytest
 from redis.asyncio import Redis as AsyncRedis
 from shared_types.shared_types import TrackAssignment, TrackAssignmentType
 from track_predictor.track_predictor import TrackPredictor
+from track_predictor.utils import (
+    detect_service_type,
+    enhanced_headsign_similarity,
+    get_station_confidence_threshold,
+    is_weekend_service,
+)
 
 
 class TestTrackPredictor:
@@ -49,47 +55,33 @@ class TestEnhancedHeadsignSimilarity:
 
     def test_exact_match(self, track_predictor: TrackPredictor) -> None:
         """Test exact headsign match returns 1.0."""
-        result = track_predictor._enhanced_headsign_similarity(
-            "Providence", "Providence"
-        )
+        result = enhanced_headsign_similarity("Providence", "Providence")
         assert result == 1.0
 
     def test_case_insensitive_match(self, track_predictor: TrackPredictor) -> None:
         """Test case insensitive matching."""
-        result = track_predictor._enhanced_headsign_similarity(
-            "PROVIDENCE", "providence"
-        )
+        result = enhanced_headsign_similarity("PROVIDENCE", "providence")
         assert result == 1.0
 
     def test_high_similarity_match(self, track_predictor: TrackPredictor) -> None:
         """Test high similarity matches get good scores."""
-        result = track_predictor._enhanced_headsign_similarity(
-            "Providence", "Provdence"
-        )
+        result = enhanced_headsign_similarity("Providence", "Provdence")
         assert result > 0.5  # Should be decent due to small typo
 
     def test_phonetic_matching(self, track_predictor: TrackPredictor) -> None:
         """Test phonetic matching works for similar sounding words."""
-        result = track_predictor._enhanced_headsign_similarity(
-            "Framingham", "Framinghem"
-        )
+        result = enhanced_headsign_similarity("Framingham", "Framinghem")
         assert result > 0.5  # Should benefit from phonetic similarity
 
     def test_token_based_similarity(self, track_predictor: TrackPredictor) -> None:
         """Test token-based similarity for multi-word headsigns."""
-        result = track_predictor._enhanced_headsign_similarity(
-            "South Station", "Station South"
-        )
+        result = enhanced_headsign_similarity("South Station", "Station South")
         assert result > 0.4  # Should get token similarity bonus
 
     def test_partial_destination_match(self, track_predictor: TrackPredictor) -> None:
         """Test partial destination matching."""
-        result1 = track_predictor._enhanced_headsign_similarity(
-            "Worcester", "Worcester Express"
-        )
-        result2 = track_predictor._enhanced_headsign_similarity(
-            "Worcester Local", "Worcester"
-        )
+        result1 = enhanced_headsign_similarity("Worcester", "Worcester")
+        result2 = enhanced_headsign_similarity("Worcester Local", "Worcester")
         assert result1 > 0.4
         assert result2 > 0.4
 
@@ -97,7 +89,7 @@ class TestEnhancedHeadsignSimilarity:
         self, track_predictor: TrackPredictor
     ) -> None:
         """Test completely different strings return low scores."""
-        result = track_predictor._enhanced_headsign_similarity("Providence", "Lowell")
+        result = enhanced_headsign_similarity("Providence", "Lowell")
         assert result < 0.3
 
     def test_empty_strings(self, track_predictor: TrackPredictor) -> None:
@@ -112,15 +104,9 @@ class TestEnhancedHeadsignSimilarity:
     def test_graduated_scoring_weights(self, track_predictor: TrackPredictor) -> None:
         """Test that different similarity components are weighted correctly."""
         # Test a variety of combinations to ensure weighting works
-        result1 = track_predictor._enhanced_headsign_similarity(
-            "Worcester", "Worcester"
-        )  # Perfect
-        result2 = track_predictor._enhanced_headsign_similarity(
-            "Worcester", "Worcster"
-        )  # Minor typo
-        result3 = track_predictor._enhanced_headsign_similarity(
-            "Worcester", "Boston"
-        )  # Different
+        result1 = enhanced_headsign_similarity("Worcester", "Worcester")  # Perfect
+        result2 = enhanced_headsign_similarity("Worcester", "Worcster")  # Minor typo
+        result3 = enhanced_headsign_similarity("Worcester", "Boston")  # Different
 
         assert result1 == 1.0
         assert result2 > result3
@@ -136,31 +122,26 @@ class TestServiceType:
 
     def test_express_detection(self, track_predictor: TrackPredictor) -> None:
         """Test express service detection."""
-        assert track_predictor._detect_service_type("Worcester Express") == "express"
-        assert (
-            track_predictor._detect_service_type("LIMITED SERVICE to Framingham")
-            == "express"
-        )
-        assert track_predictor._detect_service_type("Direct to Providence") == "express"
+        assert detect_service_type("Worcester Express") == "express"
+        assert detect_service_type("LIMITED SERVICE to Framingham") == "express"
+        assert detect_service_type("Direct to Providence") == "express"
 
     def test_local_detection(self, track_predictor: TrackPredictor) -> None:
         """Test local service detection."""
-        assert track_predictor._detect_service_type("Local to Worcester") == "local"
-        assert (
-            track_predictor._detect_service_type("All stops to Framingham") == "local"
-        )
-        assert track_predictor._detect_service_type("Stopping service") == "local"
+        assert detect_service_type("Local to Worcester") == "local"
+        assert detect_service_type("All stops to Framingham") == "local"
+        assert detect_service_type("Stopping service") == "local"
 
     def test_regular_service_default(self, track_predictor: TrackPredictor) -> None:
         """Test regular service is default."""
-        assert track_predictor._detect_service_type("Providence") == "regular"
-        assert track_predictor._detect_service_type("Worcester") == "regular"
-        assert track_predictor._detect_service_type("Framingham Line") == "regular"
+        assert detect_service_type("Providence") == "regular"
+        assert detect_service_type("Worcester") == "regular"
+        assert detect_service_type("Framingham Line") == "regular"
 
     def test_case_insensitive_detection(self, track_predictor: TrackPredictor) -> None:
         """Test case insensitive service type detection."""
-        assert track_predictor._detect_service_type("WORCESTER EXPRESS") == "express"
-        assert track_predictor._detect_service_type("local to framingham") == "local"
+        assert detect_service_type("WORCESTER EXPRESS") == "express"
+        assert detect_service_type("local to framingham") == "local"
 
 
 class TestWeekendService:
@@ -172,13 +153,13 @@ class TestWeekendService:
 
     def test_weekend_detection(self, track_predictor: TrackPredictor) -> None:
         """Test weekend day detection."""
-        assert track_predictor._is_weekend_service(5) is True  # Saturday
-        assert track_predictor._is_weekend_service(6) is True  # Sunday
+        assert is_weekend_service(5) is True  # Saturday
+        assert is_weekend_service(6) is True  # Sunday
 
     def test_weekday_detection(self, track_predictor: TrackPredictor) -> None:
         """Test weekday detection."""
         for day in [0, 1, 2, 3, 4]:  # Monday through Friday
-            assert track_predictor._is_weekend_service(day) is False
+            assert is_weekend_service(day) is False
 
 
 class TestConfidenceThresholds:
@@ -190,22 +171,22 @@ class TestConfidenceThresholds:
 
     def test_south_station_threshold(self, track_predictor: TrackPredictor) -> None:
         """Test South Station has lower threshold."""
-        threshold = track_predictor._get_station_confidence_threshold("place-sstat")
+        threshold = get_station_confidence_threshold("place-sstat")
         assert threshold == 0.25
 
     def test_north_station_threshold(self, track_predictor: TrackPredictor) -> None:
         """Test North Station has lower threshold."""
-        threshold = track_predictor._get_station_confidence_threshold("place-north")
+        threshold = get_station_confidence_threshold("place-north")
         assert threshold == 0.25
 
     def test_back_bay_threshold(self, track_predictor: TrackPredictor) -> None:
         """Test Back Bay has medium threshold."""
-        threshold = track_predictor._get_station_confidence_threshold("place-bbsta")
+        threshold = get_station_confidence_threshold("place-bbsta")
         assert threshold == 0.30
 
     def test_default_threshold(self, track_predictor: TrackPredictor) -> None:
         """Test unknown stations use default threshold."""
-        threshold = track_predictor._get_station_confidence_threshold("place-unknown")
+        threshold = get_station_confidence_threshold("place-unknown")
         assert threshold == 0.35
 
 
@@ -381,14 +362,12 @@ class TestStationNormalizationAndSupport:
         # Simulate loaded child_stations mapping and supported stations
         p._child_stations_map = {"NEC-2287": "place-sstat", "BNT-0000": "place-north"}
         p._supported_stations = {"place-sstat", "place-north", "place-bbsta"}
-        p._initialized = True
         return p
 
     @pytest.fixture
     def predictor_uninitialized(self) -> TrackPredictor:
         """TrackPredictor not initialized (uses fallback behavior)."""
         p = TrackPredictor(cast(AsyncRedis, MagicMock()))
-        p._initialized = False
         return p
 
     def test_normalize_child_id_when_initialized(
