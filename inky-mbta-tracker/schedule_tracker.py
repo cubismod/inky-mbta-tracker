@@ -504,7 +504,7 @@ def process_queue(queue: Queue[ScheduleEvent]) -> None:
                 runner.run(execute(tracker, queue))
                 sleep_time = base_sleep + random.randint(0, 25)
                 time.sleep(sleep_time)
-            except (RuntimeError, OSError) as e:
+            except Exception as e:
                 logger.error(
                     f"Error in process_queue thread {threading.current_thread().name}: {e}"
                 )
