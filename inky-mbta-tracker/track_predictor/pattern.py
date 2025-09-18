@@ -1,4 +1,3 @@
-# inky-mbta-tracker/inky-mbta-tracker/track_predictor/pattern.py
 """
 Pattern scoring helpers extracted from TrackPredictor.analyze_patterns.
 

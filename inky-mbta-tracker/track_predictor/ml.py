@@ -1,4 +1,3 @@
-# inky-mbta-tracker/inky-mbta-tracker/track_predictor/ml.py
 """
 Machine-learning related helper utilities for the track predictor.
 
