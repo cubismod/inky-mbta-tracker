@@ -7,6 +7,7 @@ from typing import Any
 from anyio import Path, open_file, to_thread
 from prometheus import redis_commands
 from redis.asyncio import Redis
+from redis.exceptions import RedisError
 
 logger = logging.getLogger(__name__)
 
@@ -141,7 +142,7 @@ class RedisBackup:
                 logger.info(
                     f"Compressed backup: {backup_filename} ({compressed_size} bytes)"
                 )
-            except Exception as ce:
+            except (OSError, gzip.BadGzipFile) as ce:
                 logger.warning(
                     "Gzip compression failed; keeping uncompressed RESP backup",
                     exc_info=ce,
@@ -149,7 +150,7 @@ class RedisBackup:
 
             return backup_filename
 
-        except Exception as e:
+        except (RedisError, OSError) as e:
             logger.error("Failed to create Redis backup", exc_info=e)
             if await backup_path.exists():
                 await backup_path.unlink()
@@ -173,5 +174,5 @@ class RedisBackup:
             if removed_count > 0:
                 logger.info(f"Cleaned up {removed_count} old backup files")
 
-        except Exception as e:
+        except (OSError, PermissionError) as e:
             logger.error("Failed to cleanup old backups", exc_info=e)

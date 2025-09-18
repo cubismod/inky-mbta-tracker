@@ -914,11 +914,16 @@ class MBTAApi:
                                                         },
                                                     )
                                                     return
-                                            except Exception:
-                                                # If cache check fails, proceed but log at debug level
+                                            except (
+                                                RedisError,
+                                                TimeoutError,
+                                                aiohttp.ClientError,
+                                            ) as e:
+                                                # If cache check fails with expected runtime errors,
+                                                # proceed but log at debug level so precache isn't blocked.
                                                 logger.debug(
                                                     "Cache check failed while deciding whether to precache; proceeding",
-                                                    exc_info=True,
+                                                    exc_info=e,
                                                 )
 
                                             # Add random jitter (ms) before predicting to reduce thundering herd.
@@ -970,10 +975,16 @@ class MBTAApi:
                                                         },
                                                     )
                                                     return
-                                            except Exception:
+                                            except (
+                                                RedisError,
+                                                TimeoutError,
+                                                aiohttp.ClientError,
+                                            ) as e:
+                                                # Cache re-check failed with an expected I/O/runtime error;
+                                                # proceed with prediction path but emit debug context.
                                                 logger.debug(
                                                     "Cache re-check failed; proceeding to predict",
-                                                    exc_info=True,
+                                                    exc_info=e,
                                                 )
 
                                             try:
@@ -990,7 +1001,15 @@ class MBTAApi:
                                                     logger.info(
                                                         f"Track prediction made: {pred.station_id} {pred.route_id} {pred.scheduled_time.strftime('%Y-%m-%d %H:%M')} -> {pred.track_number} (conf={pred.confidence_score:.2f}, method={pred.prediction_method})"
                                                     )
-                                            except Exception as e:
+                                            except (
+                                                ValidationError,
+                                                aiohttp.ClientError,
+                                                TimeoutError,
+                                                RedisError,
+                                            ) as e:
+                                                # Predict may fail due to validation, network, timing, or Redis errors.
+                                                # Only log those expected error types; allow other unexpected
+                                                # errors to surface so they can be handled appropriately upstream.
                                                 logger.error(
                                                     "Error running predict_track",
                                                     exc_info=e,
@@ -1412,7 +1431,12 @@ async def precache_track_predictions_runner(
                     logger.info(
                         f"Track prediction precache completed: {num_cached} predictions cached; routes={routes}, stations={target_stations}"
                     )
-                except Exception as e:
+                except (
+                    ValidationError,
+                    RedisError,
+                    ConnectionError,
+                    TimeoutError,
+                ) as e:
                     logger.error("Error during precache operation", exc_info=e)
 
         except CancelledError:

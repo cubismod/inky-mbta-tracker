@@ -87,7 +87,9 @@ def enhanced_headsign_similarity(headsign1: str, headsign2: str) -> float:
     # Levenshtein (normalized)
     try:
         lev = textdistance.levenshtein.normalized_similarity(h1, h2)
-    except Exception:
+    except (TypeError, ValueError, AttributeError):
+        # If the similarity library raises due to bad input types or values,
+        # treat as no similarity rather than failing the whole routine.
         lev = 0.0
 
     # Jaccard on token sets
@@ -95,7 +97,8 @@ def enhanced_headsign_similarity(headsign1: str, headsign2: str) -> float:
         toks1 = h1.split()
         toks2 = h2.split()
         jacc = textdistance.jaccard.normalized_similarity(toks1, toks2)
-    except Exception:
+    except (TypeError, ValueError, AttributeError):
+        # Guard against unexpected types or values from the tokenization/similarity calls.
         jacc = 0.0
 
     # Phonetic similarity via Double Metaphone
@@ -109,7 +112,8 @@ def enhanced_headsign_similarity(headsign1: str, headsign2: str) -> float:
                 phonetic_match = 0.8
             elif dm1[1] and dm2[1] and dm1[1] == dm2[1]:
                 phonetic_match = 0.6
-    except Exception:
+    except (TypeError, ValueError):
+        # If the phonetic library returns unexpected values or types, treat as no phonetic match.
         phonetic_match = 0.0
 
     # Token overlap ratio
@@ -119,7 +123,8 @@ def enhanced_headsign_similarity(headsign1: str, headsign2: str) -> float:
         inter = len(s1.intersection(s2))
         union = len(s1.union(s2))
         token_sim = (inter / union) if union > 0 else 0.0
-    except Exception:
+    except (TypeError, AttributeError, ValueError):
+        # Protect against malformed token variables or unexpected types when computing token overlap.
         token_sim = 0.0
 
     # Weighted combination (weights chosen to balance edit/phonetic/token signals)

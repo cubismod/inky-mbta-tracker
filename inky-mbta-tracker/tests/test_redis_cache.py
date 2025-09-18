@@ -11,7 +11,8 @@ def clear_alru_cache() -> None:
     # Ensure per-test isolation for alru_cache
     try:
         check_cache.cache_clear()  # type: ignore[attr-defined]
-    except Exception:
+    except AttributeError:
+        # Some environments/mock setups may not provide cache_clear; ignore in that case.
         pass
 
 
