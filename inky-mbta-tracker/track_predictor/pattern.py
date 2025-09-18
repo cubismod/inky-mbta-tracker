@@ -106,7 +106,8 @@ def compute_assignment_scores(
         modal_track: Optional[str] = None
         if modal_counts:
             modal_track = max(modal_counts.items(), key=lambda x: x[1])[0]
-    except Exception:
+    except (AttributeError, TypeError):
+        # If assignments are malformed or attributes not present, treat as no modal track.
         modal_track = None
 
     target_dow = scheduled_time.weekday()
@@ -126,7 +127,8 @@ def compute_assignment_scores(
             headsign_similarity = enhanced_headsign_similarity(
                 trip_headsign, getattr(assignment, "headsign", "") or ""
             )
-        except Exception:
+        except (TypeError, ValueError):
+            # If similarity computation fails due to bad types or values, treat as no similarity.
             headsign_similarity = 0.0
 
         assignment_service_type = detect_service_type(
@@ -141,8 +143,8 @@ def compute_assignment_scores(
             time_diff_minutes = int(
                 abs((assignment.scheduled_time - scheduled_time).total_seconds()) / 60
             )
-        except Exception:
-            # Fallback to hour/minute if scheduled_time missing
+        except (AttributeError, TypeError):
+            # Fallback to hour/minute if scheduled_time missing or malformed
             try:
                 time_diff_minutes = abs(
                     getattr(assignment, "hour", 0) * 60
@@ -150,7 +152,8 @@ def compute_assignment_scores(
                     - target_hour * 60
                     - target_minute
                 )
-            except Exception:
+            except (AttributeError, TypeError, ValueError):
+                # If fallback also fails, use a large sentinel value so it won't match time windows
                 time_diff_minutes = 9999
 
         # Exact-ish match (enhanced similarity + time + direction)
@@ -200,14 +203,15 @@ def compute_assignment_scores(
         try:
             days_old = (scheduled_time - assignment.scheduled_time).days
             time_decay = max(0.1, 1.0 - (days_old / 90.0))
-        except Exception:
+        except (AttributeError, TypeError):
+            # If scheduled_time missing or not a datetime, apply conservative decay
             time_decay = 0.1
 
         try:
             headsign_similarity = enhanced_headsign_similarity(
                 trip_headsign, getattr(assignment, "headsign", "") or ""
             )
-        except Exception:
+        except (TypeError, ValueError):
             headsign_similarity = 0.0
 
         assignment_service_type = detect_service_type(
@@ -221,7 +225,7 @@ def compute_assignment_scores(
             time_diff_minutes = int(
                 abs((assignment.scheduled_time - scheduled_time).total_seconds()) / 60
             )
-        except Exception:
+        except (AttributeError, TypeError):
             try:
                 time_diff_minutes = abs(
                     getattr(assignment, "hour", 0) * 60
@@ -229,7 +233,7 @@ def compute_assignment_scores(
                     - target_hour * 60
                     - target_minute
                 )
-            except Exception:
+            except (AttributeError, TypeError, ValueError):
                 time_diff_minutes = 9999
 
         base_score = 0.0
@@ -306,7 +310,9 @@ async def compute_final_probabilities(
         # obtain historical accuracy (async)
         try:
             accuracy = float(await accuracy_lookup(track))
-        except Exception:
+        except (TypeError, ValueError, RuntimeError, TimeoutError):
+            # If lookup returns non-numeric data or fails in expected runtime ways,
+            # fall back to a conservative default accuracy.
             accuracy = 0.7  # conservative default if lookup fails
 
         confidence_factor = 0.3 + 0.4 * sample_confidence + 0.3 * accuracy

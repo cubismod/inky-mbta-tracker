@@ -66,7 +66,8 @@ async def fetch_upcoming_departures(
         except CancelledError:
             # Preserve cancellation semantics
             raise
-        except Exception as e:
+        except (TypeError, ValueError) as e:
+            # Only retry on errors likely to be caused by malformed inputs or similar recoverable issues.
             attempt += 1
             if attempt >= max_attempts:
                 logger.error(

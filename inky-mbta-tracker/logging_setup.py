@@ -164,7 +164,9 @@ class JSONFormatter(logging.Formatter):
                 try:
                     json.dumps(value)
                     payload[key] = value
-                except Exception:
+                except (TypeError, ValueError):
+                    # json.dumps may raise TypeError/ValueError for non-serializable values;
+                    # stringify as a safe fallback rather than catching all exceptions.
                     payload[key] = str(value)
 
         # Exception information
@@ -177,7 +179,9 @@ class JSONFormatter(logging.Formatter):
                     str(record.exc_info[1]) if record.exc_info[1] else None
                 )
                 payload["stack"] = self.formatException(record.exc_info)
-            except Exception:
+            except (AttributeError, IndexError, TypeError):
+                # If exc_info is malformed or attributes are missing, avoid raising
+                # and provide a sentinel value.
                 payload["stack"] = "<unavailable>"
 
         return json.dumps(payload, ensure_ascii=False)
@@ -186,7 +190,8 @@ class JSONFormatter(logging.Formatter):
     def _stringify_message(record: logging.LogRecord) -> str:
         try:
             msg = record.getMessage()  # respects %-formatting with args
-        except Exception:
+        except (AttributeError, TypeError, ValueError):
+            # If message formatting fails due to bad args or types, fall back to raw msg
             msg = str(record.msg)
         return msg
 
@@ -206,8 +211,9 @@ def _add_file_handler_if_configured(
                     log_file
                 ):
                     return
-            except Exception:
-                # If we can't access baseFilename, fall through to add another handler safely
+            except (AttributeError, OSError):
+                # If we can't access baseFilename due to attribute absence or OS errors,
+                # fall through to add another handler safely.
                 pass
 
     try:
@@ -226,7 +232,9 @@ def _add_file_handler_if_configured(
             )
         fh.addFilter(APIKeyFilter())
         logger.addHandler(fh)
-    except Exception as err:  # pragma: no cover - defensive only
+    except (OSError, PermissionError) as err:  # pragma: no cover - defensive only
+        # Only catch expected file/OS related errors when attempting to create
+        # directories or open the file. Avoid swallowing unrelated exceptions.
         logging.getLogger(__name__).warning(
             f"Failed to set up file logging for IMT_LOG_FILE='{log_file}': {err}"
         )

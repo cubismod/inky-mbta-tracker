@@ -504,7 +504,7 @@ def process_queue(queue: Queue[ScheduleEvent]) -> None:
                 runner.run(execute(tracker, queue))
                 sleep_time = base_sleep + random.randint(0, 25)
                 time.sleep(sleep_time)
-            except Exception as e:
+            except (RuntimeError, OSError) as e:
                 logger.error(
                     f"Error in process_queue thread {threading.current_thread().name}: {e}"
                 )
@@ -548,8 +548,8 @@ async def process_queue_async(
             logger.error(
                 "Unable to communicate with Redis during batch flush", exc_info=err
             )
-        except Exception:
-            logger.error("Unexpected error during batch flush", exc_info=True)
+        except (AttributeError, TypeError, ValueError, RuntimeError, OSError) as err:
+            logger.error("Unexpected error during batch flush", exc_info=err)
 
     # Main consumer loop: receive, then drain to form a batch
     while True:
@@ -606,5 +606,5 @@ async def process_queue_async(
                     last_mqtt_ts = now
                 except ResponseError:
                     logger.error("Error during MQTT/cleanup cycle", exc_info=True)
-        except Exception:
-            logger.error("Failed in queue consumer loop", exc_info=True)
+        except (RuntimeError, OSError) as err:
+            logger.error("Failed in queue consumer loop", exc_info=err)

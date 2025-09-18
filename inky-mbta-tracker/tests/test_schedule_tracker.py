@@ -623,7 +623,8 @@ class TestProcessQueue:
                 close = getattr(coro, "close", None)
                 if callable(close):
                     close()
-            except Exception:
+            except (AttributeError, RuntimeError):
+                # Ignore attribute or runtime errors when attempting to close test coroutines
                 pass
 
         mock_runner_instance.run.side_effect = _consume
