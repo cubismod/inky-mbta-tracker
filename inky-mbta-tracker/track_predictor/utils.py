@@ -1,4 +1,3 @@
-# inky-mbta-tracker/inky-mbta-tracker/track_predictor/utils.py
 """
 Utility helpers for the track_predictor package.
 
