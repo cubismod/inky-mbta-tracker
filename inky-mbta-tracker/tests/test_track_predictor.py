@@ -104,9 +104,9 @@ class TestEnhancedHeadsignSimilarity:
     def test_graduated_scoring_weights(self, track_predictor: TrackPredictor) -> None:
         """Test that different similarity components are weighted correctly."""
         # Test a variety of combinations to ensure weighting works
-        result1 = enhanced_headsign_similarity("Worcester", "Worcester")  # Perfect
-        result2 = enhanced_headsign_similarity("Worcester", "Worcster")  # Minor typo
-        result3 = enhanced_headsign_similarity("Worcester", "Boston")  # Different
+        result1 = enhanced_headsign_similarity("Worcester", "Worcester")
+        result2 = enhanced_headsign_similarity("Worcester", "Worcster")
+        result3 = enhanced_headsign_similarity("Worcester", "Boston")
 
         assert result1 == 1.0
         assert result2 > result3

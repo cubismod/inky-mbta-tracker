@@ -139,5 +139,11 @@ async def query_server_side_events(
 
     except ValidationError as err:
         logger.error("Unable to parse response", exc_info=err)
-    except (aiohttp.ClientError, TimeoutError, ValueError, OSError, RuntimeError) as err:
+    except (
+        aiohttp.ClientError,
+        TimeoutError,
+        ValueError,
+        OSError,
+        RuntimeError,
+    ) as err:
         logger.error("Failed to query Prometheus", exc_info=err)
