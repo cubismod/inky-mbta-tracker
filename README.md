@@ -103,29 +103,6 @@ The ML ensemble for track prediction is optional and off by default. To enable i
 - Observability
   - New Prometheus metric: `imt_track_predictions_ml_wins` — counts how often the live ML vs. pattern comparison chose the ML result. Labels: `station_id`, `route_id`, `instance`.
 
-### Additional IMT_ environment variables used by the code (not listed above)
-
-The code reads a number of additional `IMT_` environment variables that are not included in the small `.env` example above. The most commonly useful ones are listed here so you can set them in your environment or `.env` as needed:
-
-- `IMT_API_ORIGIN` — comma-separated list of allowed CORS origins for the API (default set in code).
-- `IMT_API_PORT` / `IMT_API_PORT` — port used when running the API server (Uvicorn) (defaults to `8080` in code).
-- `IMT_LOG_JSON` — if `true`, log output is emitted in JSON form (default `false`).
-- `IMT_LOG_LEVEL` — preferred environment variable for log level (falls back to `LOG_LEVEL`).
-- `IMT_PROMETHEUS_ENABLE` — if `true` the Prometheus metrics HTTP server is started (default `false`).
-- `IMT_PROM_PORT` — port to serve Prometheus metrics (default `8000` in code).
-- `IMT_TRACK_API_PORT` — optional port for the track prediction API (documented above; default `8080`).
-- `IMT_REDIS_BACKUP_TIME` — daily time (HH:MM) to run nightly Redis backups (example in the `.env` sample).
-- `IMT_FILE_OUTPUT_ENABLED` — enable writing summaries/files to disk (used by file-output features).
-- `IMT_FILE_OUTPUT_DIR` — directory for file output.
-- `IMT_FILE_OUTPUT_FILENAME` — filename pattern for file output.
-- `IMT_FILE_OUTPUT_INCLUDE_TIMESTAMP` — include a timestamp in the filename if `true`.
-- `IMT_FILE_OUTPUT_INCLUDE_ALERT_COUNT` — include alert counts in file output if `true`.
-- `IMT_FILE_OUTPUT_INCLUDE_MODEL_INFO` — include model metadata in file output if `true`.
-- `IMT_FILE_OUTPUT_VALIDATE_SUMMARIES` — validate generated summaries before writing if `true`.
-- `IMT_FILE_OUTPUT_MIN_SIMILARITY` — minimum similarity threshold (float) used when validating summaries.
-
-Note: many of the `IMT_FILE_OUTPUT_*` variables are used to override configuration values at runtime (see `config.py` for details). If you rely on any file-output behavior, inspect `config.py` to see the exact semantics and defaults.
-
 ## Track Prediction Feature
 
 The track prediction system analyzes historical track assignments to predict future track assignments for MBTA commuter rail trains before they are officially announced. This helps solve the "mad scramble" problem at major stations like South Station and North Station.
