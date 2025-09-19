@@ -17,7 +17,7 @@ tasks:
   format:
     cmds:
       - uv run ruff format inky-mbta-tracker
-      - uv run ruff format compute_class_hashes.py
+      - uv run ruff format inky-mbta-tracker/compute_class_hashes.py
   run:
     cmds:
       - uv run inky-mbta-tracker
