@@ -25,7 +25,7 @@ class StationManager:
     async def load_child_stations_map(self) -> Dict[str, str]:
         """Load the child stations JSON file and create a mapping from child -> parent."""
         try:
-            child_stations_path = Path("child_stations.json")
+            child_stations_path = Path() / "child_stations.json"
             async with await open_file(child_stations_path) as f:
                 content = await f.read()
                 data = json.loads(content)

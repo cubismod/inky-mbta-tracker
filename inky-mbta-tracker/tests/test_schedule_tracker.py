@@ -624,7 +624,6 @@ class TestProcessQueue:
                 if callable(close):
                     close()
             except Exception:
-                # Ignore any exception when attempting to close test coroutines
                 pass
 
         mock_runner_instance.run.side_effect = _consume
