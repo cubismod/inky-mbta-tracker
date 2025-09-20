@@ -9,7 +9,6 @@ to unit test and reason about.
 from __future__ import annotations
 
 import textdistance
-from metaphone import doublemetaphone
 
 # Service type keywords used to infer express/local/regular service from headsigns.
 EXPRESS_KEYWORDS: list[str] = ["express", "limited", "direct"]
@@ -64,15 +63,6 @@ def get_station_confidence_threshold(station_id: str) -> float:
 def enhanced_headsign_similarity(headsign1: str, headsign2: str) -> float:
     """
     Compute an enhanced similarity score between two headsigns in [0.0, 1.0].
-
-    This function combines multiple signals:
-    - normalized Levenshtein similarity
-    - Jaccard token similarity
-    - phonetic (Double Metaphone) match heuristics
-    - simple token overlap ratio
-
-    The weights and thresholds are tuned to favor strong matches while still
-    being forgiving of minor differences (abbreviations, punctuation, etc).
     """
     if not headsign1 or not headsign2:
         return 0.0
@@ -85,51 +75,8 @@ def enhanced_headsign_similarity(headsign1: str, headsign2: str) -> float:
 
     # Levenshtein (normalized)
     try:
-        lev = textdistance.levenshtein.normalized_similarity(h1, h2)
-    except (TypeError, ValueError, AttributeError):
+        return textdistance.levenshtein.normalized_similarity(h1, h2)
+    except (TypeError, ValueError):
         # If the similarity library raises due to bad input types or values,
         # treat as no similarity rather than failing the whole routine.
-        lev = 0.0
-
-    # Jaccard on token sets
-    try:
-        toks1 = h1.split()
-        toks2 = h2.split()
-        jacc = textdistance.jaccard.normalized_similarity(toks1, toks2)
-    except (TypeError, ValueError, AttributeError):
-        # Guard against unexpected types or values from the tokenization/similarity calls.
-        jacc = 0.0
-
-    # Phonetic similarity via Double Metaphone
-    phonetic_match = 0.0
-    try:
-        dm1 = doublemetaphone(h1)
-        dm2 = doublemetaphone(h2)
-        # doublemetaphone returns a tuple (primary, alternate)
-        if dm1 and dm2:
-            if dm1[0] and dm2[0] and dm1[0] == dm2[0]:
-                phonetic_match = 0.8
-            elif dm1[1] and dm2[1] and dm1[1] == dm2[1]:
-                phonetic_match = 0.6
-    except (TypeError, ValueError):
-        # If the phonetic library returns unexpected values or types, treat as no phonetic match.
-        phonetic_match = 0.0
-
-    # Token overlap ratio
-    try:
-        s1 = set(toks1)
-        s2 = set(toks2)
-        inter = len(s1.intersection(s2))
-        union = len(s1.union(s2))
-        token_sim = (inter / union) if union > 0 else 0.0
-    except (TypeError, AttributeError, ValueError):
-        # Protect against malformed token variables or unexpected types when computing token overlap.
-        token_sim = 0.0
-
-    # Weighted combination (weights chosen to balance edit/phonetic/token signals)
-    combined = 0.4 * lev + 0.25 * jacc + 0.2 * phonetic_match + 0.15 * token_sim
-    if combined > 1.0:
-        combined = 1.0
-    if combined < 0.0:
-        combined = 0.0
-    return combined
+        return 0.0

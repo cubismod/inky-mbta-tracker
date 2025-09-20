@@ -179,7 +179,7 @@ async def update_track_accuracy(
             "Failed to update per-track accuracy due to Redis connection issue",
             exc_info=e,
         )
-    except (ConnectionError, TimeoutError, OSError) as e:
+    except OSError as e:
         # Limit to expected redis/network related errors; treat others as failures elsewhere
         logger.error("Failed to update per-track accuracy", exc_info=e)
 
@@ -309,7 +309,6 @@ async def get_historical_assignments(
             if not assignments:
                 return route_results
 
-            # Fetch all assignment data
             async def fetch_assignment_data(
                 assignment_key: bytes,
             ) -> Optional[TrackAssignment]:
@@ -331,7 +330,6 @@ async def get_historical_assignments(
 
             return route_results
 
-        # Fetch assignments for all routes concurrently
         results: list[TrackAssignment] = []
 
         for route in routes_to_check:
