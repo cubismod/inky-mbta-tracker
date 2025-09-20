@@ -55,6 +55,7 @@ from shared_types.shared_types import (
     TaskType,
     TrackAssignment,
     TrackAssignmentType,
+    LightStop,
 )
 from tenacity import (
     before_log,
@@ -63,6 +64,20 @@ from tenacity import (
     retry_if_not_exception_type,
     wait_exponential_jitter,
 )
+from mbta_client_extended import (
+    parse_shape_data,
+    get_shapes,
+    silver_line_lookup,
+    light_get_stop,
+    light_get_alerts,
+    precache_track_predictions_runner,
+    watch_mbta_server_side_events,
+    watch_static_schedule,
+    watch_vehicles,
+    watch_station,
+    determine_station_id,
+    watch_alerts,
+)
 
 if TYPE_CHECKING:
     from track_predictor.track_predictor import TrackPredictor
@@ -70,146 +85,6 @@ if TYPE_CHECKING:
 MBTA_AUTH = os.environ.get("AUTH_TOKEN")
 logger = logging.getLogger(__name__)
 SHAPE_POLYLINES = set[str]()
-
-
-class LightStop(BaseModel):
-    stop_id: str
-    long: Optional[float] = None
-    lat: Optional[float] = None
-    platform_prediction: Optional[str] = None
-
-
-def parse_shape_data(shapes: Shapes) -> LineRoute:
-    ret = list[list[tuple]]()
-    for shape in shapes.data:
-        if (
-            shape.attributes.polyline not in SHAPE_POLYLINES
-            and "canonical" in shape.id
-            or shape.id.replace("_", "").isdecimal()
-        ):
-            ret.append([i for i in decode(shape.attributes.polyline, geojson=True)])
-            SHAPE_POLYLINES.add(shape.attributes.polyline)
-    return ret
-
-
-# gets line (orange, blue, red, green, etc) geometry using MBTA API
-# redis expires in 24 hours
-@retry(
-    wait=wait_exponential_jitter(initial=5, jitter=20, max=60),
-    before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
-    retry=retry_if_not_exception_type(CancelledError),
-)
-async def get_shapes(
-    r_client: Redis,
-    routes: list[str],
-    session: ClientSession,
-    tg: Optional[TaskGroup] = None,
-) -> RouteShapes:
-    # Avoid retries using a closed session; return empty result
-    if session.closed:
-        logger.debug("get_shapes called with a closed session; skipping fetch")
-        return RouteShapes(lines={})
-    ret = RouteShapes(lines={})
-    for route in routes:
-        key = f"shape:{route}"
-        cached = await check_cache(r_client, key)
-        body = ""
-        if cached:
-            body = cached
-        else:
-            async with session.get(
-                f"/shapes?filter[route]={route}&api_key={MBTA_AUTH}"
-            ) as response:
-                if response.status == 429:
-                    raise RateLimitExceeded()
-                body = await response.text()
-                mbta_api_requests.labels("shapes").inc()
-                # 4 weeks
-                if tg:
-                    tg.start_soon(write_cache, r_client, key, body, 2419200)
-                else:
-                    await write_cache(r_client, key, body, 2419200)
-        shapes = Shapes.model_validate_json(body, strict=False)
-        ret.lines[route] = parse_shape_data(shapes)
-    return ret
-
-
-def silver_line_lookup(route_id: str) -> str:
-    match route_id:
-        case "741":
-            return "SL1"
-        case "742":
-            return "SL2"
-        case "743":
-            return "SL3"
-        case "746":
-            return "SLW"
-        case "749":
-            return "SL5"
-        case "751":
-            return "SL4"
-        case _:
-            return route_id
-
-
-# retrieves a rail/bus stop from Redis & returns the stop ID with optional coordinates
-async def light_get_stop(
-    r_client: Redis,
-    stop_id: str,
-    session: ClientSession,
-    tg: Optional[TaskGroup] = None,
-) -> Optional[LightStop]:
-    key = f"stop:{stop_id}:light"
-    cached = await check_cache(r_client, key)
-    if cached:
-        try:
-            cached_model = LightStop.model_validate_json(cached)
-            return cached_model
-        except ValidationError as err:
-            logger.error("unable to validate json", exc_info=err)
-    ls = None
-    async with MBTAApi(
-        r_client, stop_id=stop_id, watcher_type=TaskType.LIGHT_STOP
-    ) as watcher:
-        # avoid rate-limiting by spacing out requests
-        await sleep(randint(1, 3))
-        stop = await watcher.get_stop(session, stop_id, tg)
-        if stop and stop[0]:
-            if stop[0].data.attributes.description:
-                stop_id = stop[0].data.attributes.description
-            elif stop[0].data.attributes.name:
-                stop_id = stop[0].data.attributes.name
-            ls = LightStop(
-                stop_id=stop_id,
-                long=stop[0].data.attributes.longitude,
-                lat=stop[0].data.attributes.latitude,
-            )
-        if ls:
-            if tg:
-                tg.start_soon(
-                    write_cache,
-                    r_client,
-                    key,
-                    ls.model_dump_json(),
-                    randint(FOUR_WEEKS, TWO_MONTHS),
-                )
-            else:
-                await write_cache(
-                    r_client, key, ls.model_dump_json(), randint(FOUR_WEEKS, TWO_MONTHS)
-                )
-    return ls
-
-
-async def light_get_alerts(
-    route_id: str, session: ClientSession, r_client: Redis
-) -> Optional[list[AlertResource]]:
-    async with MBTAApi(
-        r_client, route=route_id, watcher_type=TaskType.VEHICLES
-    ) as watcher:
-        alerts = await watcher.get_alerts(session, route_id=route_id)
-        if alerts:
-            return alerts
-    return None
 
 
 class MBTAApi:

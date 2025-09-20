@@ -9,7 +9,8 @@ import os
 import random
 from asyncio import CancelledError
 from datetime import UTC, datetime
-from typing import Any, List, Optional, TypedDict
+from typing import Any, List, Optional
+from shared_types.shared_types import DepartureInfo
 
 import aiohttp
 import anyio
@@ -20,16 +21,6 @@ from prometheus import mbta_api_requests
 from pydantic import ValidationError
 
 logger = logging.getLogger(__name__)
-
-
-class DepartureInfo(TypedDict):
-    """Typed representation of an upcoming departure returned from schedules."""
-
-    trip_id: str
-    station_id: str
-    route_id: str
-    direction_id: int
-    departure_time: str
 
 
 async def fetch_upcoming_departures(
