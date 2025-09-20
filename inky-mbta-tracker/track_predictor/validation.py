@@ -5,8 +5,8 @@ including accuracy tracking and metrics recording.
 """
 
 import logging
-from datetime import UTC, datetime, timedelta
-from typing import Any, Optional
+from datetime import datetime
+from typing import Optional
 
 from anyio.abc import TaskGroup
 from consts import INSTANCE_ID, WEEK

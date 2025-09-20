@@ -166,7 +166,7 @@ class MLQueue:
                     keras.saving.load_model(model_path, compile=False)
                     for model_path in model_paths
                 ]  # pyright: ignore
-            except (OSError, ImportError, RuntimeError) as e:  # noqa: BLE001 (surface errors to logs)
+            except (OSError, ImportError, RuntimeError) as e:  # noqa: BLE001 (log error before re-raising)
                 # Narrow to errors that can happen while downloading/loading model artifacts
                 logger.error("Failed to load ML model", exc_info=e)
                 raise
