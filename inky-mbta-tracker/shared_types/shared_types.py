@@ -73,15 +73,6 @@ class TrackAssignment(BaseModel):
     minute: int
 
 
-class TrackAssignmentScores(BaseModel):
-    route_id: bool
-    direction_id: bool
-    combined: float
-    headsign: float
-    time: float
-    assignment: TrackAssignment
-
-
 class TrackPrediction(BaseModel):
     """Track prediction for a specific trip"""
 
