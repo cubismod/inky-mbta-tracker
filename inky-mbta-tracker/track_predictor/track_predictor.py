@@ -35,11 +35,6 @@ from shared_types.shared_types import (
 )
 
 # Extracted modules
-from .api_client import (
-    get_default_routes,
-    get_default_target_stations,
-)
-
 # Local ML / helper utilities extracted for testability
 from .ml import (
     bayes_alpha,
@@ -391,148 +386,144 @@ class TrackPredictor:
             Number of predictions cached
         """
         # Local import for RateLimitExceeded used in this function's error handling
-
-        if routes is None:
-            routes = get_default_routes()
-
-        if target_stations is None:
-            target_stations = get_default_target_stations()
-
         predictions_cached = 0
-        current_time = datetime.now(UTC)
+        if routes and target_stations:
+            current_time = datetime.now(UTC)
 
-        logger.info(
-            f"Starting precache for {len(routes)} routes and {len(target_stations)} stations"
-        )
+            logger.info(
+                f"Starting precache for {len(routes)} routes and {len(target_stations)} stations"
+            )
 
-        try:
-            async with aiohttp.ClientSession() as session:
+            try:
+                async with aiohttp.ClientSession() as session:
 
-                async def process_route(route_id: str) -> int:
-                    """Process a single route and return number of predictions cached."""
-                    route_predictions_cached = 0
-                    logger.debug(f"Precaching predictions for route {route_id}")
+                    async def process_route(route_id: str) -> int:
+                        """Process a single route and return number of predictions cached."""
+                        route_predictions_cached = 0
+                        logger.debug(f"Precaching predictions for route {route_id}")
 
-                    try:
-                        # Fetch upcoming departures with actual scheduled times
-                        upcoming_departures = await self.fetch_upcoming_departures(
-                            session, route_id, target_stations, current_time
-                        )
+                        try:
+                            # Fetch upcoming departures with actual scheduled times
+                            upcoming_departures = await self.fetch_upcoming_departures(
+                                session, route_id, target_stations, current_time
+                            )
 
-                        async def process_departure(
-                            departure_data: DepartureInfo,
-                        ) -> bool:
-                            """Process a single departure and return True if cached."""
-                            try:
-                                trip_id = departure_data["trip_id"]
-                                station_id = departure_data["station_id"]
-                                direction_id = departure_data["direction_id"]
-                                scheduled_time = datetime.fromisoformat(
-                                    departure_data["departure_time"]
-                                )
-
-                                if not trip_id:
-                                    return False  # Skip if no trip ID available
-
-                                # Normalize station id so Redis keys use canonical station identifiers
-                                norm_station_id = self.normalize_station(station_id)
-
-                                # Check if we already have a cached prediction (use normalized station id)
-                                cache_key = f"track_prediction:{norm_station_id}:{route_id}:{trip_id}:{scheduled_time.date()}"
-                                if await check_cache(self.redis, cache_key):
-                                    return False  # Already cached
-
-                                # Generate prediction using actual scheduled departure time (pass normalized station id)
-                                prediction = await self.predict_track(
-                                    station_id=norm_station_id,
-                                    route_id=route_id,
-                                    trip_id=trip_id,
-                                    headsign="",  # Will be fetched in predict_track method
-                                    direction_id=direction_id,
-                                    scheduled_time=scheduled_time,
-                                    tg=tg,
-                                )
-
-                                if prediction:
-                                    logger.debug(
-                                        f"Precached prediction: {station_id} {route_id} {trip_id} @ {scheduled_time.strftime('%H:%M')} -> Track {prediction.track_number}"
+                            async def process_departure(
+                                departure_data: DepartureInfo,
+                            ) -> bool:
+                                """Process a single departure and return True if cached."""
+                                try:
+                                    trip_id = departure_data["trip_id"]
+                                    station_id = departure_data["station_id"]
+                                    direction_id = departure_data["direction_id"]
+                                    scheduled_time = datetime.fromisoformat(
+                                        departure_data["departure_time"]
                                     )
-                                    return True
 
-                                return False
+                                    if not trip_id:
+                                        return False  # Skip if no trip ID available
 
-                            except (
-                                ConnectionError,
-                                TimeoutError,
-                                ValidationError,
-                                RateLimitExceeded,
-                            ) as e:
-                                logger.error(
-                                    f"Error precaching prediction for {departure_data.get('station_id')} {route_id} {departure_data.get('trip_id')}",
-                                    exc_info=e,
-                                )
-                                return False
+                                    # Normalize station id so Redis keys use canonical station identifiers
+                                    norm_station_id = self.normalize_station(station_id)
 
-                        # Process departures sequentially with explicit error handling
-                        for dep in upcoming_departures:
-                            try:
-                                if await process_departure(dep):
-                                    route_predictions_cached += 1
-                            except (
-                                ConnectionError,
-                                TimeoutError,
-                                ValidationError,
-                            ) as e:
-                                logger.error(
-                                    f"Unexpected error in departure processing for {route_id}",
-                                    exc_info=e,
-                                )
+                                    # Check if we already have a cached prediction (use normalized station id)
+                                    cache_key = f"track_prediction:{norm_station_id}:{route_id}:{trip_id}:{scheduled_time.date()}"
+                                    if await check_cache(self.redis, cache_key):
+                                        return False  # Already cached
 
-                    except (
-                        ConnectionError,
-                        TimeoutError,
-                        ValidationError,
-                        RateLimitExceeded,
-                    ) as e:
-                        logger.error(f"Error processing route {route_id}", exc_info=e)
+                                    # Generate prediction using actual scheduled departure time (pass normalized station id)
+                                    prediction = await self.predict_track(
+                                        station_id=norm_station_id,
+                                        route_id=route_id,
+                                        trip_id=trip_id,
+                                        headsign="",  # Will be fetched in predict_track method
+                                        direction_id=direction_id,
+                                        scheduled_time=scheduled_time,
+                                        tg=tg,
+                                    )
 
-                    return route_predictions_cached
+                                    if prediction:
+                                        logger.debug(
+                                            f"Precached prediction: {station_id} {route_id} {trip_id} @ {scheduled_time.strftime('%H:%M')} -> Track {prediction.track_number}"
+                                        )
+                                        return True
 
-                # Run route processing concurrently to improve precache throughput
-                route_results: list[int] = []
+                                    return False
 
-                async def _run_route(rid: str) -> None:
-                    try:
-                        res = await process_route(rid)
-                        route_results.append(res)
-                    except (
-                        RuntimeError,
-                        OSError,
-                        ConnectionError,
-                        TimeoutError,
-                        ValidationError,
-                        RedisError,
-                    ) as e:
-                        logger.error(f"Error running route {rid}", exc_info=e)
+                                except (
+                                    ConnectionError,
+                                    TimeoutError,
+                                    ValidationError,
+                                    RateLimitExceeded,
+                                ) as e:
+                                    logger.error(
+                                        f"Error precaching prediction for {departure_data.get('station_id')} {route_id} {departure_data.get('trip_id')}",
+                                        exc_info=e,
+                                    )
+                                    return False
 
-                async with anyio.create_task_group() as tg2:
-                    for rid in routes:
-                        tg2.start_soon(_run_route, rid)
+                            # Process departures sequentially with explicit error handling
+                            for dep in upcoming_departures:
+                                try:
+                                    if await process_departure(dep):
+                                        route_predictions_cached += 1
+                                except (
+                                    ConnectionError,
+                                    TimeoutError,
+                                    ValidationError,
+                                ) as e:
+                                    logger.error(
+                                        f"Unexpected error in departure processing for {route_id}",
+                                        exc_info=e,
+                                    )
 
-                # Sum up all predictions cached
-                for result in route_results:
-                    if isinstance(result, int):
-                        predictions_cached += result
-                    else:
-                        logger.error(
-                            "Unexpected non-int result in route processing",
-                            exc_info=result,
-                        )
+                        except (
+                            ConnectionError,
+                            TimeoutError,
+                            ValidationError,
+                            RateLimitExceeded,
+                        ) as e:
+                            logger.error(
+                                f"Error processing route {route_id}", exc_info=e
+                            )
 
-        except (ConnectionError, TimeoutError, aiohttp.ClientError) as e:
-            logger.error("Error in precache_track_predictions", exc_info=e)
+                        return route_predictions_cached
 
-        logger.info(f"Precached {predictions_cached} track predictions")
+                    # Run route processing concurrently to improve precache throughput
+                    route_results: list[int] = []
+
+                    async def _run_route(rid: str) -> None:
+                        try:
+                            res = await process_route(rid)
+                            route_results.append(res)
+                        except (
+                            RuntimeError,
+                            OSError,
+                            ConnectionError,
+                            TimeoutError,
+                            ValidationError,
+                            RedisError,
+                        ) as e:
+                            logger.error(f"Error running route {rid}", exc_info=e)
+
+                    async with anyio.create_task_group() as tg2:
+                        for rid in routes:
+                            tg2.start_soon(_run_route, rid)
+
+                    # Sum up all predictions cached
+                    for result in route_results:
+                        if isinstance(result, int):
+                            predictions_cached += result
+                        else:
+                            logger.error(
+                                "Unexpected non-int result in route processing",
+                                exc_info=result,
+                            )
+
+            except (ConnectionError, TimeoutError, aiohttp.ClientError) as e:
+                logger.error("Error in precache_track_predictions", exc_info=e)
+
+            logger.info(f"Precached {predictions_cached} track predictions")
         return predictions_cached
 
     async def get_historical_assignments(
