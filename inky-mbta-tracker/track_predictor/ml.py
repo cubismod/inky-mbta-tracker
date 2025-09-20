@@ -83,6 +83,47 @@ def ml_enabled() -> bool:
     return val in {"1", "true", "yes", "on"}
 
 
+def ml_min_confidence_threshold() -> float:
+    """Minimum confidence threshold for accepting ML predictions (default 0.25)."""
+    try:
+        return max(0.0, min(1.0, float(os.getenv("IMT_ML_MIN_CONFIDENCE", "0.25"))))
+    except (ValueError, TypeError):
+        return 0.25
+
+
+def ml_store_confidence_threshold() -> float:
+    """Minimum confidence threshold for storing ML predictions (default 0.5)."""
+    try:
+        return max(0.0, min(1.0, float(os.getenv("IMT_ML_STORE_CONFIDENCE", "0.5"))))
+    except (ValueError, TypeError):
+        return 0.5
+
+
+# Time window constants for pattern matching (in minutes)
+def pattern_time_window_30() -> int:
+    """Time window for close time matches in minutes (default 30)."""
+    try:
+        return max(1, int(os.getenv("IMT_PATTERN_TIME_30", "30")))
+    except (ValueError, TypeError):
+        return 30
+
+
+def pattern_time_window_60() -> int:
+    """Time window for medium time matches in minutes (default 60)."""
+    try:
+        return max(1, int(os.getenv("IMT_PATTERN_TIME_60", "60")))
+    except (ValueError, TypeError):
+        return 60
+
+
+def pattern_time_window_120() -> int:
+    """Time window for loose time matches in minutes (default 120)."""
+    try:
+        return max(1, int(os.getenv("IMT_PATTERN_TIME_120", "120")))
+    except (ValueError, TypeError):
+        return 120
+
+
 # -----------------------------------------------------------------------------
 # Probability & confidence helpers
 # -----------------------------------------------------------------------------
