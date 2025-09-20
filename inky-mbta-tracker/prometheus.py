@@ -38,6 +38,14 @@ track_predictions_generated = Counter(
     ["station_id", "route_id", "prediction_method", "instance"],
 )
 
+# Counts where the ML-vs-pattern comparison preferred the ML result.
+# Labels: station_id, route_id, instance
+track_predictions_ml_wins = Counter(
+    "imt_track_predictions_ml_wins",
+    "Number of predictions where ML comparison chose the ML result over the historical pattern",
+    ["station_id", "route_id", "instance"],
+)
+
 track_predictions_cached = Counter(
     "imt_track_predictions_cached",
     "Track predictions served from cache",
@@ -131,5 +139,11 @@ async def query_server_side_events(
 
     except ValidationError as err:
         logger.error("Unable to parse response", exc_info=err)
-    except Exception as err:
+    except (
+        aiohttp.ClientError,
+        TimeoutError,
+        ValueError,
+        OSError,
+        RuntimeError,
+    ) as err:
         logger.error("Failed to query Prometheus", exc_info=err)

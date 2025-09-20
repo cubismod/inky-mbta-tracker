@@ -62,6 +62,8 @@ OLLAMA_TEMPERATURE=0.1 # Model creativity (0.0=focused, 1.0=creative)
 
 Prometheus is available at port 8000.
 
+New metric: `imt_track_predictions_ml_wins` — counts how often the live ML vs. historical/pattern comparison chose the ML result. Metric labels are `station_id`, `route_id`, and `instance`. This is exposed alongside the other `imt_` metrics on the same Prometheus endpoint.
+
 You can use my [dashboard JSON](./grafana-dashboard.json) for a Grafana dashboard combining
 the Prom metrics & a Loki datasource for logs.
 
@@ -81,7 +83,7 @@ The ML ensemble for track prediction is optional and off by default. To enable i
 
 - Environment
   - `IMT_ML=true` to enable the ML worker
-  - `KERAS_BACKEND=jax` to use the Keras-on-PyTorch backend
+  - `KERAS_BACKEND=jax` to use the Keras-on-Jax backend
 
 - Behavior at a glance
   - ML runs asynchronously; the predictor never blocks waiting for ML.
@@ -95,6 +97,11 @@ The ML ensemble for track prediction is optional and off by default. To enable i
   - `IMT_BAYES_ALPHA` (default `0.65`): weight for pattern vs. ML in Bayes fusion.
   - `IMT_ML_SAMPLE_PCT` (default `0.10`): % of successful traditional predictions also queued to ML for exploration.
   - `IMT_ML_REPLACE_DELTA` (default `0.05`): minimum ML confidence improvement to overwrite an existing non‑ML prediction.
+  - `IMT_ML_COMPARE` (default `false`): when `true` the predictor will attempt a short live comparison between the traditional/pattern result and the ML ensemble and choose the higher-confidence result. This is opt-in to avoid blocking the prediction flow.
+  - `IMT_ML_COMPARE_WAIT_MS` (default `200`): maximum time in milliseconds to wait for a recent ML result when `IMT_ML_COMPARE` is enabled. If no ML result is produced within this window the predictor falls back to the traditional result and continues (the ML worker still runs asynchronously).
+
+- Observability
+  - New Prometheus metric: `imt_track_predictions_ml_wins` — counts how often the live ML vs. pattern comparison chose the ML result. Labels: `station_id`, `route_id`, `instance`.
 
 ## Track Prediction Feature
 

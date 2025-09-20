@@ -120,8 +120,8 @@ def get_next_backup_time(now: Optional[datetime] = None) -> datetime:
     try:
         hour_str, minute_str = backup_time.split(":", 1)
         hour, minute = int(hour_str), int(minute_str)
-    except Exception:
-        # Fallback to 03:00 on parse error
+    except ValueError:
+        # Fallback to 03:00 on parse error (invalid integer parsing)
         hour, minute = 3, 0
 
     candidate = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
@@ -199,9 +199,9 @@ async def __main__() -> None:
 
             # Start ML worker only if enabled via env IMT_ML
             if os.getenv("IMT_ML", "").strip().lower() in {"1", "true", "yes", "on"}:
-                tg.start_soon(
-                    TrackPredictor(get_redis(redis_pool)).ml_prediction_worker
-                )
+                track_predictor = TrackPredictor(get_redis(redis_pool))
+                await track_predictor.initialize()
+                tg.start_soon(track_predictor.ml_prediction_worker)
 
             # consumer
             tg.start_soon(process_queue_async, receive_stream, tg)

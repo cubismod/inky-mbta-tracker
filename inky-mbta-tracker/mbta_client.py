@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Optional
 from zoneinfo import ZoneInfo
 
 import aiohttp
+import anyio
 from aiohttp import ClientSession
 from aiohttp.client_exceptions import ClientPayloadError
 from aiosseclient import aiosseclient
@@ -857,8 +858,165 @@ class MBTAApi:
                             ):
                                 try:
                                     if self.track_predictor:
+
+                                        async def _run_and_log_predict(
+                                            station_id_: str,
+                                            route_id_: str,
+                                            trip_id_: str,
+                                            headsign_: str,
+                                            direction_id_: int,
+                                            scheduled_time_: datetime,
+                                            tg_: TaskGroup,
+                                        ) -> None:
+                                            """
+                                            Wrapper around TrackPredictor.predict_track that:
+                                            - checks the existing prediction cache and skips work if already cached
+                                            - adds a small random jitter before predicting to reduce simultaneous runs
+                                            - re-checks cache and negative-cache after jitter to be conservative
+                                            - concurrent ML predictions (when no cache) are acceptable
+                                            """
+                                            # Normalize station id to canonical station for Redis keys
+                                            norm_station_id = (
+                                                self.track_predictor.normalize_station(
+                                                    station_id_
+                                                )
+                                            )
+                                            cache_key = f"track_prediction:{norm_station_id}:{route_id_}:{trip_id_}:{scheduled_time_.date()}"
+                                            negative_cache_key = f"negative_{cache_key}"
+
+                                            # Conservative pre-check: skip if a positive or negative cache exists
+                                            try:
+                                                cached = await check_cache(
+                                                    self.r_client, cache_key
+                                                )
+                                                if cached:
+                                                    logger.debug(
+                                                        "Skipping prediction because cached result exists",
+                                                        extra={
+                                                            "cache_key": cache_key,
+                                                            "station_id": norm_station_id,
+                                                            "route_id": route_id_,
+                                                            "trip_id": trip_id_,
+                                                        },
+                                                    )
+                                                    return
+                                                neg = await check_cache(
+                                                    self.r_client, negative_cache_key
+                                                )
+                                                if neg:
+                                                    logger.debug(
+                                                        "Skipping prediction because negative cache exists",
+                                                        extra={
+                                                            "negative_cache_key": negative_cache_key,
+                                                            "station_id": norm_station_id,
+                                                            "route_id": route_id_,
+                                                            "trip_id": trip_id_,
+                                                        },
+                                                    )
+                                                    return
+                                            except (
+                                                RedisError,
+                                                TimeoutError,
+                                                aiohttp.ClientError,
+                                            ) as e:
+                                                # If cache check fails with expected runtime errors,
+                                                # proceed but log at debug level so precache isn't blocked.
+                                                logger.debug(
+                                                    "Cache check failed while deciding whether to precache; proceeding",
+                                                    exc_info=e,
+                                                )
+
+                                            # Add random jitter (ms) before predicting to reduce thundering herd.
+                                            try:
+                                                max_jitter_ms = int(
+                                                    os.getenv(
+                                                        "IMT_PRED_JITTER_MS", "200"
+                                                    )
+                                                )
+                                            except (ValueError, TypeError):
+                                                max_jitter_ms = 200
+                                            try:
+                                                jitter_ms = randint(0, max_jitter_ms)
+                                                await anyio.sleep(jitter_ms / 1000.0)
+                                            except CancelledError:
+                                                # Best-effort jitter; do not block on cancellation
+                                                logger.debug(
+                                                    "Prediction jitter sleep was cancelled",
+                                                    exc_info=True,
+                                                )
+
+                                            # Re-check caches after jitter to be extra conservative
+                                            try:
+                                                cached = await check_cache(
+                                                    self.r_client, cache_key
+                                                )
+                                                if cached:
+                                                    logger.debug(
+                                                        "Skipping prediction after jitter because cached result exists",
+                                                        extra={
+                                                            "cache_key": cache_key,
+                                                            "station_id": norm_station_id,
+                                                            "route_id": route_id_,
+                                                            "trip_id": trip_id_,
+                                                        },
+                                                    )
+                                                    return
+                                                neg = await check_cache(
+                                                    self.r_client, negative_cache_key
+                                                )
+                                                if neg:
+                                                    logger.debug(
+                                                        "Skipping prediction after jitter because negative cache exists",
+                                                        extra={
+                                                            "negative_cache_key": negative_cache_key,
+                                                            "station_id": norm_station_id,
+                                                            "route_id": route_id_,
+                                                            "trip_id": trip_id_,
+                                                        },
+                                                    )
+                                                    return
+                                            except (
+                                                RedisError,
+                                                TimeoutError,
+                                                aiohttp.ClientError,
+                                            ) as e:
+                                                # Cache re-check failed with an expected I/O/runtime error;
+                                                # proceed with prediction path but emit debug context.
+                                                logger.debug(
+                                                    "Cache re-check failed; proceeding to predict",
+                                                    exc_info=e,
+                                                )
+
+                                            try:
+                                                pred = await self.track_predictor.predict_track(
+                                                    norm_station_id,
+                                                    route_id_,
+                                                    trip_id_,
+                                                    headsign_,
+                                                    int(direction_id_),
+                                                    scheduled_time_,
+                                                    tg_,
+                                                )
+                                                if pred:
+                                                    logger.info(
+                                                        f"Track prediction made: {pred.station_id} {pred.route_id} {pred.scheduled_time.strftime('%Y-%m-%d %H:%M')} -> {pred.track_number} (conf={pred.confidence_score:.2f}, method={pred.prediction_method})"
+                                                    )
+                                            except (
+                                                ValidationError,
+                                                aiohttp.ClientError,
+                                                TimeoutError,
+                                                RedisError,
+                                            ) as e:
+                                                # Predict may fail due to validation, network, timing, or Redis errors.
+                                                # Only log those expected error types; allow other unexpected
+                                                # errors to surface so they can be handled appropriately upstream.
+                                                logger.error(
+                                                    "Error running predict_track",
+                                                    exc_info=e,
+                                                )
+
                                         tg.start_soon(
-                                            self.track_predictor.predict_track,
+                                            _run_and_log_predict,
                                             station_id,
                                             route_id,
                                             trip_id,
@@ -1264,11 +1422,22 @@ async def precache_track_predictions_runner(
             async with MBTAApi(
                 r_client, watcher_type=TaskType.TRACK_PREDICTIONS
             ) as api:
-                await api._precache_track_predictions(
-                    tg=tg,
-                    routes=routes,
-                    target_stations=target_stations,
-                )
+                try:
+                    num_cached = await api._precache_track_predictions(
+                        tg=tg,
+                        routes=routes,
+                        target_stations=target_stations,
+                    )
+                    logger.info(
+                        f"Track prediction precache completed: {num_cached} predictions cached; routes={routes}, stations={target_stations}"
+                    )
+                except (
+                    ValidationError,
+                    RedisError,
+                    ConnectionError,
+                    TimeoutError,
+                ) as e:
+                    logger.error("Error during precache operation", exc_info=e)
 
         except CancelledError:
             logger.info("Track prediction precache runner cancelled")

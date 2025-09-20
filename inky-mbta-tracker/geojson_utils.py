@@ -74,8 +74,9 @@ async def light_get_alerts_batch(
     except ValidationError as err:
         logger.error("Unable to validate alerts response", exc_info=err)
         return None
-    except Exception as err:
-        logger.error("Error fetching alerts", exc_info=err)
+    except (aiohttp.ClientError, TimeoutError) as err:
+        # Network/client issues or timeouts when calling MBTA; propagate a clear log
+        logger.error("Error fetching alerts from MBTA API", exc_info=err)
         return None
 
 
@@ -174,12 +175,13 @@ async def collect_alerts(
                             f"Alert {a.id} attributes dir: {dir(a.attributes)}"
                         )
 
-                    except Exception as e:
+                    except (AttributeError, TypeError, ValueError) as e:
+                        # Narrow to likely errors when inspecting/parsing alert objects
                         logger.error(
-                            f"Error processing alert in batch {batch_num}: {e}",
-                            exc_info=True,
+                            f"Error processing alert in batch {batch_num}",
+                            exc_info=e,
                         )
-                        logger.error(f"Problematic alert data: {a}")
+                        logger.debug("Problematic alert data", extra={"alert": a})
                         continue
             else:
                 logger.debug(f"Batch {batch_num}: No alerts received from MBTA API")
