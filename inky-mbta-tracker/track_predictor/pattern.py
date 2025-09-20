@@ -28,7 +28,6 @@ from typing import (
     Iterable,
     List,
     Optional,
-    Tuple,
 )
 
 from shared_types.shared_types import TrackAssignment
@@ -71,246 +70,65 @@ def compute_assignment_scores(
     Returns a dict of TrackAssignment IDs and scorings
     """
     target_dow = scheduled_time.weekday()
-    target_hour = scheduled_time.hour
-    target_minute = scheduled_time.minute
     target_service_type = detect_service_type(trip_headsign)
     target_is_weekend = is_weekend_service(target_dow)
 
+    combined_scores: Dict[str, float] = defaultdict(float)
+    sample_counts: Dict[str, int] = defaultdict(int)
+
     for assignment in assignments:
-        route_id_match = False
-        time_similarity = 0
-        
-        headsign_similarity = enhanced_headsign_similarity(trip_headsign, assignment.headsign)
-        assignment_service_type = detect_service_type(
-            assignment.headsign
-        )
-        assignment_is_weekend = is_weekend_service(
-            target_dow
+        track = assignment.track_number
+        if not track:
+            continue
+
+        headsign_similarity = float(
+            enhanced_headsign_similarity(trip_headsign, assignment.headsign or "")
         )
 
-        time_diff_min = int(abs((assignment.scheduled_time - scheduled_time).total_seconds()) / 60)
+        time_diff_min = int(
+            abs((assignment.scheduled_time - scheduled_time).total_seconds()) / 60
+        )
 
-        if (assignment.direction_id == direction_id):
-            if route_id == assignment.route_id:
-                
-            
-            # if (
-            #     headsign_similarity > 0.7
-            #     and time_diff_min <= 60
-            # ):
-            #     score = 15 * headsign_similarity
-            # elif (headsign_similarity > 0.5):
-            #     score = int(8 * headsign_similarity)
-            # if time_diff_min <= 30:
-            #     score += 5
-            # if time_diff_min <= 60 and time_diff_min > 30:
-            #     score += 3
-            # if route_id == assignment.route_id:
-            #     score += 3
-            # if 
+        # Map time diff to a 0..1 score (closer is better)
+        if time_diff_min <= 15:
+            time_score = 1.0
+        elif time_diff_min <= 30:
+            time_score = 0.8
+        elif time_diff_min <= 60:
+            time_score = 0.6
+        elif time_diff_min <= 120:
+            time_score = 0.3
+        else:
+            time_score = 0.0
 
-        
+        # Direction and route matches (binary)
+        direction_match = 1.0 if assignment.direction_id == direction_id else 0.0
+        route_match = 1.0 if assignment.route_id == route_id else 0.0
 
+        # Service type and weekend match bonuses (binary)
+        assignment_service_type = detect_service_type(assignment.headsign)
+        service_type_match = (
+            1.0 if assignment_service_type == target_service_type else 0.0
+        )
+        assignment_is_weekend = is_weekend_service(assignment.day_of_week)
+        weekend_match = 1.0 if assignment_is_weekend == target_is_weekend else 0.0
 
-    
+        # Weighted combination (weights sum to 1.0)
+        score = (
+            0.5 * headsign_similarity
+            + 0.3 * time_score
+            + 0.1 * direction_match
+            + 0.05 * route_match
+            + 0.05 * (0.7 * service_type_match + 0.3 * weekend_match)
+        )
 
+        # Clamp to [0,1]
+        score = max(0.0, min(1.0, score))
 
-    # Initialize pattern buckets for debugging/metrics
-    # patterns: Dict[str, Dict[str, int]] = {
-    #     "exact_match": defaultdict(int),  # Same headsign, time, direction
-    #     "headsign_match": defaultdict(int),
-    #     "platform_consistency": defaultdict(int),
-    #     "time_match_30": defaultdict(int),
-    #     "time_match_60": defaultdict(int),
-    #     "time_match_120": defaultdict(int),
-    #     "direction_match": defaultdict(int),
-    #     "day_of_week_match": defaultdict(int),
-    #     "service_type_match": defaultdict(int),
-    #     "weekend_pattern_match": defaultdict(int),
-    # }
+        combined_scores[track] += score
+        sample_counts[track] += 1
 
-    # # Materialize assignments as list to iterate multiple times
-    # assignment_list = list(assignments)
-
-    # if not assignment_list:
-    #     return {}, {}, patterns
-
-    # # Precompute modal track for platform consistency bonus
-    # modal_counts: Dict[str, int] = {}
-    # for a in assignment_list:
-    #     if getattr(a, "track_number", None):
-    #         modal_counts[a.track_number] = modal_counts.get(a.track_number, 0) + 1
-    # modal_track: Optional[str] = None
-    # if modal_counts:
-    #     # Ensure modal_counts is a dict with string keys and int values
-    #     modal_track = max(modal_counts.items(), key=lambda x: x[1])[0]
-
-    # target_dow = scheduled_time.weekday()
-    # target_hour = scheduled_time.hour
-    # target_minute = scheduled_time.minute
-    # target_service_type = detect_service_type(trip_headsign)
-    # target_is_weekend = is_weekend_service(target_dow)
-
-    # combined_scores: Dict[str, float] = defaultdict(float)
-    # sample_counts: Dict[str, int] = defaultdict(int)
-
-    # # First pass: accumulate pattern buckets (kept similar to prior code for debug)
-    # for assignment in assignment_list:
-    #     if not getattr(assignment, "track_number", None):
-    #         continue
-    #     try:
-    #         headsign_similarity = enhanced_headsign_similarity(
-    #             trip_headsign, getattr(assignment, "headsign", "") or ""
-    #         )
-    #     except (TypeError, ValueError):
-    #         # If similarity computation fails due to bad types or values, treat as no similarity.
-    #         headsign_similarity = 0.0
-
-    #     assignment_service_type = detect_service_type(
-    #         getattr(assignment, "headsign", "") or ""
-    #     )
-    #     assignment_is_weekend = is_weekend_service(
-    #         getattr(assignment, "day_of_week", 0)
-    #     )
-
-    #     # time difference in minutes
-    #     try:
-    #         time_diff_minutes = int(
-    #             abs((assignment.scheduled_time - scheduled_time).total_seconds()) / 60
-    #         )
-    #     except (AttributeError, TypeError):
-    #         # Fallback to hour/minute if scheduled_time missing or malformed
-    #         try:
-    #             time_diff_minutes = abs(
-    #                 getattr(assignment, "hour", 0) * 60
-    #                 + getattr(assignment, "minute", 0)
-    #                 - target_hour * 60
-    #                 - target_minute
-    #             )
-    #         except (AttributeError, TypeError, ValueError):
-    #             # If fallback also fails, use a large sentinel value so it won't match time windows
-    #             time_diff_minutes = 9999
-
-    #     # Exact-ish match (enhanced similarity + time + direction)
-    #     if (
-    #         headsign_similarity > 0.6
-    #         and getattr(assignment, "direction_id", None) == direction_id
-    #         and time_diff_minutes <= 60
-    #     ):
-    #         score = int(15 * headsign_similarity)
-    #         patterns["exact_match"][assignment.track_number] += int(score)
-
-    #     # Headsign match (lower threshold)
-    #     if (
-    #         headsign_similarity > 0.5
-    #         and getattr(assignment, "direction_id", None) == direction_id
-    #     ):
-    #         score = int(8 * headsign_similarity)
-    #         patterns["headsign_match"][assignment.track_number] += int(score)
-
-    #     if time_diff_minutes <= 30:
-    #         patterns["time_match_30"][assignment.track_number] += 5
-    #     elif time_diff_minutes <= 60:
-    #         patterns["time_match_60"][assignment.track_number] += 3
-    #     elif time_diff_minutes <= 120:
-    #         patterns["time_match_120"][assignment.track_number] += 2
-
-    #     if getattr(assignment, "direction_id", None) == direction_id:
-    #         patterns["direction_match"][assignment.track_number] += 2
-
-    #     if target_service_type == assignment_service_type:
-    #         patterns["service_type_match"][assignment.track_number] += 3
-
-    #     if target_is_weekend == assignment_is_weekend:
-    #         patterns["weekend_pattern_match"][assignment.track_number] += 2
-
-    #     if getattr(assignment, "day_of_week", None) == target_dow:
-    #         patterns["day_of_week_match"][assignment.track_number] += 1
-
-    #     if modal_track and getattr(assignment, "track_number", None) == modal_track:
-    #         patterns["platform_consistency"][assignment.track_number] += 4
-
-    # # Second pass: compute combined_scores with time decay and graduated scoring
-    # for assignment in assignment_list:
-    #     if not getattr(assignment, "track_number", None):
-    #         continue
-
-    #     try:
-    #         days_old = (scheduled_time - assignment.scheduled_time).days
-    #         time_decay = max(0.1, 1.0 - (days_old / 90.0))
-    #     except (AttributeError, TypeError):
-    #         # If scheduled_time missing or not a datetime, apply conservative decay
-    #         time_decay = 0.1
-
-    #     try:
-    #         headsign_similarity = enhanced_headsign_similarity(
-    #             trip_headsign, getattr(assignment, "headsign", "") or ""
-    #         )
-    #     except (TypeError, ValueError):
-    #         headsign_similarity = 0.0
-
-    #     assignment_service_type = detect_service_type(
-    #         getattr(assignment, "headsign", "") or ""
-    #     )
-    #     assignment_is_weekend = is_weekend_service(
-    #         getattr(assignment, "day_of_week", 0)
-    #     )
-
-    #     try:
-    #         time_diff_minutes = int(
-    #             abs((assignment.scheduled_time - scheduled_time).total_seconds()) / 60
-    #         )
-    #     except (AttributeError, TypeError):
-    #         try:
-    #             time_diff_minutes = abs(
-    #                 getattr(assignment, "hour", 0) * 60
-    #                 + getattr(assignment, "minute", 0)
-    #                 - target_hour * 60
-    #                 - target_minute
-    #             )
-    #         except (AttributeError, TypeError, ValueError):
-    #             time_diff_minutes = 9999
-
-    #     base_score = 0.0
-
-    #     if (
-    #         headsign_similarity > 0.6
-    #         and getattr(assignment, "direction_id", None) == direction_id
-    #         and time_diff_minutes <= 60
-    #     ):
-    #         base_score = 15 * headsign_similarity
-    #     elif (
-    #         headsign_similarity > 0.5
-    #         and getattr(assignment, "direction_id", None) == direction_id
-    #     ):
-    #         base_score = 8 * headsign_similarity
-    #     elif time_diff_minutes <= 30:
-    #         base_score = 5.0
-    #     elif time_diff_minutes <= 60:
-    #         base_score = 3.0
-    #     elif time_diff_minutes <= 120:
-    #         base_score = 2.0
-    #     elif getattr(assignment, "direction_id", None) == direction_id:
-    #         base_score = 2.0
-    #     elif target_is_weekend == assignment_is_weekend:
-    #         base_score = 2.0
-    #     elif getattr(assignment, "day_of_week", None) == target_dow:
-    #         base_score = 1.0
-
-    #     # Service type bonus
-    #     if target_service_type == assignment_service_type and base_score > 0:
-    #         base_score = base_score * 1.2
-
-    #     if base_score > 0:
-    #         t = assignment.track_number
-    #         combined_scores[t] += base_score * time_decay
-    #         sample_counts[t] += 1
-
-    # return (
-    #     dict(combined_scores),
-    #     dict(sample_counts),
-    #     {k: dict(v) for k, v in patterns.items()},
-    # )
+    return dict(combined_scores), dict(sample_counts)
 
 
 async def compute_final_probabilities(
