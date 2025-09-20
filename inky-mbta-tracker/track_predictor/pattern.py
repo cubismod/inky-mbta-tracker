@@ -97,17 +97,14 @@ def compute_assignment_scores(
         return {}, {}, patterns
 
     # Precompute modal track for platform consistency bonus
-    try:
-        modal_counts: Dict[str, int] = {}
-        for a in assignment_list:
-            if getattr(a, "track_number", None):
-                modal_counts[a.track_number] = modal_counts.get(a.track_number, 0) + 1
-        modal_track: Optional[str] = None
-        if modal_counts:
-            modal_track = max(modal_counts.items(), key=lambda x: x[1])[0]
-    except (AttributeError, TypeError):
-        # If assignments are malformed or attributes not present, treat as no modal track.
-        modal_track = None
+    modal_counts: Dict[str, int] = {}
+    for a in assignment_list:
+        if getattr(a, "track_number", None):
+            modal_counts[a.track_number] = modal_counts.get(a.track_number, 0) + 1
+    modal_track: Optional[str] = None
+    if modal_counts:
+        # Ensure modal_counts is a dict with string keys and int values
+        modal_track = max(modal_counts.items(), key=lambda x: x[1])[0]
 
     target_dow = scheduled_time.weekday()
     target_hour = scheduled_time.hour
