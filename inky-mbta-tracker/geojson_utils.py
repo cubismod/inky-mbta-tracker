@@ -12,10 +12,9 @@ from config import Config
 from consts import MBTA_V3_ENDPOINT
 from geojson import Feature, LineString, Point
 from mbta_client import (
-    get_shapes,
-    light_get_stop,
     silver_line_lookup,
 )
+from mbta_client_extended import get_shapes, light_get_stop
 from mbta_responses import AlertResource
 from prometheus import redis_commands
 from pydantic import ValidationError
@@ -272,25 +271,6 @@ async def get_vehicle_features(
                                         Feature(geometry=point),
                                         vehicle_info.speed,
                                     )
-                            # station_id, has_track_predictions = determine_station_id(
-                            #     stop_id
-                            # )
-                            # if (
-                            #     vehicle_info.route.startswith("CR")
-                            #     and has_track_predictions
-                            # ):
-                            #     track_predictor = TrackPredictor(r_client=r_client)
-                            #     prediction = await track_predictor.predict_track(
-                            #         station_id=station_id,
-                            #         route_id=vehicle_info.route,
-                            #         trip_id=f"{vehicle_info.route}:{vehicle_info.id}",
-                            #         headsign=vehicle_info.headsign or "",
-                            #         direction_id=vehicle_info.direction_id,
-                            #         scheduled_time=vehicle_info.update_time,
-                            #         tg=tg,
-                            #     )
-                            #     if prediction:
-                            #         platform_prediction = f"{prediction.track_number} ({round(prediction.confidence_score * 100)}% confidence)"
                     else:
                         route_icon = "rail_amtrak"
                         stop_id = vehicle_info.stop

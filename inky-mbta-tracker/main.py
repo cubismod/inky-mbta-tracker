@@ -15,7 +15,7 @@ from consts import MBTA_V3_ENDPOINT
 from dotenv import load_dotenv
 from geojson_utils import background_refresh
 from logging_setup import setup_logging
-from mbta_client import (
+from mbta_client_extended import (
     precache_track_predictions_runner,
     watch_alerts,
     watch_static_schedule,

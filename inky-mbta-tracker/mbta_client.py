@@ -11,13 +11,15 @@ from zoneinfo import ZoneInfo
 import aiohttp
 import anyio
 from aiohttp import ClientSession
-from aiohttp.client_exceptions import ClientPayloadError
-from aiosseclient import aiosseclient
-from anyio import create_task_group, sleep
+from anyio import sleep
 from anyio.abc import TaskGroup
 from anyio.streams.memory import MemoryObjectSendStream
-from consts import DAY, FOUR_WEEKS, HOUR, MBTA_V3_ENDPOINT, MINUTE, TWO_MONTHS, YEAR
+from consts import DAY, HOUR, MINUTE, TWO_MONTHS, YEAR
 from exceptions import RateLimitExceeded
+from mbta_client_extended import (
+    determine_station_id,
+    silver_line_lookup,
+)
 from mbta_responses import (
     AlertResource,
     Facilities,
@@ -28,7 +30,6 @@ from mbta_responses import (
     ScheduleAttributes,
     ScheduleResource,
     Schedules,
-    Shapes,
     Stop,
     StopAndFacilities,
     TripResource,
@@ -37,46 +38,25 @@ from mbta_responses import (
     Vehicle,
 )
 from ollama_imt import OllamaClientIMT
-from polyline import decode
 from prometheus import (
     mbta_api_requests,
     query_server_side_events,
-    server_side_events,
-    tracker_executions,
 )
-from pydantic import BaseModel, TypeAdapter, ValidationError
+from pydantic import TypeAdapter, ValidationError
 from redis.asyncio.client import Redis
 from redis.exceptions import RedisError
 from redis_cache import check_cache, write_cache
 from schedule_tracker import ScheduleEvent, VehicleRedisSchema, dummy_schedule_event
 from shared_types.shared_types import (
-    LineRoute,
-    RouteShapes,
     TaskType,
     TrackAssignment,
     TrackAssignmentType,
-    LightStop,
 )
 from tenacity import (
-    before_log,
     before_sleep_log,
     retry,
     retry_if_not_exception_type,
     wait_exponential_jitter,
-)
-from mbta_client_extended import (
-    parse_shape_data,
-    get_shapes,
-    silver_line_lookup,
-    light_get_stop,
-    light_get_alerts,
-    precache_track_predictions_runner,
-    watch_mbta_server_side_events,
-    watch_static_schedule,
-    watch_vehicles,
-    watch_station,
-    determine_station_id,
-    watch_alerts,
 )
 
 if TYPE_CHECKING:
@@ -1271,285 +1251,3 @@ class MBTAApi:
         else:
             logger.warning("Track predictor not available for precaching")
             return 0
-
-
-async def precache_track_predictions_runner(
-    r_client: Redis,
-    tg: TaskGroup,
-    routes: Optional[list[str]] = None,
-    target_stations: Optional[list[str]] = None,
-    interval_hours: int = 8,
-) -> None:
-    """
-    Run track prediction precaching at regular intervals.
-
-    Args:
-        routes: List of route IDs to precache (defaults to all CR routes)
-        target_stations: List of station IDs to precache for (defaults to supported stations)
-        interval_hours: Hours between precaching runs (default: 2)
-    """
-    logger.info(
-        f"Starting track prediction precaching runner (interval: {interval_hours}h)"
-    )
-
-    while True:
-        try:
-            async with MBTAApi(
-                r_client, watcher_type=TaskType.TRACK_PREDICTIONS
-            ) as api:
-                try:
-                    num_cached = await api._precache_track_predictions(
-                        tg=tg,
-                        routes=routes,
-                        target_stations=target_stations,
-                    )
-                    logger.info(
-                        f"Track prediction precache completed: {num_cached} predictions cached; routes={routes}, stations={target_stations}"
-                    )
-                except (
-                    ValidationError,
-                    RedisError,
-                    ConnectionError,
-                    TimeoutError,
-                ) as e:
-                    logger.error("Error during precache operation", exc_info=e)
-
-        except CancelledError:
-            logger.info("Track prediction precache runner cancelled")
-            break
-        except (ValidationError, RedisError, ConnectionError, TimeoutError) as e:
-            logger.error("Error in track prediction precaching runner", exc_info=e)
-
-        # Wait for the specified interval
-        await sleep(interval_hours * HOUR)
-
-
-@retry(
-    wait=wait_exponential_jitter(initial=5, jitter=20, max=60),
-    before=before_log(logger, logging.INFO),
-    before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
-    retry=retry_if_not_exception_type(CancelledError),
-)
-async def watch_mbta_server_side_events(
-    watcher: MBTAApi,
-    endpoint: str,
-    headers: dict[str, str],
-    send_stream: MemoryObjectSendStream[ScheduleEvent | VehicleRedisSchema] | None,
-    session: ClientSession,
-    transit_time_min: int,
-) -> None:
-    while True:
-        try:
-            # Inner try dedicated to ExceptionGroup handling via except*
-            try:
-                async with create_task_group() as tg:
-                    client = aiosseclient(endpoint, headers=headers)
-                    if os.getenv("IMT_PROMETHEUS_ENDPOINT"):
-                        tg.start_soon(watcher._monitor_health, tg)
-                    async for event in client:
-                        server_side_events.labels(watcher.gen_unique_id()).inc()
-                        tg.start_soon(
-                            watcher.parse_live_api_response,
-                            event.data,
-                            event.event,
-                            send_stream,
-                            transit_time_min,
-                            session,
-                            tg,
-                        )
-            except* ClientPayloadError as eg:
-                # Handle aiohttp payload/errors wrapped in ExceptionGroup from TaskGroup
-                for err in eg.exceptions:
-                    logger.error("SSE client payload error", exc_info=err)
-        except CancelledError:
-            # Normal shutdown path; keep logs concise
-            logger.info("SSE watcher cancelled; stopping stream loop")
-            return
-        except GeneratorExit as e:
-            logger.error("GeneratorExit in watch_mbta_server_side_events", exc_info=e)
-            return
-
-
-@retry(
-    wait=wait_exponential_jitter(initial=5, jitter=20, max=60),
-    before=before_log(logger, logging.INFO),
-    before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
-    retry=retry_if_not_exception_type(CancelledError),
-)
-async def watch_static_schedule(
-    r_client: Redis,
-    stop_id: str,
-    route: str | None,
-    direction: int | None,
-    send_stream: MemoryObjectSendStream[ScheduleEvent | VehicleRedisSchema],
-    transit_time_min: int,
-    show_on_display: bool,
-    tg: TaskGroup,
-    route_substring_filter: Optional[str] = None,
-    session: ClientSession | None = None,
-) -> None:
-    if route_substring_filter:
-        logger.info(
-            f"Watching station {stop_id} for route substring filter {route_substring_filter}"
-        )
-    refresh_time = datetime.now().astimezone(UTC) - timedelta(minutes=10)
-    assert session is not None, (
-        "ClientSession must be provided to watch_static_schedule"
-    )
-    while True:
-        if datetime.now().astimezone(UTC) > refresh_time:
-            async with MBTAApi(
-                r_client,
-                stop_id=stop_id,
-                route=route,
-                direction_filter=direction,
-                schedule_only=True,
-                watcher_type=TaskType.SCHEDULES,
-                show_on_display=show_on_display,
-                route_substring_filter=route_substring_filter,
-            ) as watcher:
-                await watcher.save_own_stop(session, tg)
-                await watcher.save_schedule(transit_time_min, send_stream, session, tg)
-                refresh_time = datetime.now().astimezone(UTC) + timedelta(
-                    hours=randint(2, 6)
-                )
-        await sleep(10)
-
-
-@retry(
-    wait=wait_exponential_jitter(initial=5, jitter=20, max=60),
-    before=before_log(logger, logging.INFO),
-    before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
-    retry=retry_if_not_exception_type(CancelledError),
-)
-async def watch_vehicles(
-    r_client: Redis,
-    send_stream: MemoryObjectSendStream[ScheduleEvent | VehicleRedisSchema],
-    expiration_time: Optional[datetime],
-    route_id: str,
-    session: ClientSession | None = None,
-) -> None:
-    endpoint = f"{MBTA_V3_ENDPOINT}/vehicles?fields[vehicle]=direction_id,latitude,longitude,speed,current_status,occupancy_status,carriages&filter[route]={route_id}&api_key={MBTA_AUTH}"
-    mbta_api_requests.labels("vehicles").inc()
-    headers = {"accept": "text/event-stream"}
-    assert session is not None, "ClientSession must be provided to watch_vehicles"
-    async with MBTAApi(
-        r_client,
-        route=route_id,
-        watcher_type=TaskType.VEHICLES,
-        expiration_time=expiration_time,
-    ) as watcher:
-        tracker_executions.labels("vehicles").inc()
-        await watch_mbta_server_side_events(
-            watcher,
-            endpoint,
-            headers,
-            send_stream,
-            session=session,
-            transit_time_min=0,
-        )
-
-
-async def watch_station(
-    r_client: Redis,
-    stop_id: str,
-    route: str | None,
-    direction_filter: Optional[int],
-    send_stream: MemoryObjectSendStream[ScheduleEvent | VehicleRedisSchema],
-    transit_time_min: int,
-    expiration_time: Optional[datetime],
-    show_on_display: bool,
-    tg: TaskGroup,
-    route_substring_filter: Optional[str] = None,
-    session: ClientSession | None = None,
-) -> None:
-    if route_substring_filter:
-        logger.info(
-            f"Watching station {stop_id} for route substring filter {route_substring_filter}"
-        )
-    endpoint = (
-        f"{MBTA_V3_ENDPOINT}/predictions?filter[stop]={stop_id}&api_key={MBTA_AUTH}"
-    )
-
-    mbta_api_requests.labels("predictions").inc()
-    if route != "":
-        endpoint += f"&filter[route]={route}"
-    if direction_filter != "":
-        endpoint += f"&filter[direction_id]={direction_filter}"
-    headers = {"accept": "text/event-stream"}
-
-    assert session is not None, "ClientSession must be provided to watch_station"
-    async with MBTAApi(
-        r_client,
-        stop_id,
-        route,
-        direction_filter,
-        expiration_time,
-        watcher_type=TaskType.SCHEDULE_PREDICTIONS,
-        show_on_display=show_on_display,
-        route_substring_filter=route_substring_filter,
-    ) as watcher:
-        tg.start_soon(watcher.save_own_stop, session, tg)
-        if watcher.stop:
-            tracker_executions.labels(watcher.stop.data.attributes.name).inc()
-        await watch_mbta_server_side_events(
-            watcher,
-            endpoint,
-            headers,
-            send_stream,
-            session,
-            transit_time_min,
-        )
-
-
-# takes a stop_id from the vehicle API and returns the station_id and if it is one of the stations that has track predictions
-def determine_station_id(stop_id: str) -> tuple[str, bool]:
-    if "North Station" in stop_id or "BNT" in stop_id or "place-north" in stop_id:
-        return "place-north", True
-    if "South Station" in stop_id or "NEC-2287" in stop_id or "place-sstat" in stop_id:
-        return "place-sstat", True
-    if "Back Bay" in stop_id or "NEC-1851" in stop_id or "place-bbsta" in stop_id:
-        return "place-bbsta", True
-    if "Ruggles" in stop_id or "NEC-2265" in stop_id or "place-rugg" in stop_id:
-        return "place-rugg", True
-    if "Providence" in stop_id or "NEC-1851" in stop_id:
-        return "place-NEC-1851", True
-    return stop_id, False
-
-
-@retry(
-    wait=wait_exponential_jitter(initial=5, jitter=20, max=60),
-    before=before_log(logger, logging.INFO),
-    before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
-    retry=retry_if_not_exception_type(CancelledError),
-)
-async def watch_alerts(
-    r_client: Redis, route_id: Optional[str], session: ClientSession
-) -> None:
-    """Watch MBTA Alerts via SSE and persist to Redis.
-
-    - If `route_id` is provided, filters alerts for that route and maintains
-      `alerts:route:{route_id}` set membership.
-    - Stores individual alerts under `alert:{id}` with a short TTL.
-    """
-    # Base endpoint and filters
-    endpoint = f"{MBTA_V3_ENDPOINT}/alerts?api_key={MBTA_AUTH}&filter[lifecycle]=NEW,ONGOING,ONGOING_UPCOMING&filter[datetime]=NOW&filter[severity]=3,4,5,6,7,8,9,10"
-    if route_id:
-        endpoint += f"&filter[route]={route_id}"
-    headers = {"accept": "text/event-stream"}
-
-    async with MBTAApi(
-        r_client,
-        route=route_id,
-        watcher_type=TaskType.ALERTS,
-    ) as watcher:
-        tracker_executions.labels("alerts").inc()
-        await sleep(randint(1, 15))
-        await watch_mbta_server_side_events(
-            watcher,
-            endpoint,
-            headers,
-            None,
-            session=session,
-            transit_time_min=0,
-        )

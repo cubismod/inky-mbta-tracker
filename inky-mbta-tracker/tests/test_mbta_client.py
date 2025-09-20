@@ -5,14 +5,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import anyio
 import pytest
 from mbta_client import (
-    LightStop,
     MBTAApi,
     determine_station_id,
-    light_get_alerts,
-    light_get_stop,
-    parse_shape_data,
     silver_line_lookup,
 )
+from mbta_client_extended import light_get_alerts, light_get_stop, parse_shape_data
 from mbta_responses import (
     CarriageStatus,
     PredictionAttributes,
@@ -23,7 +20,7 @@ from mbta_responses import (
     VehicleAttributes,
 )
 from redis.asyncio.client import Redis as RedisClient
-from shared_types.shared_types import TaskType
+from shared_types.shared_types import LightStop, TaskType
 
 
 class TestSilverLineLookup:

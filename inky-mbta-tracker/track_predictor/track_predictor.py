@@ -12,6 +12,7 @@ from anyio.abc import TaskGroup
 from consts import INSTANCE_ID, MBTA_V3_ENDPOINT, MONTH, YEAR
 from exceptions import RateLimitExceeded
 from mbta_client import MBTAApi
+from mbta_client_extended import fetch_upcoming_departures
 from numpy.typing import NDArray
 from prometheus import (
     redis_commands,
@@ -27,6 +28,7 @@ from redis.asyncio import Redis
 from redis.exceptions import RedisError
 from redis_cache import check_cache, write_cache
 from shared_types.shared_types import (
+    DepartureInfo,
     TrackAssignment,
     TrackPrediction,
     TrackPredictionStats,
@@ -34,8 +36,6 @@ from shared_types.shared_types import (
 
 # Extracted modules
 from .api_client import (
-    DepartureInfo,
-    fetch_upcoming_departures,
     get_default_routes,
     get_default_target_stations,
 )
@@ -660,8 +660,8 @@ class TrackPredictor:
                 return {}
 
             # Compute combined scores and sample counts using pure helper
-            combined_scores, sample_counts, _patterns = compute_assignment_scores(
-                assignments, trip_headsign, direction_id, scheduled_time
+            combined_scores, scorings = compute_assignment_scores(
+                assignments, route_id, trip_headsign, direction_id, scheduled_time
             )
 
             # Accuracy lookup injected to compute final probabilities
@@ -709,7 +709,7 @@ class TrackPredictor:
 
             # Convert scores -> normalized distribution accounting for sample-size and accuracy
             total = await compute_final_probabilities(
-                combined_scores, sample_counts, _accuracy_lookup
+                combined_scores, scorings, _accuracy_lookup
             )
 
             # Record analysis duration metric
