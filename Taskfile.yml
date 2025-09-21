@@ -13,11 +13,11 @@ tasks:
   fix:
     cmds:
       - uv run ruff check --fix inky-mbta-tracker
-      - uv run ruff check --fix compute_class_hashes.py
+      - uv run ruff check --fix inky-mbta-tracker/compute_class_hashes.py
   format:
     cmds:
       - uv run ruff format inky-mbta-tracker
-      - uv run ruff format compute_class_hashes.py
+      - uv run ruff format inky-mbta-tracker/compute_class_hashes.py
   run:
     cmds:
       - uv run inky-mbta-tracker
@@ -32,7 +32,7 @@ tasks:
       - uvx scalene inky-mbta-tracker/main.py
   compute-class-hashes:
     cmds:
-      - uv run compute_class_hashes.py
+      - uv run inky-mbta-tracker/compute_class_hashes.py
       - uv run ruff format inky-mbta-tracker/shared_types/class_hashes.py
   clear-logs:
     cmds:

@@ -37,6 +37,7 @@ class DIParams(AsyncContextManagerMixin):
             self.r_client = r_client
             self.config = load_config()
             self.track_predictor = TrackPredictor(r_client)
+            await self.track_predictor.initialize()
             try:
                 yield self
             finally:
@@ -55,6 +56,22 @@ API_REQUEST_TIMEOUT = int(os.environ.get("IMT_API_REQUEST_TIMEOUT", "30"))  # se
 TRACK_PREDICTION_TIMEOUT = int(os.environ.get("IMT_TRACK_PREDICTION_TIMEOUT", "15"))
 RATE_LIMITING_ENABLED = os.getenv("IMT_RATE_LIMITING_ENABLED", "true").lower() == "true"
 SSE_ENABLED = os.getenv("IMT_SSE_ENABLED", "true").lower() == "true"
+
+CR_ROUTES = [
+    "CR-Fairmount",
+    "CR-Fitchburg",
+    "CR-Franklin",
+    "CR-Greenbush",
+    "CR-Haverhill",
+    "CR-Kingston",
+    "CR-Lowell",
+    "CR-Needham",
+    "CR-Newburyport",
+    "CR-Providence",
+    "CR-Worcester",
+]
+
+CR_STATIONS = ["place-north", "place-sstat", "place-bbsta"]
 
 
 # Random helper (used in lifespan tasks)

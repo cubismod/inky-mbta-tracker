@@ -12,10 +12,9 @@ from config import Config
 from consts import MBTA_V3_ENDPOINT
 from geojson import Feature, LineString, Point
 from mbta_client import (
-    get_shapes,
-    light_get_stop,
     silver_line_lookup,
 )
+from mbta_client_extended import get_shapes, light_get_stop
 from mbta_responses import AlertResource
 from prometheus import redis_commands
 from pydantic import ValidationError
@@ -74,8 +73,9 @@ async def light_get_alerts_batch(
     except ValidationError as err:
         logger.error("Unable to validate alerts response", exc_info=err)
         return None
-    except Exception as err:
-        logger.error("Error fetching alerts", exc_info=err)
+    except (aiohttp.ClientError, TimeoutError) as err:
+        # Network/client issues or timeouts when calling MBTA; propagate a clear log
+        logger.error("Error fetching alerts from MBTA API", exc_info=err)
         return None
 
 
@@ -174,12 +174,13 @@ async def collect_alerts(
                             f"Alert {a.id} attributes dir: {dir(a.attributes)}"
                         )
 
-                    except Exception as e:
+                    except (AttributeError, TypeError, ValueError) as e:
+                        # Narrow to likely errors when inspecting/parsing alert objects
                         logger.error(
-                            f"Error processing alert in batch {batch_num}: {e}",
-                            exc_info=True,
+                            f"Error processing alert in batch {batch_num}",
+                            exc_info=e,
                         )
-                        logger.error(f"Problematic alert data: {a}")
+                        logger.debug("Problematic alert data", extra={"alert": a})
                         continue
             else:
                 logger.debug(f"Batch {batch_num}: No alerts received from MBTA API")
@@ -270,25 +271,6 @@ async def get_vehicle_features(
                                         Feature(geometry=point),
                                         vehicle_info.speed,
                                     )
-                            # station_id, has_track_predictions = determine_station_id(
-                            #     stop_id
-                            # )
-                            # if (
-                            #     vehicle_info.route.startswith("CR")
-                            #     and has_track_predictions
-                            # ):
-                            #     track_predictor = TrackPredictor(r_client=r_client)
-                            #     prediction = await track_predictor.predict_track(
-                            #         station_id=station_id,
-                            #         route_id=vehicle_info.route,
-                            #         trip_id=f"{vehicle_info.route}:{vehicle_info.id}",
-                            #         headsign=vehicle_info.headsign or "",
-                            #         direction_id=vehicle_info.direction_id,
-                            #         scheduled_time=vehicle_info.update_time,
-                            #         tg=tg,
-                            #     )
-                            #     if prediction:
-                            #         platform_prediction = f"{prediction.track_number} ({round(prediction.confidence_score * 100)}% confidence)"
                     else:
                         route_icon = "rail_amtrak"
                         stop_id = vehicle_info.stop

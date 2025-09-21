@@ -9,10 +9,8 @@ from redis_cache import check_cache, write_cache
 @pytest.fixture(autouse=True)
 def clear_alru_cache() -> None:
     # Ensure per-test isolation for alru_cache
-    try:
+    if hasattr(check_cache, "cache_clear"):
         check_cache.cache_clear()  # type: ignore[attr-defined]
-    except Exception:
-        pass
 
 
 @pytest.mark.anyio("asyncio")

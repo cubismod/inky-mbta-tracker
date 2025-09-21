@@ -37,7 +37,15 @@ def create_app() -> FastAPI:
         ),
         version="2.1.0",
         docs_url="/",
-        servers=[{"url": "https://imt.ryanwallace.cloud", "description": "Production"}],
+        servers=[
+            {
+                "url": os.getenv(
+                    "IMT_FASTAPI_ENDPOINT",
+                    f"http://localhost:{os.getenv('IMT_API_PORT', '8080')}",
+                ),
+                "description": "Production",
+            }
+        ],
         swagger_ui_parameters={
             "defaultModelsExpandDepth": 1,
             "defaultModelExpandDepth": 1,

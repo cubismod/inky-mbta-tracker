@@ -1,6 +1,6 @@
 from datetime import datetime
 from enum import Enum
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, TypedDict
 
 from pydantic import BaseModel, Field
 
@@ -170,6 +170,21 @@ type LineRoute = List[List[ShapeTuple]]
 
 class RouteShapes(BaseModel):
     lines: Dict[str, LineRoute]
+
+
+class LightStop(BaseModel):
+    stop_id: str
+    long: Optional[float] = None
+    lat: Optional[float] = None
+    platform_prediction: Optional[str] = None
+
+
+class DepartureInfo(TypedDict):
+    trip_id: str
+    station_id: str
+    route_id: str
+    direction_id: int
+    departure_time: str
 
 
 class PrometheusServerSideMetric(BaseModel):
