@@ -5,6 +5,7 @@ from asyncio import CancelledError
 from datetime import UTC, datetime, timedelta
 from random import randint
 from typing import TYPE_CHECKING, Any, List, Optional
+from zoneinfo import ZoneInfo
 
 import aiohttp
 import anyio
@@ -307,7 +308,7 @@ async def fetch_upcoming_departures(
             await anyio.sleep(sleep_for)
             # loop and retry
 
-    date_str = target_date.date().isoformat()
+    date_str = target_date.astimezone(ZoneInfo("America/New_York")).date().isoformat()
     auth_token = os.environ.get("AUTH_TOKEN", "")
     upcoming_departures: list[DepartureInfo] = []
 
