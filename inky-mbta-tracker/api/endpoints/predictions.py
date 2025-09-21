@@ -200,7 +200,7 @@ async def generate_track_predictions_for_date(
     Generate track predictions for all upcoming departures on a specific date.
     """
     departures_with_predictions: List[DepartureWithPrediction] = []
-    if date_request.target_date > datetime.now().date() + timedelta(days=7):
+    if date_request.target_date.date() > datetime.now().date() + timedelta(days=7):
         raise HTTPException(
             status_code=400,
             detail="Target date is too far in the future. Max request is 7 days from today.",
