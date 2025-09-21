@@ -208,7 +208,7 @@ async def generate_track_predictions_for_date(
                 route_id=route,
                 station_ids=CR_STATIONS,
                 target_date=date_request.target_date,
-                limit=25,
+                limit=15,
             )
 
             for departure in departures:

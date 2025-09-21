@@ -219,7 +219,7 @@ async def precache_track_predictions_runner(
     Args:
         routes: List of route IDs to precache (defaults to all CR routes)
         target_stations: List of station IDs to precache for (defaults to supported stations)
-        interval_hours: Hours between precaching runs (default: 2)
+        interval_hours: Hours between precaching runs (default: 8)
     """
     logger.info(
         f"Starting track prediction precaching runner (interval: {interval_hours}h)"

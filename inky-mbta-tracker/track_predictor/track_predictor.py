@@ -386,8 +386,6 @@ class TrackPredictor:
         # Local import for RateLimitExceeded used in this function's error handling
         predictions_cached = 0
         if routes and target_stations:
-            current_time = datetime.now(UTC)
-
             logger.info(
                 f"Starting precache for {len(routes)} routes and {len(target_stations)} stations"
             )
@@ -401,9 +399,22 @@ class TrackPredictor:
                         logger.debug(f"Precaching predictions for route {route_id}")
 
                         try:
+                            today = datetime.now(UTC)
+                            tomorrow = today + timedelta(days=1)
+                            twodays = today + timedelta(days=2)
                             # Fetch upcoming departures with actual scheduled times
                             upcoming_departures = await self.fetch_upcoming_departures(
-                                session, route_id, target_stations, current_time
+                                session, route_id, target_stations, today
+                            )
+                            upcoming_departures.extend(
+                                await self.fetch_upcoming_departures(
+                                    session, route_id, target_stations, tomorrow
+                                )
+                            )
+                            upcoming_departures.extend(
+                                await self.fetch_upcoming_departures(
+                                    session, route_id, target_stations, twodays
+                                )
                             )
 
                             async def process_departure(
