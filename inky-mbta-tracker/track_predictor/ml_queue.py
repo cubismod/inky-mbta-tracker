@@ -241,7 +241,7 @@ class MLQueue:
         def predict_blocking() -> Optional[List[Any]]:  # type: ignore[no-untyped-def]
             # Import inside the thread to ensure backend is respected
             if models:
-                probs = [model.predict(features, verbose=0) for model in models]
+                probs = [model.predict(features, verbose="0") for model in models]
                 return probs
 
         probs = await to_thread.run_sync(predict_blocking)
