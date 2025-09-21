@@ -33,6 +33,7 @@ from shared_types.shared_types import (
     TrackPrediction,
     TrackPredictionStats,
 )
+from tqdm import tqdm, trange
 
 # Extracted modules
 # Local ML / helper utilities extracted for testability
@@ -405,7 +406,7 @@ class TrackPredictor:
                                 session, route_id, target_stations, today
                             )
 
-                            for i in range(1, 7):
+                            for i in trange(1, 7):
                                 upcoming_departures.extend(
                                     await self.fetch_upcoming_departures(
                                         session,
@@ -470,7 +471,11 @@ class TrackPredictor:
                                     return False
 
                             # Process departures sequentially with explicit error handling
-                            for dep in upcoming_departures:
+                            for dep in tqdm(
+                                upcoming_departures,
+                                "Processing departures",
+                                unit="departure",
+                            ):
                                 try:
                                     if await process_departure(dep):
                                         route_predictions_cached += 1
