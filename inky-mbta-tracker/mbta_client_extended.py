@@ -211,7 +211,7 @@ async def precache_track_predictions_runner(
     tg: TaskGroup,
     routes: Optional[list[str]] = None,
     target_stations: Optional[list[str]] = None,
-    interval_hours: int = 8,
+    interval_hours: int = 12,
 ) -> None:
     """
     Run track prediction precaching at regular intervals.
@@ -219,7 +219,7 @@ async def precache_track_predictions_runner(
     Args:
         routes: List of route IDs to precache (defaults to all CR routes)
         target_stations: List of station IDs to precache for (defaults to supported stations)
-        interval_hours: Hours between precaching runs (default: 8)
+        interval_hours: Hours between precaching runs (default: 12)
     """
     logger.info(
         f"Starting track prediction precaching runner (interval: {interval_hours}h)"

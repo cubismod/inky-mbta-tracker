@@ -400,22 +400,20 @@ class TrackPredictor:
 
                         try:
                             today = datetime.now(UTC)
-                            tomorrow = today + timedelta(days=1)
-                            twodays = today + timedelta(days=2)
                             # Fetch upcoming departures with actual scheduled times
                             upcoming_departures = await self.fetch_upcoming_departures(
                                 session, route_id, target_stations, today
                             )
-                            upcoming_departures.extend(
-                                await self.fetch_upcoming_departures(
-                                    session, route_id, target_stations, tomorrow
+
+                            for i in range(1, 7):
+                                upcoming_departures.extend(
+                                    await self.fetch_upcoming_departures(
+                                        session,
+                                        route_id,
+                                        target_stations,
+                                        today + timedelta(days=i),
+                                    )
                                 )
-                            )
-                            upcoming_departures.extend(
-                                await self.fetch_upcoming_departures(
-                                    session, route_id, target_stations, twodays
-                                )
-                            )
 
                             async def process_departure(
                                 departure_data: DepartureInfo,
