@@ -198,9 +198,6 @@ async def generate_track_predictions_for_date(
 ) -> DatePredictionsResponse:
     """
     Generate track predictions for all upcoming departures on a specific date.
-
-    Fetches departure information for the specified route and stations,
-    then generates track predictions for each departure.
     """
     departures_with_predictions: List[DepartureWithPrediction] = []
     try:
