@@ -5,12 +5,11 @@ Massachusetts Bay Transit Authority. It relies on Redis for data storage in conj
 [inky-display](https://github.com/cubismod/inky-display) for e-inky display functionality. Additionally,
 it provides a comprehensive API using FastAPI which serves [ryanwallace.cloud](https://ryanwallace.cloud).
 
-
 ## Configuring
 
-## Getting Started
+### Getting Started
 
-You need a `.env` file with the following info:
+You need a `.env` file. Here are the supported options:
 
 ```shell
 # MBTA API Configuration
@@ -18,14 +17,21 @@ AUTH_TOKEN=<MBTA_API_TOKEN> # https://www.mbta.com/developers/v3-api
 
 # Application Configuration
 IMT_CONFIG=./config.json # optional to specify a different config file
-IMT_LOG_FILE=./logs/inky.log # optional to also log to a file
-LOG_LEVEL=info
-IMT_COLOR=true  # to log with colors
 IMT_REDIS_BACKUP_TIME=21:50 # set to backup every night at this time, you are responsible for cleaning up backups
+
+# prometheus exporter configuration
+IMT_PROMETHEUS_ENABLE="true"  # disabled by default
+IMT_PROM_PORT="8000"
+
 # use these settings for real time self-monitoring health checks via prometheus
 IMT_PROMETHEUS_JOB="imt_dev"
 IMT_PROMETHEUS_ENDPOINT="http://prometheus.local"
 IMT_METRIC_NAME="mbta_server_side_events:rate5m"
+
+# Logging
+IMT_LOG_FILE=./logs/inky.log # optional to also log to a file
+LOG_LEVEL=INFO # DEBUG, INFO, WARNING, ERROR supported log levels
+IMT_COLOR=true  # to log with colors
 
 # monitoring with Pyroscope (optional)
 IMT_PYROSCOPE_ENABLED=true
@@ -51,11 +57,22 @@ IMT_TRACK_PREDICTION_TIMEOUT=15 # Track prediction timeout in seconds
 IMT_RATE_LIMITING_ENABLED=true # Enable/disable rate limiting
 IMT_SSE_ENABLED=true # Enable/disable Server-Sent Events
 
-# Ollama AI Summarizer Configuration
-OLLAMA_BASE_URL=http://localhost:11434 # Ollama API endpoint
-OLLAMA_MODEL=llama3.2:1b # Model to use for summarization
-OLLAMA_TIMEOUT=30 # Request timeout in seconds
-OLLAMA_TEMPERATURE=0.1 # Model creativity (0.0=focused, 1.0=creative)
+# machine learning configuration for track predictions
+IMT_ML=true
+KERAS_BACKEND=jax # Jax is set by default and works well even on low spec hardware
+IMT_ML_CONF_GAMMA=1.3
+IMT_ML_CONF_HIST_WEIGHT=0.3
+IMT_BAYES_ALPHA=0.65
+IMT_ML_SAMPLE_PCT=0.1
+IMT_ML_REPLACE_DELTA=0.05
+IMT_ML_COMPARE=true # enable to compare pattern based predictions versus machine-learning approaches
+IMT_ML_MIN_CONFIDENCE=0.25
+IMT_ML_STORE_CONFIDENCE=0.25
+
+# precaching
+IMT_PRECACHE_MAX_ATTEMPTS=5
+IMT_PRECACHE_BASE_BACKOFF=1.0
+IMT_PRED_JITTER_MS=200
 ```
 
 ## Prometheus & Grafana

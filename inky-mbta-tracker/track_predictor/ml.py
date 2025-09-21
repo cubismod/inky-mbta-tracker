@@ -94,7 +94,7 @@ def ml_min_confidence_threshold() -> float:
 def ml_store_confidence_threshold() -> float:
     """Minimum confidence threshold for storing ML predictions (default 0.5)."""
     try:
-        return max(0.0, min(1.0, float(os.getenv("IMT_ML_STORE_CONFIDENCE", "0.5"))))
+        return max(0.0, min(1.0, float(os.getenv("IMT_ML_STORE_CONFIDENCE", "0.25"))))
     except (ValueError, TypeError):
         return 0.5
 
