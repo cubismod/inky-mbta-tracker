@@ -78,22 +78,19 @@ logger = logging.getLogger(__name__)
 
 # Route family mappings for cross-route pattern learning
 ROUTE_FAMILIES: dict[str, list[str]] = {
-    "CR-Worcester": ["CR-Framingham"],
-    "CR-Framingham": ["CR-Worcester"],
-    "CR-Franklin": ["CR-Foxboro", "CR-Franklin"],
-    "CR-Foxboro": ["CR-Franklin", "CR-Foxboro"],
-    "CR-Providence": ["CR-Providence", "CR-Stoughton"],
-    "CR-Stoughton": ["CR-Providence", "CR-Stoughton"],
-    "CR-Needham": ["CR-Needham"],
     "CR-Fairmount": ["CR-Fairmount"],
     "CR-Fitchburg": ["CR-Fitchburg"],
-    "CR-Lowell": ["CR-Lowell"],
-    "CR-Haverhill": ["CR-Haverhill"],
-    "CR-Newburyport": ["CR-Newburyport"],
-    "CR-Rockport": ["CR-Rockport"],
-    "CR-Kingston": ["CR-Kingston", "CR-Plymouth", "CR-Greenbush"],
-    "CR-Plymouth": ["CR-Kingston", "CR-Plymouth", "CR-Greenbush"],
+    "CR-Foxboro": ["CR-Franklin", "CR-Foxboro"],
+    "CR-Framingham": ["CR-Worcester"],
+    "CR-Franklin": ["CR-Foxboro", "CR-Franklin"],
     "CR-Greenbush": ["CR-Kingston", "CR-Plymouth", "CR-Greenbush"],
+    "CR-Haverhill": ["CR-Haverhill"],
+    "CR-Kingston": ["CR-Kingston", "CR-Plymouth", "CR-Greenbush"],
+    "CR-Lowell": ["CR-Lowell"],
+    "CR-Needham": ["CR-Needham"],
+    "CR-Newburyport": ["CR-Newburyport"],
+    "CR-Providence": ["CR-Providence"],
+    "CR-Worcester": ["CR-Framingham"],
 }
 
 
@@ -351,6 +348,7 @@ class TrackPredictor:
         route_id: str,
         station_ids: List[str],
         target_date: Optional[datetime] = None,
+        limit: Optional[int] = None,
     ) -> List[DepartureInfo]:
         """
         Fetch upcoming departures for specific stations on a commuter rail route.
@@ -365,7 +363,7 @@ class TrackPredictor:
             List of departure data dictionaries with scheduled times
         """
         return await fetch_upcoming_departures(
-            session, route_id, station_ids, target_date
+            session, route_id, station_ids, target_date, limit
         )
 
     async def precache(

@@ -260,6 +260,7 @@ async def fetch_upcoming_departures(
     route_id: str,
     station_ids: List[str],
     target_date: Optional[datetime] = None,
+    limit: Optional[int] = None,
 ) -> List[DepartureInfo]:
     """
     Fetch upcoming departures for specific stations on a commuter rail route.
@@ -340,36 +341,42 @@ async def fetch_upcoming_departures(
 
             # Process each scheduled departure
             for schedule in schedules_data.data:
-                if not schedule.attributes.departure_time:
-                    continue
+                schedule_time = (
+                    schedule.attributes.departure_time
+                    or schedule.attributes.arrival_time
+                )
+                if schedule_time and datetime.fromisoformat(schedule_time).astimezone(
+                    UTC
+                ) > datetime.now(UTC):
+                    # Get trip information from relationships
+                    trip_id = ""
+                    if (
+                        hasattr(schedule, "relationships")
+                        and hasattr(schedule.relationships, "trip")
+                        and schedule.relationships.trip.data
+                    ):
+                        trip_id = schedule.relationships.trip.data.id
 
-                # Get trip information from relationships
-                trip_id = ""
-                if (
-                    hasattr(schedule, "relationships")
-                    and hasattr(schedule.relationships, "trip")
-                    and schedule.relationships.trip.data
-                ):
-                    trip_id = schedule.relationships.trip.data.id
+                    # Get station ID from relationships
+                    station_id = ""
+                    if (
+                        hasattr(schedule, "relationships")
+                        and hasattr(schedule.relationships, "stop")
+                        and schedule.relationships.stop.data
+                    ):
+                        station_id = schedule.relationships.stop.data.id
 
-                # Get station ID from relationships
-                station_id = ""
-                if (
-                    hasattr(schedule, "relationships")
-                    and hasattr(schedule.relationships, "stop")
-                    and schedule.relationships.stop.data
-                ):
-                    station_id = schedule.relationships.stop.data.id
+                    departure_info: DepartureInfo = {
+                        "trip_id": trip_id,
+                        "station_id": station_id,
+                        "route_id": route_id,
+                        "direction_id": schedule.attributes.direction_id,
+                        "departure_time": schedule_time,
+                    }
 
-                departure_info: DepartureInfo = {
-                    "trip_id": trip_id,
-                    "station_id": station_id,
-                    "route_id": route_id,
-                    "direction_id": schedule.attributes.direction_id,
-                    "departure_time": schedule.attributes.departure_time,
-                }
-
-                upcoming_departures.append(departure_info)
+                    upcoming_departures.append(departure_info)
+                    if limit and len(upcoming_departures) > limit:
+                        break
 
     except (aiohttp.ClientError, TimeoutError) as e:
         logger.error(

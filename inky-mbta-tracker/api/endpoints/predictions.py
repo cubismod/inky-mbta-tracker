@@ -2,7 +2,7 @@ import logging
 from datetime import datetime, timedelta
 from typing import List
 
-from api.core import GET_DI
+from api.core import CR_ROUTES, CR_STATIONS, GET_DI
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import ValidationError
 from shared_types.shared_types import TrackAssignment
@@ -11,6 +11,9 @@ from ..limits import limiter
 from ..models import (
     ChainedPredictionsRequest,
     ChainedPredictionsResponse,
+    DatePredictionsRequest,
+    DatePredictionsResponse,
+    DepartureWithPrediction,
     PredictionRequest,
     TrackPredictionResponse,
     TrackPredictionStatsResponse,
@@ -185,4 +188,83 @@ async def get_historical_assignments(
         raise HTTPException(status_code=500, detail="Internal server error")
     except ValidationError:
         logger.error("Validation error getting historical data", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.post("/predictions/date")
+@limiter.limit("15/minute")
+async def generate_track_predictions_for_date(
+    request: Request, date_request: DatePredictionsRequest, commons: GET_DI
+) -> DatePredictionsResponse:
+    """
+    Generate track predictions for all upcoming departures on a specific date.
+
+    Fetches departure information for the specified route and stations,
+    then generates track predictions for each departure.
+    """
+    departures_with_predictions: List[DepartureWithPrediction] = []
+    try:
+        for route in CR_ROUTES:
+            # Fetch upcoming departures using the TrackPredictor method
+            departures = await commons.track_predictor.fetch_upcoming_departures(
+                session=commons.session,
+                route_id=route,
+                station_ids=CR_STATIONS,
+                target_date=date_request.target_date,
+                limit=25,
+            )
+
+            for departure in departures:
+                prediction = None
+
+                try:
+                    # Only generate predictions for stations that support them
+                    normalized_station = commons.track_predictor.normalize_station(
+                        departure["station_id"]
+                    )
+
+                    if (
+                        commons.tg
+                        and commons.track_predictor.supports_track_predictions(
+                            normalized_station
+                        )
+                        and departure["trip_id"]
+                    ):
+                        prediction = await commons.track_predictor.predict_track(
+                            station_id=normalized_station,
+                            route_id=departure["route_id"],
+                            trip_id=departure["trip_id"],
+                            headsign="",  # Will be fetched in predict_track method
+                            direction_id=departure["direction_id"],
+                            scheduled_time=datetime.fromisoformat(
+                                departure["departure_time"]
+                            ),
+                            tg=commons.tg,
+                        )
+
+                except (ConnectionError, TimeoutError, ValidationError) as e:
+                    logger.error(
+                        f"Error generating prediction for departure {departure['trip_id']}",
+                        exc_info=e,
+                    )
+                    # Continue processing other departures even if one fails
+
+                departures_with_predictions.append(
+                    DepartureWithPrediction(
+                        departure_info=departure, prediction=prediction
+                    )
+                )
+
+        return DatePredictionsResponse(
+            success=True, departures=departures_with_predictions
+        )
+
+    except (ConnectionError, TimeoutError) as e:
+        logger.error("Connection error generating date predictions", exc_info=e)
+        raise HTTPException(status_code=500, detail="Internal server error")
+    except ValidationError as e:
+        logger.error("Validation error generating date predictions", exc_info=e)
+        raise HTTPException(status_code=400, detail="Invalid request parameters")
+    except Exception as e:
+        logger.error("Unexpected error generating date predictions", exc_info=e)
         raise HTTPException(status_code=500, detail="Internal server error")
