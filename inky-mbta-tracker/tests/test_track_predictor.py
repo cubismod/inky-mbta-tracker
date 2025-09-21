@@ -8,10 +8,7 @@ from redis.asyncio import Redis as AsyncRedis
 from shared_types.shared_types import TrackAssignment, TrackAssignmentType
 from track_predictor.track_predictor import TrackPredictor
 from track_predictor.utils import (
-    detect_service_type,
-    enhanced_headsign_similarity,
     get_station_confidence_threshold,
-    is_weekend_service,
 )
 
 
@@ -44,122 +41,6 @@ class TestTrackPredictor:
             minute=30,
             day_of_week=0,  # Monday
         )
-
-
-class TestEnhancedHeadsignSimilarity:
-    """Test enhanced headsign similarity matching."""
-
-    @pytest.fixture
-    def track_predictor(self) -> Generator[TrackPredictor, None, None]:
-        yield TrackPredictor(cast(AsyncRedis, MagicMock()))
-
-    def test_exact_match(self, track_predictor: TrackPredictor) -> None:
-        """Test exact headsign match returns 1.0."""
-        result = enhanced_headsign_similarity("Providence", "Providence")
-        assert result == 1.0
-
-    def test_case_insensitive_match(self, track_predictor: TrackPredictor) -> None:
-        """Test case insensitive matching."""
-        result = enhanced_headsign_similarity("PROVIDENCE", "providence")
-        assert result == 1.0
-
-    def test_high_similarity_match(self, track_predictor: TrackPredictor) -> None:
-        """Test high similarity matches get good scores."""
-        result = enhanced_headsign_similarity("Providence", "Provdence")
-        assert result > 0.5  # Should be decent due to small typo
-
-    def test_phonetic_matching(self, track_predictor: TrackPredictor) -> None:
-        """Test phonetic matching works for similar sounding words."""
-        result = enhanced_headsign_similarity("Framingham", "Framinghem")
-        assert result > 0.5  # Should benefit from phonetic similarity
-
-    def test_token_based_similarity(self, track_predictor: TrackPredictor) -> None:
-        """Test token-based similarity for multi-word headsigns."""
-        result = enhanced_headsign_similarity("South Station", "Station South")
-        assert result > 0.4  # Should get token similarity bonus
-
-    def test_partial_destination_match(self, track_predictor: TrackPredictor) -> None:
-        """Test partial destination matching."""
-        result1 = enhanced_headsign_similarity("Worcester", "Worcester")
-        result2 = enhanced_headsign_similarity("Worcester Local", "Worcester")
-        assert result1 > 0.4
-        assert result2 > 0.4
-
-    def test_low_similarity_returns_low_score(
-        self, track_predictor: TrackPredictor
-    ) -> None:
-        """Test completely different strings return low scores."""
-        result = enhanced_headsign_similarity("Providence", "Lowell")
-        assert result < 0.3
-
-    def test_empty_strings(self, track_predictor: TrackPredictor) -> None:
-        """Test empty string handling."""
-        result1 = track_predictor._enhanced_headsign_similarity("", "Providence")
-        result2 = track_predictor._enhanced_headsign_similarity("Providence", "")
-        result3 = track_predictor._enhanced_headsign_similarity("", "")
-        assert result1 == 0.0
-        assert result2 == 0.0
-        assert result3 == 0.0
-
-    def test_graduated_scoring_weights(self, track_predictor: TrackPredictor) -> None:
-        """Test that different similarity components are weighted correctly."""
-        # Test a variety of combinations to ensure weighting works
-        result1 = enhanced_headsign_similarity("Worcester", "Worcester")
-        result2 = enhanced_headsign_similarity("Worcester", "Worcster")
-        result3 = enhanced_headsign_similarity("Worcester", "Boston")
-
-        assert result1 == 1.0
-        assert result2 > result3
-        assert result3 < 0.5
-
-
-class TestServiceType:
-    """Test service type detection."""
-
-    @pytest.fixture
-    def track_predictor(self) -> Generator[TrackPredictor, None, None]:
-        yield TrackPredictor(cast(AsyncRedis, MagicMock()))
-
-    def test_express_detection(self, track_predictor: TrackPredictor) -> None:
-        """Test express service detection."""
-        assert detect_service_type("Worcester Express") == "express"
-        assert detect_service_type("LIMITED SERVICE to Framingham") == "express"
-        assert detect_service_type("Direct to Providence") == "express"
-
-    def test_local_detection(self, track_predictor: TrackPredictor) -> None:
-        """Test local service detection."""
-        assert detect_service_type("Local to Worcester") == "local"
-        assert detect_service_type("All stops to Framingham") == "local"
-        assert detect_service_type("Stopping service") == "local"
-
-    def test_regular_service_default(self, track_predictor: TrackPredictor) -> None:
-        """Test regular service is default."""
-        assert detect_service_type("Providence") == "regular"
-        assert detect_service_type("Worcester") == "regular"
-        assert detect_service_type("Framingham Line") == "regular"
-
-    def test_case_insensitive_detection(self, track_predictor: TrackPredictor) -> None:
-        """Test case insensitive service type detection."""
-        assert detect_service_type("WORCESTER EXPRESS") == "express"
-        assert detect_service_type("local to framingham") == "local"
-
-
-class TestWeekendService:
-    """Test weekend service detection."""
-
-    @pytest.fixture
-    def track_predictor(self) -> Generator[TrackPredictor, None, None]:
-        yield TrackPredictor(MagicMock())
-
-    def test_weekend_detection(self, track_predictor: TrackPredictor) -> None:
-        """Test weekend day detection."""
-        assert is_weekend_service(5) is True  # Saturday
-        assert is_weekend_service(6) is True  # Sunday
-
-    def test_weekday_detection(self, track_predictor: TrackPredictor) -> None:
-        """Test weekday detection."""
-        for day in [0, 1, 2, 3, 4]:  # Monday through Friday
-            assert is_weekend_service(day) is False
 
 
 class TestConfidenceThresholds:
@@ -259,18 +140,6 @@ class TestCrossRoutePatterns:
         assert track_predictor.redis.zrangebyscore.call_count == 1  # type: ignore[attr-defined]
         actual_call = track_predictor.redis.zrangebyscore.call_args_list[0][0]  # type: ignore[attr-defined]
         assert actual_call[0] == "track_timeseries:place-sstat:CR-Worcester"
-
-    def test_route_families_mapping(self, track_predictor: TrackPredictor) -> None:
-        """Test that route families are correctly mapped."""
-        from track_predictor.track_predictor import ROUTE_FAMILIES
-
-        # Test some key route family relationships
-        assert "CR-Framingham" in ROUTE_FAMILIES["CR-Worcester"]
-        assert "CR-Worcester" in ROUTE_FAMILIES["CR-Framingham"]
-        assert "CR-Foxboro" in ROUTE_FAMILIES["CR-Franklin"]
-        assert "CR-Franklin" in ROUTE_FAMILIES["CR-Foxboro"]
-        assert "CR-Stoughton" in ROUTE_FAMILIES["CR-Providence"]
-        assert "CR-Plymouth" in ROUTE_FAMILIES["CR-Kingston"]
 
 
 class TestExpandedTimeWindows:

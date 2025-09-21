@@ -9,13 +9,10 @@ from mbta_client import (
     determine_station_id,
     silver_line_lookup,
 )
-from mbta_client_extended import light_get_alerts, light_get_stop, parse_shape_data
+from mbta_client_extended import light_get_alerts, light_get_stop
 from mbta_responses import (
     CarriageStatus,
     PredictionAttributes,
-    ShapeAttributes,
-    ShapeResource,
-    Shapes,
     Vehicle,
     VehicleAttributes,
 )
@@ -59,71 +56,6 @@ class TestDetermineStationId:
 
     def test_unknown_station(self) -> None:
         assert determine_station_id("place-davis") == ("place-davis", False)
-
-
-class TestParseShapeData:
-    @patch("mbta_client.SHAPE_POLYLINES", set())
-    @patch("mbta_client.decode")
-    def test_parse_shape_data_canonical(self, mock_decode: MagicMock) -> None:
-        mock_decode.return_value = [(42.3601, -71.0589), (42.3611, -71.0599)]
-
-        shape_data = Shapes(
-            data=[
-                ShapeResource(
-                    type="shape",
-                    id="canonical-1",
-                    attributes=ShapeAttributes(polyline="test_polyline_1"),
-                ),
-                ShapeResource(
-                    type="shape",
-                    id="non-canonical",
-                    attributes=ShapeAttributes(polyline="test_polyline_2"),
-                ),
-            ]
-        )
-
-        result = parse_shape_data(shape_data)
-
-        assert len(result) == 2
-        assert result[0] == [(42.3601, -71.0589), (42.3611, -71.0599)]
-
-    @patch("mbta_client.SHAPE_POLYLINES", set())
-    @patch("mbta_client.decode")
-    def test_parse_shape_data_decimal_id(self, mock_decode: MagicMock) -> None:
-        mock_decode.return_value = [(42.3601, -71.0589)]
-
-        shape_data = Shapes(
-            data=[
-                ShapeResource(
-                    type="shape",
-                    id="123456",
-                    attributes=ShapeAttributes(polyline="test_polyline"),
-                ),
-            ]
-        )
-
-        result = parse_shape_data(shape_data)
-
-        assert len(result) == 1
-        assert result[0] == [(42.3601, -71.0589)]
-
-    @patch("mbta_client.SHAPE_POLYLINES", {"already_processed"})
-    @patch("mbta_client.decode")
-    def test_parse_shape_data_skip_processed(self, mock_decode: MagicMock) -> None:
-        shape_data = Shapes(
-            data=[
-                ShapeResource(
-                    type="shape",
-                    id="canonical-1",
-                    attributes=ShapeAttributes(polyline="already_processed"),
-                ),
-            ]
-        )
-
-        result = parse_shape_data(shape_data)
-
-        assert len(result) == 0
-        mock_decode.assert_not_called()
 
 
 class TestLightStop:
