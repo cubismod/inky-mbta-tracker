@@ -406,7 +406,7 @@ class TrackPredictor:
                                 session, route_id, target_stations, today
                             )
 
-                            for i in trange(1, 7):
+                            for i in trange(0, 10):
                                 upcoming_departures.extend(
                                     await self.fetch_upcoming_departures(
                                         session,

@@ -52,6 +52,7 @@ class DatePredictionsRequest(BaseModel):
 class DatePredictionsResponse(BaseModel):
     success: bool
     departures: List[DepartureWithPrediction] | str
+    note: Optional[str] = None
 
 
 class MLDiagnosticResult(BaseModel):

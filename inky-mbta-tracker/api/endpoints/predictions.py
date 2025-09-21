@@ -203,9 +203,10 @@ async def generate_track_predictions_for_date(
     if date_request.target_date.date() > datetime.now().date() + timedelta(
         days=7
     ) or date_request.target_date.date() < datetime.now().date() - timedelta(days=1):
-        raise HTTPException(
-            status_code=400,
-            detail="Target data is invalid. Must be within the next 7 days or the past day.",
+        return DatePredictionsResponse(
+            success=False,
+            departures=[],
+            note="Target date is invalid. Must be within the next 7 days or the past day.",
         )
     try:
         for route in CR_ROUTES:
@@ -269,6 +270,3 @@ async def generate_track_predictions_for_date(
     except ValidationError as e:
         logger.error("Validation error generating date predictions", exc_info=e)
         raise HTTPException(status_code=400, detail="Invalid request parameters")
-    except Exception as e:
-        logger.error("Unexpected error generating date predictions", exc_info=e)
-        raise HTTPException(status_code=500, detail="Internal server error")
