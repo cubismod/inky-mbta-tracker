@@ -348,8 +348,13 @@ async def vocab_get_or_add(redis_client: Any, key: str, token: str) -> int:
     """
     Get a stable integer index for a token from a Redis hash, adding if missing.
 
-    - redis_client must implement hget, hlen, hset as awaitable methods.
-    - Returns an int index for the token.
+    Args:
+        redis_client: An object that implements hget, hlen, and hset as awaitable methods.
+        key: The Redis hash key.
+        token: The token to look up or add.
+
+    Returns:
+        int: The index assigned to the token.
     """
     idx = await redis_client.hget(key, token)  # pyright: ignore
     if idx is not None:

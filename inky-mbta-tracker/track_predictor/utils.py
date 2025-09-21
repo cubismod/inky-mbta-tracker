@@ -73,10 +73,26 @@ def enhanced_headsign_similarity(headsign1: str, headsign2: str) -> float:
     if h1 == h2:
         return 1.0
 
-    # Levenshtein (normalized)
+    # Base Levenshtein (normalized)
     try:
-        return textdistance.levenshtein.normalized_similarity(h1, h2)
+        lev = textdistance.levenshtein.normalized_similarity(h1, h2)
     except (TypeError, ValueError):
-        # If the similarity library raises due to bad input types or values,
-        # treat as no similarity rather than failing the whole routine.
-        return 0.0
+        lev = 0.0
+
+    # Token overlap bonus (handles reordering like "South Station" vs "Station South")
+    toks1 = [t for t in h1.split() if t]
+    toks2 = [t for t in h2.split() if t]
+    if toks1 and toks2:
+        set1, set2 = set(toks1), set(toks2)
+        token_overlap = len(set1 & set2) / max(len(set1 | set2), 1)
+    else:
+        token_overlap = 0.0
+
+    # Blend the scores: give some weight to token overlap so reordered tokens score higher
+    score = 0.7 * lev + 0.3 * token_overlap
+    # Ensure within bounds
+    if score < 0.0:
+        score = 0.0
+    if score > 1.0:
+        score = 1.0
+    return score

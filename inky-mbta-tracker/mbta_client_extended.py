@@ -4,7 +4,7 @@ import random
 from asyncio import CancelledError
 from datetime import UTC, datetime, timedelta
 from random import randint
-from typing import Any, List, Optional
+from typing import TYPE_CHECKING, Any, List, Optional
 
 import aiohttp
 import anyio
@@ -16,7 +16,6 @@ from anyio.abc import TaskGroup
 from anyio.streams.memory import MemoryObjectSendStream
 from consts import FOUR_WEEKS, HOUR, MBTA_V3_ENDPOINT, TWO_MONTHS
 from exceptions import RateLimitExceeded
-from mbta_client import MBTAApi
 from mbta_responses import (
     AlertResource,
     Schedules,
@@ -48,22 +47,31 @@ from tenacity import (
     wait_exponential_jitter,
 )
 
+# Avoid circular import at runtime; only import for typing checks
+if TYPE_CHECKING:
+    from mbta_client import MBTAApi
+
 # Module-level constants used by the moved functions
 MBTA_AUTH = os.environ.get("AUTH_TOKEN")
 logger = logging.getLogger(__name__)
-SHAPE_POLYLINES = set[str]()
 
 
 def parse_shape_data(shapes: Shapes) -> LineRoute:
+    # Import the mbta_client module and reference attributes at runtime. This
+    # avoids a static from-import which confuses pyright in the presence of
+    # circular imports while still allowing tests to patch attributes on
+    # the `mbta_client` module (e.g., `mbta_client.decode`).
+    import mbta_client
+
     ret = list[list[tuple]]()
     for shape in shapes.data:
         if (
-            shape.attributes.polyline not in SHAPE_POLYLINES
+            shape.attributes.polyline not in mbta_client.SHAPE_POLYLINES
             and "canonical" in shape.id
             or shape.id.replace("_", "").isdecimal()
         ):
             ret.append([i for i in decode(shape.attributes.polyline, geojson=True)])
-            SHAPE_POLYLINES.add(shape.attributes.polyline)
+            mbta_client.SHAPE_POLYLINES.add(shape.attributes.polyline)
     return ret
 
 
@@ -135,7 +143,11 @@ async def light_get_stop(
     tg: Optional[TaskGroup] = None,
 ) -> Optional[LightStop]:
     key = f"stop:{stop_id}:light"
-    cached = await check_cache(r_client, key)
+    # Import the module and access functions from it so static analysis won't
+    # complain about unknown import symbols and tests can still patch them.
+    import mbta_client
+
+    cached = await mbta_client.check_cache(r_client, key)
     if cached:
         try:
             cached_model = LightStop.model_validate_json(cached)
@@ -144,7 +156,9 @@ async def light_get_stop(
             logger.error("unable to validate json", exc_info=err)
     ls = None
     # Local import to avoid circular module import at import-time
-    from mbta_client import MBTAApi
+    import mbta_client
+
+    MBTAApi = mbta_client.MBTAApi
 
     async with MBTAApi(
         r_client, stop_id=stop_id, watcher_type=TaskType.LIGHT_STOP
