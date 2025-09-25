@@ -111,10 +111,7 @@ def cache_ttl(seconds: int) -> Callable[[Callable[P, R]], Callable[P, R]]:
 def _ttl_for_request(request: Request, response: Response, default_ttl: int) -> int:
     """Determine TTL precedence: response header > endpoint decorator > default."""
     # 1) Response header override
-    try:
-        hdr = response.headers.get("X-Cache-TTL")
-    except Exception:
-        hdr = None
+    hdr = response.headers.get("X-Cache-TTL", None)
     if hdr:
         try:
             val = int(hdr)
@@ -206,12 +203,10 @@ def create_cache_middleware(
             cached = None
 
         if cached is not None:
-            # Return cached body as JSON by default (most endpoints return JSON)
             try:
                 cached_bytes = cached.encode("utf-8")
             except Exception:
                 cached_bytes = str(cached).encode("utf-8")
-            # Build headers with an explicit Content-Length and ensure Transfer-Encoding is not set.
             headers = {"content-length": str(len(cached_bytes))}
             headers.pop("transfer-encoding", None)
             headers.pop("Transfer-Encoding", None)

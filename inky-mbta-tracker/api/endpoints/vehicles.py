@@ -8,6 +8,7 @@ from consts import VEHICLES_CACHE_TTL
 from fastapi import APIRouter, HTTPException, Request, Response
 from geojson import FeatureCollection, dumps
 from geojson_utils import get_vehicle_features
+from pydantic import ValidationError
 from starlette.responses import StreamingResponse
 from utils import get_vehicles_data
 
@@ -169,9 +170,7 @@ async def get_vehicles_counts(
             try:
                 # Use pydantic validation to produce the typed response object.
                 return VehiclesCountResponse.model_validate_json(cached_str)
-            except Exception:
-                # If parsing the cached payload fails for any reason, log and fall
-                # through to recompute fresh counts.
+            except ValidationError:
                 logger.debug(
                     "Failed to parse cached vehicle counts; recomputing", exc_info=True
                 )
