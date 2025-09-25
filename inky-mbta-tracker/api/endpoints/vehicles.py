@@ -342,8 +342,8 @@ async def get_vehicles_counts(
 
         resp_model = VehiclesCountResponse(**response_payload)
 
-        # Cache serialized JSON (use pydantic's json to ensure datetime formatting)
-        await commons.r_client.setex(cache_key, VEHICLES_CACHE_TTL, resp_model.json())
+        # Cache serialized JSON (use pydantic's model_dump_json to ensure datetime formatting)
+        await commons.r_client.setex(cache_key, VEHICLES_CACHE_TTL, resp_model.model_dump_json())
 
         return resp_model
     except (ConnectionError, TimeoutError):
