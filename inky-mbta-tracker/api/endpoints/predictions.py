@@ -3,6 +3,8 @@ from datetime import datetime, timedelta
 from typing import List
 
 from api.core import CR_ROUTES, CR_STATIONS, GET_DI
+from api.middleware.cache_middleware import cache_ttl
+from consts import DAY, HOUR, MINUTE
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import ValidationError
 from shared_types.shared_types import TrackAssignment
@@ -26,6 +28,7 @@ logger = logging.getLogger(__name__)
 
 @router.post("/predictions")
 @limiter.limit("100/minute")
+@cache_ttl(HOUR)
 async def generate_track_prediction(
     request: Request, prediction_request: PredictionRequest, commons: GET_DI
 ) -> TrackPredictionResponse:
@@ -74,6 +77,7 @@ async def generate_track_prediction(
 
 @router.post("/chained-predictions")
 @limiter.limit("200/minute")
+@cache_ttl(HOUR)
 async def generate_chained_track_predictions(
     request: Request, chained_request: ChainedPredictionsRequest, commons: GET_DI
 ) -> ChainedPredictionsResponse:
@@ -139,6 +143,7 @@ async def generate_chained_track_predictions(
 
 @router.get("/stats/{station_id}/{route_id}")
 @limiter.limit("50/minute")
+@cache_ttl(HOUR)
 async def get_prediction_stats(
     request: Request, station_id: str, route_id: str, commons: GET_DI
 ) -> TrackPredictionStatsResponse:
@@ -166,6 +171,7 @@ async def get_prediction_stats(
 
 @router.get("/historical/{station_id}/{route_id}")
 @limiter.limit("50/minute")
+@cache_ttl(5 * MINUTE)
 async def get_historical_assignments(
     request: Request,
     station_id: str,
@@ -193,6 +199,7 @@ async def get_historical_assignments(
 
 @router.post("/predictions/date")
 @limiter.limit("15/minute")
+@cache_ttl(DAY)
 async def generate_track_predictions_for_date(
     request: Request, date_request: DatePredictionsRequest, commons: GET_DI
 ) -> DatePredictionsResponse:

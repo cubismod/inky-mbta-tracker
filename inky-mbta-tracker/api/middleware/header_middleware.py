@@ -6,7 +6,7 @@ from fastapi import Request, Response
 from slowapi.util import get_remote_address
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from .core import logger
+from api.core import logger
 
 
 class HeaderLoggingMiddleware(BaseHTTPMiddleware):

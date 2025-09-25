@@ -1,7 +1,7 @@
 from slowapi import Limiter
 
 from .core import RATE_LIMITING_ENABLED
-from .middleware import NoOpLimiter, get_client_ip
+from .middleware.header_middleware import NoOpLimiter, get_client_ip
 
 # Global limiter used by route decorators
 if RATE_LIMITING_ENABLED:
