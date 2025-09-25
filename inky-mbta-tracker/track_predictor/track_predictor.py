@@ -12,7 +12,10 @@ from anyio.abc import TaskGroup
 from consts import INSTANCE_ID, MBTA_V3_ENDPOINT, MONTH, YEAR
 from exceptions import RateLimitExceeded
 from mbta_client import MBTAApi
-from mbta_client_extended import fetch_upcoming_departures
+from mbta_client_extended import (
+    fetch_upcoming_departures,
+    get_commuter_station_human_readable,
+)
 from numpy.typing import NDArray
 from prometheus import (
     redis_commands,
@@ -834,6 +837,12 @@ class TrackPredictor:
                         )
                         if new_hs:
                             headsign = new_hs
+                            if (
+                                get_commuter_station_human_readable(station_id)
+                                == headsign
+                            ):
+                                logger.debug("skipping terminal arrival event")
+                                return
                     except (aiohttp.ClientError, TimeoutError) as e:
                         # network / client-related issues while fetching headsign
                         logger.debug("Failed to get headsign", exc_info=e)
