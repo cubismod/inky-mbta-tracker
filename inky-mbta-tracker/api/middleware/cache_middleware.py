@@ -223,9 +223,9 @@ def create_cache_middleware(
         response = await call_next(request)
 
         chunks = []
-        async for chunk in response.body_iterator: # type: ignore
+        async for chunk in response.body_iterator:  # type: ignore
             chunks.append(chunk)
-        response_body = b''.join(chunks)
+        response_body = b"".join(chunks)
         # Cache only successful responses with non-empty body
         if response.status_code == 200 and response_body:
             try:

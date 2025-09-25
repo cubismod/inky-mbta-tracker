@@ -1,10 +1,11 @@
 import logging
+import os
 from datetime import datetime, timedelta
 from typing import List
 
 from api.core import CR_ROUTES, CR_STATIONS, GET_DI
 from api.middleware.cache_middleware import cache_ttl
-from consts import DAY, HOUR, MINUTE
+from consts import HOUR, MINUTE
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import ValidationError
 from shared_types.shared_types import TrackAssignment
@@ -223,7 +224,7 @@ async def generate_track_predictions_for_date(
                 route_id=route,
                 station_ids=CR_STATIONS,
                 target_date=date_request.target_date,
-                limit=15,
+                limit=int(os.getenv("IMT_CR_LIMIT", "10")),
             )
 
             for departure in departures:
