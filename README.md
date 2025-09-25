@@ -68,6 +68,7 @@ IMT_ML_REPLACE_DELTA=0.05
 IMT_ML_COMPARE=true # enable to compare pattern based predictions versus machine-learning approaches
 IMT_ML_MIN_CONFIDENCE=0.25
 IMT_ML_STORE_CONFIDENCE=0.25
+IMT_CR_LIMIT=10 # how many departures to fetch from each commuter rail station for date prediction requests
 
 # precaching
 IMT_PRECACHE_MAX_ATTEMPTS=5

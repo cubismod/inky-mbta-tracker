@@ -1,6 +1,7 @@
 import logging
 
 from api.core import GET_DI
+from api.middleware.cache_middleware import cache_ttl
 from consts import ALERTS_CACHE_TTL
 from fastapi import APIRouter, HTTPException, Request, Response
 from mbta_responses import Alerts
@@ -22,20 +23,15 @@ logger = logging.getLogger(__name__)
     ),
 )
 @limiter.limit("100/minute")
+@cache_ttl(60)
 async def get_alerts(request: Request, commons: GET_DI) -> Response:
     try:
-        cache_key = "api:alerts"
-        cached_data = await commons.r_client.get(cache_key)
-        if cached_data:
-            return Response(content=cached_data, media_type="application/json")
-
         alerts = await fetch_alerts_with_retry(
             commons.config, commons.session, commons.r_client
         )
 
         alerts_data = Alerts(data=alerts)
         alerts_json = alerts_data.model_dump_json(exclude_unset=True)
-        await commons.r_client.setex(cache_key, ALERTS_CACHE_TTL, alerts_json)
         return Response(content=alerts_json, media_type="application/json")
     except (ConnectionError, TimeoutError):
         logger.error("Error getting alerts due to connection issue", exc_info=True)

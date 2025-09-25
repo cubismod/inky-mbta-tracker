@@ -7,11 +7,8 @@ from logging_setup import setup_logging
 
 
 def run_main() -> None:
-    """Start the FastAPI server using Uvicorn in a sync context.
-
-    Running Uvicorn inside anyio.run can interfere with its event loop and
-    signal handling. Use the synchronous runner here and let Uvicorn manage
-    the asyncio loop directly.
+    """
+    Start the FastAPI server using Uvicorn in a sync context.
     """
     # Ensure consistent logging per env vars (IMT_LOG_JSON, IMT_LOG_LEVEL, etc.)
     setup_logging()

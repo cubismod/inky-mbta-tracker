@@ -18,7 +18,8 @@ from .endpoints.predictions import router as predictions_router
 from .endpoints.shapes import router as shapes_router
 from .endpoints.vehicles import router as vehicles_router
 from .limits import limiter
-from .middleware import HeaderLoggingMiddleware
+from .middleware.cache_middleware import create_cache_middleware
+from .middleware.header_middleware import HeaderLoggingMiddleware
 
 
 def create_app() -> FastAPI:
@@ -61,6 +62,22 @@ def create_app() -> FastAPI:
         app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)  # type: ignore
 
     app.add_middleware(HeaderLoggingMiddleware)
+    app.middleware("http")(
+        create_cache_middleware(
+            cache_methods={"GET", "POST"},
+            default_ttl=5,
+            include_paths={
+                "/alerts*",
+                "/alerts.json",
+                "/predictions*",
+                "/chained-predictions",
+                "/historical*",
+                "/shapes*",
+                "/vehicles*",
+            },
+            exclude_paths={"/vehicles/stream"},
+        )
+    )
 
     origins = [
         origin.strip()
