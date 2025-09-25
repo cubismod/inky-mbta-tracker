@@ -374,7 +374,9 @@ async def fetch_upcoming_departures(
                         "direction_id": schedule.attributes.direction_id,
                         "departure_time": schedule_time,
                     }
-
+                    headsign = schedule.attributes.stop_headsign
+                    if headsign and get_commuter_station_human_readable(departure_info["station_id"]) == headsign:
+                        continue
                     upcoming_departures.append(departure_info)
                     if limit and len(upcoming_departures) > limit:
                         break
@@ -657,3 +659,18 @@ def get_default_target_stations() -> List[str]:
         "place-bbsta",  # Back Bay
         "place-rugg",  # Ruggles
     ]
+
+def get_commuter_station_human_readable(station_id: str) -> str:
+    match station_id:
+        case "place-sstat":
+            return "South Station"
+        case "place-north":
+            return "North Station"
+        case "place-bbsta":
+            return "Back Bay"
+        case "place-rugg":
+            return "Ruggles"
+        case "place-NEC-1851":
+            return "Providence"
+        case _:
+            return station_id
