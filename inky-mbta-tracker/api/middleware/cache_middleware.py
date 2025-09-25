@@ -165,7 +165,7 @@ def create_cache_middleware(
     include_patterns = list(include_paths) if include_paths else None
     exclude_patterns = list(exclude_paths) if exclude_paths else None
 
-    r_client = r_client = Redis().from_url(
+    r_client = Redis().from_url(
         f"redis://:{os.environ.get('IMT_REDIS_PASSWORD', '')}@{os.environ.get('IMT_REDIS_ENDPOINT', '')}:{int(os.environ.get('IMT_REDIS_PORT', '6379'))}"
     )
 
