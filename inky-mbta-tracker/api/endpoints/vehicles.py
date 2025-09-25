@@ -3,6 +3,7 @@ import logging
 from datetime import datetime
 from typing import AsyncGenerator
 
+from api.middleware.cache_middleware import cache_ttl
 from consts import VEHICLES_CACHE_TTL
 from fastapi import APIRouter, HTTPException, Request, Response
 from geojson import FeatureCollection, dumps
@@ -26,6 +27,7 @@ logger = logging.getLogger(__name__)
         "Get current vehicle positions as GeoJSON FeatureCollection. ⚠️ WARNING: Do not use 'Try it out' - large response may crash browser!"
     ),
 )
+@cache_ttl(2)
 @limiter.limit("70/minute")
 async def get_vehicles(request: Request, commons: GET_DI) -> Response:
     try:
@@ -109,6 +111,7 @@ async def get_vehicles_sse(request: Request) -> StreamingResponse:
     ),
     response_class=Response,
 )
+@cache_ttl(2)
 @limiter.limit("70/minute")
 async def get_vehicles_json(request: Request, commons: GET_DI) -> Response:
     try:
@@ -148,6 +151,7 @@ async def get_vehicles_json(request: Request, commons: GET_DI) -> Response:
     response_model=VehiclesCountResponse,
 )
 @limiter.limit("70/minute")
+@cache_ttl(30)
 async def get_vehicles_counts(
     request: Request, commons: GET_DI
 ) -> VehiclesCountResponse:

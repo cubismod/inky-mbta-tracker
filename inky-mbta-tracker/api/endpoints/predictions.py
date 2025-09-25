@@ -199,7 +199,7 @@ async def get_historical_assignments(
 
 @router.post("/predictions/date")
 @limiter.limit("15/minute")
-@cache_ttl(DAY)
+@cache_ttl(3 * HOUR)
 async def generate_track_predictions_for_date(
     request: Request, date_request: DatePredictionsRequest, commons: GET_DI
 ) -> DatePredictionsResponse:

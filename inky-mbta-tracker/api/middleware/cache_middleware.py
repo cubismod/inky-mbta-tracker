@@ -165,6 +165,10 @@ def create_cache_middleware(
     include_patterns = list(include_paths) if include_paths else None
     exclude_patterns = list(exclude_paths) if exclude_paths else None
 
+    r_client = r_client = Redis().from_url(
+        f"redis://:{os.environ.get('IMT_REDIS_PASSWORD', '')}@{os.environ.get('IMT_REDIS_ENDPOINT', '')}:{int(os.environ.get('IMT_REDIS_PORT', '6379'))}"
+    )
+
     async def middleware(
         request: Request, call_next: Callable[[Request], Awaitable[Response]]
     ) -> Response:
@@ -183,9 +187,6 @@ def create_cache_middleware(
             if any(fnmatch.fnmatch(path, pat) for pat in exclude_patterns):
                 return await call_next(request)
 
-        r_client = r_client = Redis().from_url(
-            f"redis://:{os.environ.get('IMT_REDIS_PASSWORD', '')}@{os.environ.get('IMT_REDIS_ENDPOINT', '')}:{int(os.environ.get('IMT_REDIS_PORT', '6379'))}"
-        )
         if method not in cache_methods:
             return await call_next(request)
 
@@ -221,30 +222,16 @@ def create_cache_middleware(
         # No cached response; call downstream and capture response body.
         response = await call_next(request)
 
-        # Collect response body. Use the simple .body attribute when available
-        # and normalize common types to bytes. This avoids accessing internal
-        # streaming iterator attributes which are problematic for the typechecker.
-        resp_body_bytes = getattr(response, "body", b"")
-        # Normalize memoryview / bytearray to bytes, and strings to UTF-8 bytes.
-        try:
-            if isinstance(resp_body_bytes, memoryview):
-                resp_body_bytes = bytes(resp_body_bytes)
-            elif isinstance(resp_body_bytes, bytearray):
-                resp_body_bytes = bytes(resp_body_bytes)
-            elif isinstance(resp_body_bytes, str):
-                resp_body_bytes = resp_body_bytes.encode("utf-8")
-            elif resp_body_bytes is None:
-                resp_body_bytes = b""
-        except Exception:
-            # On any unexpected type/issue fall back to empty bytes
-            resp_body_bytes = b""
-
+        chunks = []
+        async for chunk in response.body_iterator: # type: ignore
+            chunks.append(chunk)
+        response_body = b''.join(chunks)
         # Cache only successful responses with non-empty body
-        if response.status_code == 200 and resp_body_bytes:
+        if response.status_code == 200 and response_body:
             try:
                 # TTL precedence: response header > endpoint decorator > default_ttl
                 ttl = _ttl_for_request(request, response, default_ttl)
-                await write_cache(r_client, key, resp_body_bytes.decode("utf-8"), ttl)
+                await write_cache(r_client, key, response_body.decode("utf-8"), ttl)
             except Exception:
                 logger.debug("Cache middleware: failed to write cache", exc_info=True)
 
@@ -257,7 +244,7 @@ def create_cache_middleware(
         headers.pop("Transfer-Encoding", None)
         # Set correct Content-Length for the new body
         try:
-            content_length = str(len(resp_body_bytes))
+            content_length = str(len(response_body))
         except Exception:
             content_length = "0"
         headers["content-length"] = content_length
@@ -265,7 +252,7 @@ def create_cache_middleware(
             "content-type", "application/json"
         )
         return Response(
-            content=resp_body_bytes,
+            content=response_body,
             status_code=response.status_code,
             headers=headers,
             media_type=media_type,
