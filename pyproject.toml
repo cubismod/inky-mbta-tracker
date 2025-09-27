@@ -27,7 +27,7 @@ dependencies = [
     "httpcore==1.0.9",
     "humanize==4.13.0",
     "idna==3.10",
-    "markupsafe==3.0.2",
+    "markupsafe==3.0.3",
     "mdurl==0.1.2",
     "metaphone>=0.6",
     "multidict==6.6.4",
