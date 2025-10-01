@@ -51,36 +51,6 @@ async def get_vehicles(request: Request, commons: GET_DI) -> Response:
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-# def diff_two_vehicle_data(
-#     t1: dict[str, List[Feature]], t2: Optional[dict[str, List[Feature]]] = None
-# ):
-#     update_items: List[Feature] = []
-#     remove_items: List[str] = []
-
-#     if t2:
-#         diff = DeepDiff(t1, t2, ignore_order=True, verbose_level=0)
-#         for added in diff.get("iterable_item+added", []):
-#             item = extract(t2, added)
-#             update_items.append(item)
-
-#         for updated in diff.get("values_changed", []):
-#             item = extract(t2, updated)
-#             update_items.append(item)
-
-#         for removed in diff.get("iterable_item_removed", []):
-#             item = extract(t1, removed)
-#             if isinstance(item, dict):
-#                 props = item.get("properties", {})
-#                 if isinstance(props, dict):
-#                     vid = props.get("id")
-#                     if isinstance(vid, str):
-#                         remove_items.append(vid)
-
-#         return DiffApiResponse(updated=update_items, removed=remove_items)
-#     else:
-#         return DiffApiResponse(updated=t1.get("features", []), removed=[])
-
-
 @router.get(
     "/vehicles/stream",
     summary="Stream Vehicle Positions",
