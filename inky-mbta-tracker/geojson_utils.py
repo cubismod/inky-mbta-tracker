@@ -205,7 +205,7 @@ async def collect_alerts(
 
 async def get_vehicle_features(
     r_client: Redis, tg: Optional[TaskGroup] = None
-) -> list[Feature]:
+) -> dict[str, Feature]:
     """Extract vehicle features from Redis data"""
     features = dict[str, Feature]()
 
@@ -312,9 +312,9 @@ async def get_vehicle_features(
                             "headsign": vehicle_info.headsign,
                         },
                     )
-                    features[f"v-{vehicle_info.id}"] = feature
+                    features[vehicle_info.id] = feature
 
-    return list(features.values())
+    return features
 
 
 async def get_shapes_features(

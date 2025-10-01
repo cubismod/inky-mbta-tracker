@@ -1,13 +1,14 @@
 import json
 import logging
 from datetime import datetime
-from typing import AsyncGenerator
+from typing import Any, AsyncGenerator
 
 from api.middleware.cache_middleware import cache_ttl
 from consts import VEHICLES_CACHE_TTL
 from fastapi import APIRouter, HTTPException, Request, Response
-from geojson import FeatureCollection, dumps
+from geojson import Feature, FeatureCollection, dumps
 from geojson_utils import get_vehicle_features
+from json_delta._diff import diff
 from pydantic import ValidationError
 from starlette.responses import StreamingResponse
 from utils import get_vehicles_data
@@ -50,22 +51,67 @@ async def get_vehicles(request: Request, commons: GET_DI) -> Response:
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
+# def diff_two_vehicle_data(
+#     t1: dict[str, List[Feature]], t2: Optional[dict[str, List[Feature]]] = None
+# ):
+#     update_items: List[Feature] = []
+#     remove_items: List[str] = []
+
+#     if t2:
+#         diff = DeepDiff(t1, t2, ignore_order=True, verbose_level=0)
+#         for added in diff.get("iterable_item+added", []):
+#             item = extract(t2, added)
+#             update_items.append(item)
+
+#         for updated in diff.get("values_changed", []):
+#             item = extract(t2, updated)
+#             update_items.append(item)
+
+#         for removed in diff.get("iterable_item_removed", []):
+#             item = extract(t1, removed)
+#             if isinstance(item, dict):
+#                 props = item.get("properties", {})
+#                 if isinstance(props, dict):
+#                     vid = props.get("id")
+#                     if isinstance(vid, str):
+#                         remove_items.append(vid)
+
+#         return DiffApiResponse(updated=update_items, removed=remove_items)
+#     else:
+#         return DiffApiResponse(updated=t1.get("features", []), removed=[])
+
+
 @router.get(
     "/vehicles/stream",
     summary="Stream Vehicle Positions",
     description="Server-sent events stream of vehicle positions",
 )
 @limiter.limit("70/minute")
-async def get_vehicles_sse(request: Request) -> StreamingResponse:
+async def get_vehicles_sse(request: Request, delta: bool = False) -> StreamingResponse:
     if not SSE_ENABLED:
         raise HTTPException(status_code=503, detail="SSE streaming disabled")
 
     async def event_generator() -> AsyncGenerator[str, None]:
-        # light throttle to avoid tight loop pegging CPU
         from anyio import sleep
 
         # send an initial comment to establish the stream quickly
         yield ": stream-start\n\n"
+        last_data: dict[str, Any] = {}
+        diffed_data = None
+
+        def _normalize_features(features: dict[str, Any]) -> dict[str, Any]:
+            out: dict[str, Any] = {}
+            if not isinstance(features, dict):
+                return out
+            for k, v in features.items():
+                try:
+                    if isinstance(v, Feature):
+                        out[k] = json.loads(dumps(v, sort_keys=True))
+                    else:
+                        out[k] = v
+                except Exception:
+                    out[k] = v if isinstance(v, dict) else {"_repr": str(v)}
+            return out
 
         # Keep the dependency context open for the duration of the stream
         async with DIParams(request.app.state.session) as commons:
@@ -74,8 +120,25 @@ async def get_vehicles_sse(request: Request) -> StreamingResponse:
                     break
                 if commons.tg:
                     try:
-                        data = await get_vehicles_data(commons.r_client)
-                        yield f"data: {json.dumps(data)}\n\n"
+                        raw_data = await get_vehicles_data(commons.r_client)
+                        norm_data = _normalize_features(
+                            raw_data if isinstance(raw_data, dict) else {}
+                        )
+                        if delta:
+                            diffed_data = diff(last_data, norm_data, verbose=False)
+                            last_data = norm_data
+                        if delta and diffed_data:
+                            yield f"data: {diffed_data}\n\n"
+                        else:
+                            try:
+                                features_list = [v for v in norm_data.values()]
+                                payload = {
+                                    "type": "FeatureCollection",
+                                    "features": features_list,
+                                }
+                                yield f"data: {json.dumps(payload)}\n\n"
+                            except Exception:
+                                yield f"data: {json.dumps(raw_data)}\n\n"
                     except (
                         ConnectionError,
                         TimeoutError,
@@ -91,7 +154,7 @@ async def get_vehicles_sse(request: Request) -> StreamingResponse:
                     yield ": tg-unavailable\n\n"
 
                 # throttle update frequency
-                await sleep(1.0)
+                await sleep(3)
 
     headers = {
         "Cache-Control": "no-cache",
@@ -176,7 +239,6 @@ async def get_vehicles_counts(
                 )
 
         data = await get_vehicles_data(commons.r_client)
-        features = data.get("features", []) if isinstance(data, dict) else []
 
         # Initialize counts
         counts = {
@@ -216,7 +278,7 @@ async def get_vehicles_counts(
             counts[vtype]["total"] += 1
 
         # Map features to our line buckets and types
-        for feat in features:
+        for feat in data.values():
             try:
                 props = getattr(feat, "properties", None) or (
                     feat.get("properties") if isinstance(feat, dict) else {}

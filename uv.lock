@@ -418,6 +418,18 @@ wheels = [
 ]
 
 [[package]]
+name = "gunicorn"
+version = "23.0.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "packaging" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/34/72/9614c465dc206155d93eff0ca20d42e1e35afc533971379482de953521a4/gunicorn-23.0.0.tar.gz", hash = "sha256:f014447a0101dc57e294f6c18ca6b40227a4c90e9bdb586042628030cba004ec", size = 375031, upload-time = "2024-08-10T20:25:27.378Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/cb/7d/6dac2a6e1eba33ee43f318edbed4ff29151a49b5d37f080aad1e6469bca4/gunicorn-23.0.0-py3-none-any.whl", hash = "sha256:ec400d38950de4dfd418cff8328b2c8faed0edb0d517d3394e457c317908ca4d", size = 85029, upload-time = "2024-08-10T20:25:24.996Z" },
+]
+
+[[package]]
 name = "h11"
 version = "0.16.0"
 source = { registry = "https://pypi.org/simple" }
@@ -576,6 +588,7 @@ dependencies = [
     { name = "fastapi" },
     { name = "frozenlist" },
     { name = "geojson" },
+    { name = "gunicorn" },
     { name = "h11" },
     { name = "hiredis" },
     { name = "httpcore" },
@@ -583,6 +596,7 @@ dependencies = [
     { name = "humanize" },
     { name = "idna" },
     { name = "jax" },
+    { name = "json-delta" },
     { name = "keras" },
     { name = "llm" },
     { name = "llm-ollama" },
@@ -613,6 +627,7 @@ dependencies = [
     { name = "typing-extensions" },
     { name = "urllib3" },
     { name = "uvicorn" },
+    { name = "uvicorn-worker" },
     { name = "uvloop" },
     { name = "yarl" },
 ]
@@ -644,6 +659,7 @@ requires-dist = [
     { name = "fastapi", specifier = "==0.118.0" },
     { name = "frozenlist", specifier = "==1.7.0" },
     { name = "geojson", specifier = "==3.1.0" },
+    { name = "gunicorn", specifier = ">=23.0.0" },
     { name = "h11", specifier = "==0.16.0" },
     { name = "hiredis", specifier = ">=2.3.2" },
     { name = "httpcore", specifier = "==1.0.9" },
@@ -651,6 +667,7 @@ requires-dist = [
     { name = "humanize", specifier = "==4.13.0" },
     { name = "idna", specifier = "==3.10" },
     { name = "jax", specifier = ">=0.5.3" },
+    { name = "json-delta", specifier = ">=2.0.2" },
     { name = "keras", specifier = ">=3.11.3" },
     { name = "llm", specifier = ">=0.27.1" },
     { name = "llm-ollama", specifier = ">=0.13.0" },
@@ -681,6 +698,7 @@ requires-dist = [
     { name = "typing-extensions", specifier = "==4.15.0" },
     { name = "urllib3", specifier = "==2.5.0" },
     { name = "uvicorn", specifier = "==0.37.0" },
+    { name = "uvicorn-worker", specifier = ">=0.4.0" },
     { name = "uvloop", specifier = ">=0.21.0" },
     { name = "uvloop", marker = "sys_platform != 'win32'", specifier = ">=0.20.0" },
     { name = "yarl", specifier = "==1.20.1" },
@@ -761,6 +779,15 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/90/33/396083357d51d7ff0f9805852c288af47480d30dd31d8abc74909b020761/jiter-0.11.0-cp314-cp314-win32.whl", hash = "sha256:c2d13ba7567ca8799f17c76ed56b1d49be30df996eb7fa33e46b62800562a5e2", size = 205802, upload-time = "2025-09-15T09:20:17.661Z" },
     { url = "https://files.pythonhosted.org/packages/e7/ab/eb06ca556b2551d41de7d03bf2ee24285fa3d0c58c5f8d95c64c9c3281b1/jiter-0.11.0-cp314-cp314t-macosx_11_0_arm64.whl", hash = "sha256:fb4790497369d134a07fc763cc88888c46f734abdd66f9fdf7865038bf3a8f40", size = 313405, upload-time = "2025-09-15T09:20:18.918Z" },
     { url = "https://files.pythonhosted.org/packages/af/22/7ab7b4ec3a1c1f03aef376af11d23b05abcca3fb31fbca1e7557053b1ba2/jiter-0.11.0-cp314-cp314t-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:6e2bbf24f16ba5ad4441a9845e40e4ea0cb9eed00e76ba94050664ef53ef4406", size = 347102, upload-time = "2025-09-15T09:20:20.16Z" },
+]
+
+[[package]]
+name = "json-delta"
+version = "2.0.2"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/aa/b6/cdc4ccf3923651cb42797b4c703b77a626014f3ebe3fdee7858a38e0a82e/json_delta-2.0.2.tar.gz", hash = "sha256:95ea3ff9908fc7d634c27ffec11db8fd8d935aa3e895d7302915d394b10e0321", size = 58715, upload-time = "2020-10-18T14:35:47.706Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/3c/c7/473eca109cb96df86673bcb6180413bb5ae6d0bca97ceac7625cc87968cc/json_delta-2.0.2-py2.py3-none-any.whl", hash = "sha256:12bc798354ea722fa04fae21ea06879321c47b0887572c27384accd6ef28efbf", size = 33956, upload-time = "2020-10-18T14:35:46.204Z" },
 ]
 
 [[package]]
@@ -1831,6 +1858,19 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/71/57/1616c8274c3442d802621abf5deb230771c7a0fec9414cb6763900eb3868/uvicorn-0.37.0.tar.gz", hash = "sha256:4115c8add6d3fd536c8ee77f0e14a7fd2ebba939fed9b02583a97f80648f9e13", size = 80367, upload-time = "2025-09-23T13:33:47.486Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/85/cd/584a2ceb5532af99dd09e50919e3615ba99aa127e9850eafe5f31ddfdb9a/uvicorn-0.37.0-py3-none-any.whl", hash = "sha256:913b2b88672343739927ce381ff9e2ad62541f9f8289664fa1d1d3803fa2ce6c", size = 67976, upload-time = "2025-09-23T13:33:45.842Z" },
+]
+
+[[package]]
+name = "uvicorn-worker"
+version = "0.4.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "gunicorn" },
+    { name = "uvicorn" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/80/59/9101b9c0680fd80e9d26c07deb822a5d18a324339fcf9cd017885ee808ad/uvicorn_worker-0.4.0.tar.gz", hash = "sha256:8ee5306070d8f38dce124adce488c3c0b50f20cf0c0222b12c66188da7214493", size = 9361, upload-time = "2025-09-20T10:47:01.218Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/90/25/09cd7a90c8bb7fb693be0d6704fccd5f9778d5513214b7a01cc4a94ff314/uvicorn_worker-0.4.0-py3-none-any.whl", hash = "sha256:e2ed952cef976f5e9e429d7269640bbcafbd36c80aa80f1003c8c77a6797abde", size = 5364, upload-time = "2025-09-20T10:46:59.776Z" },
 ]
 
 [[package]]
