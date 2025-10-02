@@ -22,11 +22,11 @@ from prometheus_fastapi_instrumentator import Instrumentator
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
-load_dotenv()
-setup_logging()
-
 
 def create_app() -> FastAPI:
+    load_dotenv()
+    setup_logging()
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         app.state.session = aiohttp.ClientSession(base_url=MBTA_V3_ENDPOINT)
