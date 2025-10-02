@@ -224,13 +224,5 @@ async def __main__() -> None:
 
 
 @click.command()
-@click.option("--api-server", is_flag=True, default=False)
-def run_main(api_server: bool) -> None:
-    if api_server:
-        import api_server as server
-
-        # Run Uvicorn synchronously; avoid anyio.run here to prevent
-        # event loop/signal handling conflicts with the server.
-        server.run_main()
-    else:
-        run(__main__, backend="asyncio", backend_options={"use_uvloop": True})
+def run_main() -> None:
+    run(__main__, backend="asyncio", backend_options={"use_uvloop": True})

@@ -23,7 +23,10 @@ tasks:
       - uv run inky-mbta-tracker
   api-server:
     cmds:
-      - uv run inky-mbta-tracker --api-server
+      - uvicorn api_server:app --workers 5 --loop uvloop
+  gunicorn:
+      cmds:
+      - gunicorn -w 10 -k uvicorn.workers.UvicornWorker api_server:app
   logs:
     cmds:
       - uvx tail -f imt.log

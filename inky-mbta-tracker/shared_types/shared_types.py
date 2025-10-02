@@ -2,6 +2,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Dict, List, Optional, Tuple, TypedDict
 
+from geojson import Feature
 from pydantic import BaseModel, Field
 
 
@@ -206,3 +207,11 @@ class PrometheusData(BaseModel):
 class PrometheusAPIResponse(BaseModel):
     status: str
     data: PrometheusData
+
+
+class DiffApiResponse(BaseModel):
+    updated: List[Feature]
+    removed: List[str]
+
+    class Config:
+        arbitrary_types_allowed = True
