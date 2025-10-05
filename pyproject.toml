@@ -62,9 +62,9 @@ dependencies = [
     "huggingface-hub>=0.34.4",
     "jax>=0.5.3",
     "tqdm>=4.67.1",
-    "json-delta>=2.0.2",
     "uvicorn-worker>=0.4.0",
     "gunicorn>=23.0.0",
+    "deepdiff[optimize]>=8.6.1",
 ]
 
 [dependency-groups]

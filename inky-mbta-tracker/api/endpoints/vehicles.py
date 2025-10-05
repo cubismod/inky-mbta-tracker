@@ -4,11 +4,11 @@ from datetime import datetime
 from typing import Any, AsyncGenerator
 
 from api.middleware.cache_middleware import cache_ttl
+from api.services.vehicle_delta import calculate_diff
 from consts import VEHICLES_CACHE_TTL
 from fastapi import APIRouter, HTTPException, Request, Response
 from geojson import Feature, FeatureCollection, dumps
 from geojson_utils import get_vehicle_features
-from json_delta._diff import diff
 from pydantic import ValidationError
 from starlette.responses import StreamingResponse
 from utils import get_vehicles_data
@@ -67,7 +67,6 @@ async def get_vehicles_sse(request: Request, delta: bool = False) -> StreamingRe
         # send an initial comment to establish the stream quickly
         yield ": stream-start\n\n"
         last_data: dict[str, Any] = {}
-        diffed_data = None
 
         def _normalize_features(features: dict[str, Any]) -> dict[str, Any]:
             out: dict[str, Any] = {}
@@ -95,10 +94,10 @@ async def get_vehicles_sse(request: Request, delta: bool = False) -> StreamingRe
                             raw_data if isinstance(raw_data, dict) else {}
                         )
                         if delta:
-                            diffed_data = diff(last_data, norm_data, verbose=False)
-                            last_data = norm_data
-                        if delta and diffed_data:
-                            yield f"data: {diffed_data}\n\n"
+                            resp = calculate_diff(last_data, raw_data)
+                            last_data = raw_data
+                        if delta and resp:
+                            yield f"data: {resp.model_dump_json()}\n\n"
                         else:
                             try:
                                 features_list = [v for v in norm_data.values()]
@@ -124,7 +123,7 @@ async def get_vehicles_sse(request: Request, delta: bool = False) -> StreamingRe
                     yield ": tg-unavailable\n\n"
 
                 # throttle update frequency
-                await sleep(3)
+                await sleep(4)
 
     headers = {
         "Cache-Control": "no-cache",
