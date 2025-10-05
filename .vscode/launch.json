@@ -12,11 +12,11 @@
             "envFile": "${workspaceFolder}/.env"
         },
         {
-            "name": "Python Debugger: Track Prediction API",
+            "name": "Python Debugger: API",
             "type": "debugpy",
             "request": "launch",
-            "program": "${workspaceFolder}/.venv/bin/inky-mbta-tracker",
-            "args": ["--api-server"],
+            "program": "${workspaceFolder}/.venv/bin/uvicorn",
+            "args": ["api_server:app", "--loop", "uvloop"],
             "envFile": "${workspaceFolder}/.env"
         }
     ]
