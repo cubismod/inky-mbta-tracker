@@ -54,7 +54,7 @@ dependencies = [
     "uvicorn==0.37.0",
     "uvloop>=0.21.0",
     "uvloop>=0.20.0; sys_platform != 'win32'",
-    "yarl==1.21.0",
+    "yarl==1.22.0",
     "llm>=0.27.1",
     "llm-ollama>=0.13.0",
     "keras>=3.11.3",
