@@ -20,6 +20,7 @@ from prometheus import redis_commands
 from pydantic import ValidationError
 from redis.asyncio import Redis
 from schedule_tracker import VehicleRedisSchema
+from shapely.geometry import LineString as ShapelyLineString
 from turfpy.measurement import bearing, distance
 
 logger = logging.getLogger("geojson_utils")
@@ -317,10 +318,33 @@ async def get_vehicle_features(
     return features
 
 
+def _optimize_line_geometry(
+    coordinates: list[tuple[float, float]], tolerance: float = 0.00002
+) -> list[tuple[float, float]]:
+    """Optimize line geometry using shapely simplify while preserving shape integrity"""
+    if len(coordinates) < 3:
+        return coordinates
+
+    try:
+        # Create shapely LineString and simplify
+        shapely_line = ShapelyLineString(coordinates)
+        simplified = shapely_line.simplify(tolerance, preserve_topology=True)
+
+        # Convert back to coordinate list, ensuring proper tuple format
+        if hasattr(simplified, "coords"):
+            return [(float(x), float(y)) for x, y in simplified.coords]
+        else:
+            # Fallback if simplify returns something unexpected
+            return coordinates
+    except Exception as e:
+        logger.warning(f"Failed to optimize line geometry, using original: {e}")
+        return coordinates
+
+
 async def get_shapes_features(
     config: Config, redis_client: Redis, tg: Optional[TaskGroup], session: ClientSession
 ) -> list[Feature]:
-    """Get route shapes as GeoJSON features"""
+    """Get route shapes as GeoJSON features with geometric optimization"""
     lines = list()
     if config.vehicles_by_route:
         shapes = await get_shapes(redis_client, config.vehicles_by_route, session, None)
@@ -330,9 +354,25 @@ async def get_shapes_features(
                 for line in v:
                     if k.startswith("74") or k.startswith("75"):
                         k = silver_line_lookup(k)
+
+                    # Optimize geometry based on route type
+                    # Use different tolerances for different route types
+                    if k.startswith("CR"):  # Commuter Rail - less precision needed
+                        tolerance = 0.00005
+                    elif k.startswith(
+                        ("Green", "Blue", "Red", "Orange")
+                    ):  # Rapid transit
+                        tolerance = 0.00002
+                    elif k.isdecimal() or k.startswith("7"):  # Bus routes
+                        tolerance = 0.00003
+                    else:  # Default (Silver Line, etc.)
+                        tolerance = 0.00002
+
+                    optimized_coords = _optimize_line_geometry(line, tolerance)
+
                     lines.append(
                         Feature(
-                            geometry=LineString(coordinates=line),
+                            geometry=LineString(coordinates=optimized_coords),
                             properties={"route": k},
                         )
                     )
