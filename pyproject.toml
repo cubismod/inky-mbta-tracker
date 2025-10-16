@@ -25,7 +25,7 @@ dependencies = [
     "h11==0.16.0",
     "hiredis>=2.3.2",
     "httpcore==1.0.9",
-    "humanize==4.13.0",
+    "humanize==4.14.0",
     "idna==3.11",
     "markupsafe==3.0.3",
     "mdurl==0.1.2",
