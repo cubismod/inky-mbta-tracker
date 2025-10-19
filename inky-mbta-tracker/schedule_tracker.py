@@ -135,29 +135,10 @@ class Tracker:
 
                     distance = measurement.distance(start, end, "m")
                     duration = event.update_time - last_event_validated.update_time
-                    # Minimum thresholds: 10m distance, 5s time to filter GPS noise and rapid updates
-                    if distance > 10 and duration.seconds >= 5:
+
+                    if duration.seconds != 0 and distance != 0:
                         meters_per_second = distance / duration.seconds
                         speed = meters_per_second * 2.2369362921
-
-                        # Outlier detection: check for unreasonable acceleration (> 10 mph/s)
-                        if (
-                            last_event_validated.speed
-                            and not last_event_validated.approximate_speed
-                        ):
-                            speed_diff = abs(speed - last_event_validated.speed)
-                            max_accel_change = (
-                                10 * duration.seconds
-                            )  # 10 mph per second max
-                            if speed_diff > max_accel_change:
-                                logger.debug(
-                                    f"Rejecting speed calculation for {event.route} vehicle {event.id}: "
-                                    f"acceleration too high ({speed_diff:.1f} mph change in {duration.seconds}s)"
-                                )
-                                return (
-                                    last_event_validated.speed,
-                                    last_event_validated.approximate_speed,
-                                )
 
                         if not self.is_speed_reasonable(speed, event.route):
                             logger.debug(
@@ -170,12 +151,6 @@ class Tracker:
                             )
                         else:
                             return round(speed, 2), True
-
-                    else:
-                        return (
-                            last_event_validated.speed,
-                            last_event_validated.approximate_speed,
-                        )
             if event.speed:
                 return event.speed, False
         except ResponseError as err:
