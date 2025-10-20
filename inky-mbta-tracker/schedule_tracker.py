@@ -6,6 +6,7 @@ import time
 from asyncio import QueueEmpty, Runner
 from datetime import UTC, datetime, timedelta
 from queue import Queue
+from statistics import fmean
 from typing import Optional
 from zoneinfo import ZoneInfo
 
@@ -139,12 +140,14 @@ class Tracker:
                     )
                     end = Feature(geometry=Point((event.longitude, event.latitude)))
 
-                    distance = measurement.distance(start, end, "m")
+                    distance: float = measurement.distance(start, end, "m")
                     duration = event.update_time - last_event_validated.update_time
 
                     if duration.seconds != 0 and distance != 0:
                         meters_per_second = distance / duration.seconds
                         speed = meters_per_second * 2.2369362921
+                        if last_event_validated.speed != 0 and duration.seconds < 30:
+                            speed = fmean([speed, last_event_validated.speed])
 
                         if not self.is_speed_reasonable(speed, event.route):
                             logger.debug(
