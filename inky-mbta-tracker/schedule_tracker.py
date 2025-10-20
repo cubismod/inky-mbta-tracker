@@ -31,9 +31,14 @@ from prometheus import (
 from pydantic import ValidationError
 from redis import ResponseError
 from redis.asyncio.client import Pipeline, Redis
+from redis_cache import check_cache, write_cache
 from redis_lock.asyncio import RedisLock
 from shared_types.schema_versioner import export_schema_key_counts
-from shared_types.shared_types import ScheduleEvent, VehicleRedisSchema
+from shared_types.shared_types import (
+    ScheduleEvent,
+    VehicleRedisSchema,
+    VehicleSpeedHistory,
+)
 from tenacity import (
     before_sleep_log,
     retry,
@@ -114,20 +119,21 @@ class Tracker:
         self, event: VehicleRedisSchema
     ) -> tuple[Optional[float], bool]:
         try:
+            cache_id = f"vehicle:speed:history:{event.id}"
             if event.current_status != "STOPPED_AT" and not event.speed:
-                last_event = await self.redis.get(f"vehicle:{event.id}")
+                last_event = await check_cache(self.redis, cache_id)
                 redis_commands.labels("get").inc()
 
                 if last_event:
-                    last_event_validated = VehicleRedisSchema.model_validate_json(
+                    last_event_validated = VehicleSpeedHistory.model_validate_json(
                         last_event, strict=False
                     )
 
                     start = Feature(
                         geometry=Point(
                             (
-                                last_event_validated.longitude,
-                                last_event_validated.latitude,
+                                last_event_validated.long,
+                                last_event_validated.lat,
                             )
                         )
                     )
@@ -145,12 +151,32 @@ class Tracker:
                                 f"Rejecting speed calculation for {event.route} vehicle {event.id}: speed {speed} mph is unreasonable"
                             )
                             # throw out insane predictions
-                            return (
-                                last_event_validated.speed,
-                                last_event_validated.approximate_speed,
-                            )
+                            return (round(last_event_validated.speed, 2), True)
                         else:
+                            await write_cache(
+                                self.redis,
+                                cache_id,
+                                VehicleSpeedHistory(
+                                    long=event.longitude,
+                                    lat=event.latitude,
+                                    speed=speed,
+                                    update_time=event.update_time,
+                                ).model_dump_json(),
+                                exp_sec=300,
+                            )
                             return round(speed, 2), True
+                else:
+                    await write_cache(
+                        self.redis,
+                        cache_id,
+                        VehicleSpeedHistory(
+                            long=event.longitude,
+                            lat=event.latitude,
+                            speed=0,
+                            update_time=event.update_time,
+                        ).model_dump_json(),
+                        exp_sec=300,
+                    )
             if event.speed:
                 return event.speed, False
         except ResponseError as err:

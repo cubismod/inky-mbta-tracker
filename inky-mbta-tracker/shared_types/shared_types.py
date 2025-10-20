@@ -217,3 +217,10 @@ class DiffApiResponse(BaseModel):
 
     class Config:
         arbitrary_types_allowed = True
+
+
+class VehicleSpeedHistory(BaseModel):
+    long: float
+    lat: float
+    speed: float
+    update_time: datetime
