@@ -82,7 +82,7 @@ def create_webhook_object(
         timestamp=alert.attributes.updated_at,
         author=DiscordEmbedAuthor(
             name=f"MBTA Alert, Sev {alert.attributes.severity}",
-            url="https://ryanwallace.cloud.com/alerts",
+            url="https://ryanwallace.cloud/alerts",
         ),
         color=color,
     )
