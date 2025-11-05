@@ -81,21 +81,25 @@ async def light_get_alerts_batch(
 
 
 def lookup_vehicle_color(vehicle: VehicleRedisSchema) -> str:
-    if vehicle.route.startswith("Amtrak"):
+    return lookup_route_color(vehicle.route)
+
+
+def lookup_route_color(route: str) -> str:
+    if route.startswith("Amtrak"):
         return "#18567D"
-    if vehicle.route.startswith("Green"):
+    if route.startswith("Green"):
         return "#008150"
-    if vehicle.route.startswith("Blue"):
+    if route.startswith("Blue"):
         return "#2F5DA6"
-    if vehicle.route.startswith("CR"):
+    if route.startswith("CR"):
         return "#7B388C"
-    if vehicle.route.startswith("Red") or vehicle.route.startswith("Mattapan"):
+    if route.startswith("Red") or route.startswith("Mattapan"):
         return "#FA2D27"
-    if vehicle.route.startswith("Orange"):
+    if route.startswith("Orange"):
         return "#FD8A03"
-    if vehicle.route.startswith("74") or vehicle.route.startswith("SL"):
+    if route.startswith("74") or route.startswith("SL"):
         return "#9A9C9D"
-    elif vehicle.route.isdecimal():
+    elif route.isdecimal():
         return "#FFFF00"
     return ""
 
