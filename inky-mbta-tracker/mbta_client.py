@@ -15,6 +15,7 @@ from anyio import sleep
 from anyio.abc import TaskGroup
 from anyio.streams.memory import MemoryObjectSendStream
 from consts import DAY, HOUR, MINUTE, TWO_MONTHS, YEAR
+from discord_webhook import process_alert_event
 from exceptions import RateLimitExceeded
 from mbta_client_extended import (
     determine_station_id,
@@ -315,6 +316,7 @@ class MBTAApi:
                     if self.route:
                         await self.r_client.delete(f"alerts:route:{self.route}")
                     for a in alerts:
+                        await process_alert_event(a, self.r_client)
                         await write_cache(
                             self.r_client,
                             f"alert:{a.id}",
