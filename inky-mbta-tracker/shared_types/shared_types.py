@@ -224,3 +224,64 @@ class VehicleSpeedHistory(BaseModel):
     lat: float
     speed: float
     update_time: datetime
+
+
+class DiscordEmbedFooter(BaseModel):
+    text: str
+    icon_url: Optional[str] = None
+    proxy_icon_url: Optional[str] = None
+
+
+class DiscordEmbedMedia(BaseModel):
+    url: str
+    proxy_url: Optional[str] = None
+    height: Optional[int] = None
+    width: Optional[int] = None
+
+
+class DiscordEmbedProvider(BaseModel):
+    name: Optional[str] = None
+    url: Optional[str] = None
+
+
+class DiscordEmbedAuthor(BaseModel):
+    name: str
+    url: Optional[str] = None
+    icon_url: Optional[str] = None
+    proxy_icon_url: Optional[str] = None
+
+
+class DiscordEmbedField(BaseModel):
+    name: str
+    value: str
+    inline: Optional[bool] = False
+
+
+class DiscordEmbed(BaseModel):
+    title: Optional[str] = None
+    type: Optional[str] = None
+    description: Optional[str] = None
+    url: Optional[str] = None
+    timestamp: Optional[str] = None
+    color: Optional[int] = None
+    footer: Optional[DiscordEmbedFooter] = None
+    image: Optional[DiscordEmbedMedia] = None
+    thumbnail: Optional[DiscordEmbedMedia] = None
+    video: Optional[DiscordEmbedMedia] = None
+    provider: Optional[DiscordEmbedProvider] = None
+    fields: Optional[List[DiscordEmbedField]] = None
+    author: Optional[DiscordEmbedAuthor] = None
+
+
+class DiscordWebhook(BaseModel):
+    content: Optional[str] = None
+    username: Optional[str] = None
+    avatar_url: Optional[str] = None
+    tts: Optional[bool] = False
+    embeds: Optional[List[DiscordEmbed]] = None
+    allowed_mentions: Optional[Dict[str, List[str]]] = None
+
+
+class WebhookRedisEntry(BaseModel):
+    message_id: str
+    message_hash: str
