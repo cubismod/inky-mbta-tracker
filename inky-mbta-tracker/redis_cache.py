@@ -27,3 +27,11 @@ async def write_cache(redis: Redis, key: str, data: str, exp_sec: int) -> None:
         redis_commands.labels("set").inc()
     except ResponseError as err:
         logger.error(err)
+
+
+async def delete_cache(redis: Redis, key: str) -> None:
+    try:
+        await redis.delete(key)
+        redis_commands.labels("delete").inc()
+    except ResponseError as err:
+        logger.error(err)

@@ -10,7 +10,7 @@ from exceptions import RateLimitExceeded
 from mbta_responses import AlertResource
 from pydantic import ValidationError
 from redis.asyncio import Redis
-from redis_cache import check_cache, write_cache
+from redis_cache import check_cache, delete_cache, write_cache
 from shared_types.shared_types import (
     DiscordEmbed,
     DiscordEmbedAuthor,
@@ -190,6 +190,7 @@ async def delete_webhook(webhook_id: str, r_client: Redis):
         existing = await check_cache(r_client, f"webhook:{webhook_id}")
         if existing and WEBHOOK_URL:
             existing_val = WebhookRedisEntry.model_validate_json(existing)
+            await delete_cache(r_client, f"webhook:{webhook_id}")
             try:
                 async with session.delete(
                     f"{WEBHOOK_URL}/messages/{existing_val.message_id}"
