@@ -15,7 +15,7 @@ from anyio import sleep
 from anyio.abc import TaskGroup
 from anyio.streams.memory import MemoryObjectSendStream
 from consts import DAY, HOUR, MINUTE, TWO_MONTHS, YEAR
-from discord_webhook import process_alert_event
+from discord_webhook import delete_webhook, process_alert_event
 from exceptions import RateLimitExceeded
 from mbta_client_extended import (
     determine_station_id,
@@ -346,6 +346,7 @@ class MBTAApi:
                     )
                     if self.route:
                         await self.r_client.sadd(f"alerts:route:{self.route}", a.id)  # type: ignore[misc]
+                    await process_alert_event(a, self.r_client)
                     if a.attributes and a.attributes.informed_entity:
                         for ent in a.attributes.informed_entity:
                             if ent.route:
@@ -369,6 +370,7 @@ class MBTAApi:
                                 a = AlertResource.model_validate_json(
                                     cached, strict=False
                                 )
+                                await delete_webhook(type_and_id.id, self.r_client)
                                 if a.attributes and a.attributes.informed_entity:
                                     for ent in a.attributes.informed_entity:
                                         if ent.route:

@@ -37,11 +37,12 @@ async def process_alert_event(
 ):
     from geojson_utils import lookup_route_color
 
-    if alert.attributes.severity < 7:
-        return
     routes = {e.route for e in alert.attributes.informed_entity if e.route}
     color = 5793266  # blurple by default
     route = ", ".join(routes)
+    if "CR" in route and alert.attributes.severity <= 6:
+        # filter out low severity commuter rail alerts
+        return
     if len(routes) == 1:
         item = routes.pop()
         color = hex_color_to_int(lookup_route_color(item))
@@ -177,3 +178,29 @@ async def patch_webhook(
             logger.error(
                 f"Failed to parse existing webhook cache for {webhook_id}", exc_info=err
             )
+
+
+@retry(
+    wait=wait_exponential_jitter(initial=5, jitter=20, max=60),
+    before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
+    retry=retry_if_not_exception_type(CancelledError),
+)
+async def delete_webhook(webhook_id: str, r_client: Redis):
+    async with aiohttp.ClientSession() as session:
+        existing = await check_cache(r_client, f"webhook:{webhook_id}")
+        if existing and WEBHOOK_URL:
+            existing_val = WebhookRedisEntry.model_validate_json(existing)
+            try:
+                async with session.delete(
+                    f"{WEBHOOK_URL}/messages/{existing_val.message_id}"
+                ) as response:
+                    if response.status != 200 and response.status != 204:
+                        logger.error(
+                            f"Failed to delete webhook msg {existing_val.message_id}, status {response.status}"
+                        )
+                        return
+            except ValidationError as err:
+                logger.error(
+                    f"Failed to parse existing webhook cache for {webhook_id}",
+                    exc_info=err,
+                )
