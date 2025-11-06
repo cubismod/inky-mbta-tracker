@@ -3,10 +3,9 @@ import json
 import logging
 import os
 from asyncio import CancelledError
-from datetime import UTC, datetime
 
 import aiohttp
-from consts import HOUR
+from consts import DAY
 from exceptions import RateLimitExceeded
 from mbta_responses import AlertResource
 from pydantic import ValidationError
@@ -38,9 +37,7 @@ async def process_alert_event(
 ):
     from geojson_utils import lookup_route_color
 
-    time = datetime.fromisoformat(alert.attributes.updated_at).astimezone(UTC)
-    time_diff = datetime.now().astimezone(UTC) - time
-    if alert.attributes.severity < 6 or time_diff.total_seconds() > 2 * HOUR:
+    if alert.attributes.severity < 7:
         return
     routes = {e.route for e in alert.attributes.informed_entity if e.route}
     color = 5793266  # blurple by default
@@ -127,7 +124,7 @@ async def post_webhook(
                 WebhookRedisEntry(
                     message_id=message_id, message_hash=h.hexdigest()
                 ).model_dump_json(),
-                5 * HOUR,
+                DAY,
             )
 
 
@@ -174,7 +171,7 @@ async def patch_webhook(
                     WebhookRedisEntry(
                         message_id=message_id, message_hash=h.hexdigest()
                     ).model_dump_json(),
-                    5 * HOUR,
+                    DAY,
                 )
         except ValidationError as err:
             logger.error(
