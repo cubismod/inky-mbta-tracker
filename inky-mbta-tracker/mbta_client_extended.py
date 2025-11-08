@@ -15,6 +15,7 @@ from aiosseclient import aiosseclient
 from anyio import create_task_group, sleep
 from anyio.abc import TaskGroup
 from anyio.streams.memory import MemoryObjectSendStream
+from config import Config
 from consts import FOUR_WEEKS, HOUR, MBTA_V3_ENDPOINT, TWO_MONTHS
 from exceptions import RateLimitExceeded
 from mbta_responses import (
@@ -414,6 +415,7 @@ async def watch_mbta_server_side_events(
     send_stream: MemoryObjectSendStream[ScheduleEvent | VehicleRedisSchema] | None,
     session: ClientSession,
     transit_time_min: int,
+    config: Config,
 ) -> None:
     while True:
         try:
@@ -432,6 +434,7 @@ async def watch_mbta_server_side_events(
                             transit_time_min,
                             session,
                             tg,
+                            config,
                         )
             except* ClientPayloadError as eg:
                 for err in eg.exceptions:
@@ -503,6 +506,7 @@ async def watch_vehicles(
     send_stream: MemoryObjectSendStream[ScheduleEvent | VehicleRedisSchema],
     expiration_time: Optional[datetime],
     route_id: str,
+    config: Config,
     session: ClientSession | None = None,
 ) -> None:
     endpoint = f"{MBTA_V3_ENDPOINT}/vehicles?fields[vehicle]=direction_id,latitude,longitude,speed,current_status,occupancy_status,carriages&filter[route]={route_id}&api_key={MBTA_AUTH}"
@@ -525,6 +529,7 @@ async def watch_vehicles(
             send_stream,
             session=session,
             transit_time_min=0,
+            config=config,
         )
 
 
@@ -538,6 +543,7 @@ async def watch_station(
     expiration_time: Optional[datetime],
     show_on_display: bool,
     tg: TaskGroup,
+    config: Config,
     route_substring_filter: Optional[str] = None,
     session: ClientSession | None = None,
 ) -> None:
@@ -573,12 +579,7 @@ async def watch_station(
         if watcher.stop:
             tracker_executions.labels(watcher.stop.data.attributes.name).inc()
         await watch_mbta_server_side_events(
-            watcher,
-            endpoint,
-            headers,
-            send_stream,
-            session,
-            transit_time_min,
+            watcher, endpoint, headers, send_stream, session, transit_time_min, config
         )
 
 
@@ -604,7 +605,7 @@ def determine_station_id(stop_id: str) -> tuple[str, bool]:
     retry=retry_if_not_exception_type(CancelledError),
 )
 async def watch_alerts(
-    r_client: Redis, route_id: Optional[str], session: ClientSession
+    r_client: Redis, route_id: Optional[str], session: ClientSession, config: Config
 ) -> None:
     """Watch MBTA Alerts via SSE and persist to Redis.
 
@@ -633,6 +634,7 @@ async def watch_alerts(
             None,
             session=session,
             transit_time_min=0,
+            config=config,
         )
 
 

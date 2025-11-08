@@ -139,6 +139,7 @@ class Config(BaseModel):
     ollama: OllamaConfig = Field(default_factory=OllamaConfig)
     # File output settings for AI summaries
     file_output: FileOutputConfig = Field(default_factory=FileOutputConfig)
+    severity_icons: Optional[list[str]] = None
 
 
 def load_config() -> Config:
