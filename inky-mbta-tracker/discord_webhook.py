@@ -5,6 +5,7 @@ import os
 from asyncio import CancelledError
 
 import aiohttp
+from config import Config
 from consts import DAY
 from exceptions import RateLimitExceeded
 from mbta_responses import AlertResource
@@ -31,10 +32,7 @@ logger = logging.getLogger(__name__)
 WEBHOOK_URL = os.getenv("IMT_DISCORD_URL")
 
 
-async def process_alert_event(
-    alert: AlertResource,
-    r_client: Redis,
-):
+async def process_alert_event(alert: AlertResource, r_client: Redis, config: Config):
     from geojson_utils import lookup_route_color
 
     routes = {e.route for e in alert.attributes.informed_entity if e.route}
@@ -50,7 +48,7 @@ async def process_alert_event(
 
     if WEBHOOK_URL:
         async with aiohttp.ClientSession() as session:
-            webhook = create_webhook_object(alert, route, color)
+            webhook = create_webhook_object(alert, route, color, config)
             existing = await check_cache(r_client, f"webhook:{alert.id}")
             if existing:
                 try:
@@ -73,7 +71,7 @@ async def process_alert_event(
 
 
 def create_webhook_object(
-    alert: AlertResource, route: str, color: int
+    alert: AlertResource, route: str, color: int, config: Config
 ) -> DiscordWebhook:
     embed = DiscordEmbed(
         description=alert.attributes.header,
@@ -84,9 +82,12 @@ def create_webhook_object(
         ),
         color=color,
     )
+    avatar_url = None
     if alert.attributes.image:
         embed.image = DiscordEmbedMedia(url=alert.attributes.image)
-    return DiscordWebhook(embeds=[embed])
+    if config.severity_icons and len(config.severity_icons) >= 10:
+        avatar_url = config.severity_icons[alert.attributes.severity - 1]
+    return DiscordWebhook(avatar_url=avatar_url, embeds=[embed])
 
 
 @retry(

@@ -10,7 +10,7 @@ import click
 from anyio import create_memory_object_stream, create_task_group, run, sleep
 from anyio.abc import TaskGroup
 from anyio.streams.memory import MemoryObjectSendStream
-from config import StopSetup, load_config
+from config import Config, StopSetup, load_config
 from consts import MBTA_V3_ENDPOINT
 from dotenv import load_dotenv
 from geojson_utils import background_refresh
@@ -52,6 +52,7 @@ def start_task(
     send_stream: MemoryObjectSendStream[ScheduleEvent | VehicleRedisSchema],
     tg: TaskGroup,
     session: aiohttp.ClientSession,
+    config: Config,
     stop: Optional[StopSetup] = None,
     route_id: Optional[str] = None,
 ) -> None:
@@ -90,12 +91,19 @@ def start_task(
                     exp_time,
                     stop.show_on_display,
                     tg,
+                    config,
                     stop.route_substring_filter,
                     session,
                 )
         case TaskType.VEHICLES:
             tg.start_soon(
-                watch_vehicles, r_client, send_stream, exp_time, route_id or "", session
+                watch_vehicles,
+                r_client,
+                send_stream,
+                exp_time,
+                route_id or "",
+                config,
+                session,
             )
 
 
@@ -155,6 +163,7 @@ async def __main__() -> None:
                         send_stream,
                         tg,
                         session,
+                        config,
                         stop,
                     )
                 else:
@@ -164,6 +173,7 @@ async def __main__() -> None:
                         send_stream,
                         tg,
                         session,
+                        config,
                         stop,
                     )
             if config.vehicles_by_route:
@@ -174,16 +184,14 @@ async def __main__() -> None:
                         send_stream,
                         tg,
                         session,
+                        config,
                         stop,
                         route_id,
                     )
                 # Start alerts SSE watchers for each configured route
                 for route_id in config.vehicles_by_route:
                     tg.start_soon(
-                        watch_alerts,
-                        get_redis(redis_pool),
-                        route_id,
-                        session,
+                        watch_alerts, get_redis(redis_pool), route_id, session, config
                     )
 
             # Start track prediction precaching if enabled

@@ -14,6 +14,7 @@ from aiohttp import ClientSession
 from anyio import sleep
 from anyio.abc import TaskGroup
 from anyio.streams.memory import MemoryObjectSendStream
+from config import Config
 from consts import DAY, HOUR, MINUTE, TWO_MONTHS, YEAR
 from discord_webhook import delete_webhook, process_alert_event
 from exceptions import RateLimitExceeded
@@ -304,6 +305,7 @@ class MBTAApi:
         transit_time_min: int,
         session: ClientSession,
         tg: TaskGroup,
+        config: Config,
     ) -> None:
         # https://www.mbta.com/developers/v3-api/streaming
         try:
@@ -316,7 +318,7 @@ class MBTAApi:
                     if self.route:
                         await self.r_client.delete(f"alerts:route:{self.route}")
                     for a in alerts:
-                        await process_alert_event(a, self.r_client)
+                        await process_alert_event(a, self.r_client, config)
                         await write_cache(
                             self.r_client,
                             f"alert:{a.id}",
@@ -346,7 +348,7 @@ class MBTAApi:
                     )
                     if self.route:
                         await self.r_client.sadd(f"alerts:route:{self.route}", a.id)  # type: ignore[misc]
-                    await process_alert_event(a, self.r_client)
+                    await process_alert_event(a, self.r_client, config)
                     if a.attributes and a.attributes.informed_entity:
                         for ent in a.attributes.informed_entity:
                             if ent.route:
