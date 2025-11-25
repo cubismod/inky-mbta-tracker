@@ -19,7 +19,7 @@ dependencies = [
     "cffi==2.0.0",
     "charset-normalizer==3.4.4",
     "click>=8.2.1",
-    "fastapi==0.121.3",
+    "fastapi==0.122.0",
     "frozenlist==1.8.0",
     "geojson==3.1.0",
     "h11==0.16.0",
