@@ -33,7 +33,7 @@ dependencies = [
     "multidict==6.7.0",
     "packaging==25.0",
     "paho-mqtt==2.1.0",
-    "polyline==2.0.3",
+    "polyline==2.0.4",
     "prometheus-client==0.23.1",
     "prometheus-fastapi-instrumentator>=7.1.0",
     "propcache==0.4.1",
