@@ -50,7 +50,7 @@ dependencies = [
     "textdistance>=4.6.3",
     "turfpy==0.0.8",
     "typing-extensions==4.15.0",
-    "urllib3==2.6.1",
+    "urllib3==2.6.2",
     "uvicorn==0.38.0",
     "uvloop>=0.21.0",
     "uvloop>=0.20.0; sys_platform != 'win32'",
