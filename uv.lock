@@ -180,14 +180,14 @@ wheels = [
 
 [[package]]
 name = "basedpyright"
-version = "1.36.2"
+version = "1.37.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "nodejs-wheel-binaries" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/c8/8a/4c5d74314fe085f8f9b1a92b7c96e2a116651b6c7596e4def872d5d7abf0/basedpyright-1.36.2.tar.gz", hash = "sha256:b596b1a6e6006c7dfd483efc1d602574f238321e28f70bc66e87255784b70630", size = 22835798, upload-time = "2025-12-23T02:31:27.357Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/60/d7/9476af6f45a70e8d23045ec59d99c2698513b7395283cadc75caeeea2b83/basedpyright-1.37.0.tar.gz", hash = "sha256:affbffced97a04a08bfc44aef2da43951a5ab5e2e55921a144ed786c4fd2c6ad", size = 22837441, upload-time = "2026-01-04T09:59:32.652Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/69/88/0aaac8e5062cd83434ce41fac844646d0f285b574cda0eeb732e916db22b/basedpyright-1.36.2-py3-none-any.whl", hash = "sha256:8dfd74fad77fcccc066ea0af5fd07e920b6f88cb1b403936aa78ab5aaef51526", size = 11882631, upload-time = "2025-12-23T02:31:24.537Z" },
+    { url = "https://files.pythonhosted.org/packages/e8/63/753918f0bad07a1b24755a540b64bca1388322615025d4c954e3740fcdbe/basedpyright-1.37.0-py3-none-any.whl", hash = "sha256:261a02a8732a19f3f585e2940582147560058626a062a2320724de84fb2dc41b", size = 11884509, upload-time = "2026-01-04T09:59:35.997Z" },
 ]
 
 [[package]]
@@ -410,11 +410,11 @@ wheels = [
 
 [[package]]
 name = "filelock"
-version = "3.20.1"
+version = "3.20.2"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/a7/23/ce7a1126827cedeb958fc043d61745754464eb56c5937c35bbf2b8e26f34/filelock-3.20.1.tar.gz", hash = "sha256:b8360948b351b80f420878d8516519a2204b07aefcdcfd24912a5d33127f188c", size = 19476, upload-time = "2025-12-15T23:54:28.027Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/c1/e0/a75dbe4bca1e7d41307323dad5ea2efdd95408f74ab2de8bd7dba9b51a1a/filelock-3.20.2.tar.gz", hash = "sha256:a2241ff4ddde2a7cebddf78e39832509cb045d18ec1a09d7248d6bfc6bfbbe64", size = 19510, upload-time = "2026-01-02T15:33:32.582Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/e3/7f/a1a97644e39e7316d850784c642093c99df1290a460df4ede27659056834/filelock-3.20.1-py3-none-any.whl", hash = "sha256:15d9e9a67306188a44baa72f569d2bfd803076269365fdea0934385da4dc361a", size = 16666, upload-time = "2025-12-15T23:54:26.874Z" },
+    { url = "https://files.pythonhosted.org/packages/9a/30/ab407e2ec752aa541704ed8f93c11e2a5d92c168b8a755d818b74a3c5c2d/filelock-3.20.2-py3-none-any.whl", hash = "sha256:fbba7237d6ea277175a32c54bb71ef814a8546d8601269e1bfc388de333974e8", size = 16697, upload-time = "2026-01-02T15:33:31.133Z" },
 ]
 
 [[package]]
