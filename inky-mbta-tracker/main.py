@@ -138,6 +138,34 @@ def get_next_backup_time(now: Optional[datetime] = None) -> datetime:
     return candidate
 
 
+async def heartbeat_task(redis: Redis) -> None:
+    """
+    Background task that writes a periodic heartbeat to Redis for healthcheck monitoring.
+
+    This task writes the current timestamp to Redis every 30 seconds, allowing the
+    healthcheck script to verify that the main process is running and healthy.
+    """
+    from redis_cache import write_cache
+
+    HEARTBEAT_KEY = "healthcheck:heartbeat"
+    HEARTBEAT_INTERVAL_SECONDS = 30
+    HEARTBEAT_TTL_SECONDS = 120  # 2 minutes
+
+    logger.info("Starting heartbeat task")
+
+    while True:
+        try:
+            now = datetime.now(UTC)
+            await write_cache(
+                redis, HEARTBEAT_KEY, now.isoformat(), HEARTBEAT_TTL_SECONDS
+            )
+            logger.debug(f"Heartbeat written at {now.isoformat()}")
+        except Exception as e:
+            logger.error(f"Failed to write heartbeat: {e}", exc_info=True)
+
+        await sleep(HEARTBEAT_INTERVAL_SECONDS)
+
+
 async def __main__() -> None:
     config = load_config()
 
@@ -215,6 +243,9 @@ async def __main__() -> None:
             tg.start_soon(process_queue_async, receive_stream, tg)
 
             tg.start_soon(background_refresh, get_redis(redis_pool), tg)
+
+            # Start heartbeat task for healthcheck monitoring
+            tg.start_soon(heartbeat_task, get_redis(redis_pool))
 
             next_backup = get_next_backup_time()
             # cron/timed tasks
