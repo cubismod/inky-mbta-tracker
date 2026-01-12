@@ -55,9 +55,18 @@ def check_health() -> bool:
             logger.error("No heartbeat found in Redis")
             return False
 
+        # Ensure we have a string value (decode if needed)
+        if isinstance(heartbeat_value, bytes):
+            heartbeat_str = heartbeat_value.decode("utf-8")
+        elif isinstance(heartbeat_value, str):
+            heartbeat_str = heartbeat_value
+        else:
+            logger.error(f"Unexpected heartbeat value type: {type(heartbeat_value)}")
+            return False
+
         # Parse timestamp and check age
         try:
-            heartbeat_time = datetime.fromisoformat(heartbeat_value)
+            heartbeat_time = datetime.fromisoformat(heartbeat_str)
             now = datetime.now(UTC)
             age_seconds = (now - heartbeat_time).total_seconds()
 
