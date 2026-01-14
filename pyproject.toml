@@ -34,7 +34,7 @@ dependencies = [
     "packaging==25.0",
     "paho-mqtt==2.1.0",
     "polyline==2.0.4",
-    "prometheus-client==0.24.0",
+    "prometheus-client==0.24.1",
     "prometheus-fastapi-instrumentator>=7.1.0",
     "propcache==0.4.1",
     "pycares==4.11.0",
