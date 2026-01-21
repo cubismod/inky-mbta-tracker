@@ -2,7 +2,8 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel
+from config import StopSetup
+from pydantic import BaseModel, Field
 from shared_types.shared_types import DepartureInfo, TrackPrediction
 from track_predictor.track_predictor import TrackPredictionStats
 
@@ -138,3 +139,14 @@ class VehiclesCountResponse(BaseModel):
     counts: VehicleCountsByType
     totals_by_line: TotalsByLine
     generated_at: datetime
+
+
+class LiveSchedulesRequest(BaseModel):
+    """Request model for live schedule streaming endpoint."""
+
+    stops: List[StopSetup] = Field(
+        ...,
+        min_length=1,
+        max_length=5,
+        description="List of stop configurations to monitor (max 5 stops)",
+    )
