@@ -1,0 +1,35 @@
+{
+  "name": "inky-mbta-tracker (devcontainer)",
+  "dockerComposeFile": [
+    "../docker-compose.yaml",
+    "docker-compose.devcontainer.yml"
+  ],
+  "service": "dev",
+  "workspaceFolder": "/app",
+  "shutdownAction": "stopCompose",
+  "settings": {
+    "python.defaultInterpreterPath": "/app/.venv/bin/python",
+    "python.testing.pytestArgs": ["inky-mbta-tracker"],
+    "python.testing.pytestEnabled": true,
+    "python.testing.unittestEnabled": false,
+    "python.formatting.provider": "ruff",
+    "python.linting.enabled": true,
+    "terminal.integrated.defaultProfile.linux": "bash"
+  },
+  "extensions": [
+    "ms-python.python",
+    "ms-python.vscode-pylance",
+    "ms-azuretools.vscode-docker"
+  ],
+  "forwardPorts": [8000, 8080],
+  "postCreateCommand": "uv venv && uv sync --link-mode=copy --dev",
+  "postStartCommand": "uv run ruff format --quiet inky-mbta-tracker || true",
+  "remoteUser": "root",
+  "containerEnv": {
+    "IMT_REDIS_ENDPOINT": "tracker-redis",
+    "IMT_REDIS_PORT": "6379",
+    "IMT_REDIS_PASSWORD": "mbta",
+    "IMT_PROMETHEUS_ENABLE": "true",
+    "IMT_PROM_PORT": "8000"
+  }
+}

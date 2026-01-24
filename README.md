@@ -93,6 +93,8 @@ Spin up the local Redis server using the provided docker compose file.
 
 Then run `task run` to start up the tracker.
 
+Devcontainer: A VS Code devcontainer configuration is included at `.devcontainer/` which builds the development image (from the repository `Dockerfile`) and brings up the local services (Redis and Mosquitto) for you. To use it, open this repository in VS Code and choose "Reopen in Container" (with the Dev Containers extension). On first create, the devcontainer runs `uv venv && uv sync --link-mode=copy --dev` to create a virtualenv and install both runtime and dev dependencies. Ports 8000 (Prometheus) and 8080 (track prediction API) are forwarded to the host.
+
 Note: On Linux/macOS, `uvloop` is enabled automatically when available for faster asyncio performance. If not present, the default loop is used.
 
 ## ML Track Prediction (optional)
