@@ -41,7 +41,7 @@ load_dotenv()
 setup_logging()
 
 # Initialize OpenTelemetry for the main worker process
-initialize_otel()
+initialize_otel(service_name_override="inky-mbta-tracker-worker")
 
 logger = logging.getLogger(__name__)
 
