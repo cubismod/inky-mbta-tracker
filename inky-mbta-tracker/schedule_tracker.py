@@ -569,11 +569,6 @@ async def process_queue_async(
                     },
                 )
 
-                # Extract trace context from first item if available
-                first_item = items[0]
-                if hasattr(first_item, "trace_context") and first_item.trace_context:
-                    add_span_attributes(span, {"trace.propagated": True})
-
                 try:
                     for it in items:
                         await tracker.process_queue_item(it, pipeline)
