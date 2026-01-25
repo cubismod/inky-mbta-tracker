@@ -16,6 +16,8 @@ from mbta_client import (
 )
 from mbta_client_extended import get_shapes, light_get_stop
 from mbta_responses import AlertResource
+from otel_config import get_tracer, is_otel_enabled
+from otel_utils import should_trace_operation
 from prometheus import redis_commands
 from pydantic import ValidationError
 from redis.asyncio import Redis
@@ -384,6 +386,15 @@ async def get_shapes_features(
 
 
 async def background_refresh(r_client: Redis, tg: TaskGroup):
-    while True:
-        await get_vehicle_features(r_client, tg)
-        await sleep(2)
+    tracer = get_tracer(__name__) if is_otel_enabled() else None
+
+    # Create root span for background refresh task
+    if tracer and should_trace_operation("background"):
+        with tracer.start_as_current_span("geojson_utils.background_refresh"):
+            while True:
+                await get_vehicle_features(r_client, tg)
+                await sleep(2)
+    else:
+        while True:
+            await get_vehicle_features(r_client, tg)
+            await sleep(2)

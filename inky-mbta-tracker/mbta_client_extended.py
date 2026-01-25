@@ -23,6 +23,10 @@ from mbta_responses import (
     Schedules,
     Shapes,
 )
+from otel_config import get_tracer, is_otel_enabled
+from otel_utils import (
+    add_span_attributes,
+)
 from polyline import decode
 from prometheus import (
     mbta_api_requests,
@@ -534,6 +538,66 @@ async def watch_vehicles(
 
 
 async def watch_station(
+    r_client: Redis,
+    stop_id: str,
+    route: str | None,
+    direction_filter: Optional[int],
+    send_stream: MemoryObjectSendStream[ScheduleEvent | VehicleRedisSchema],
+    transit_time_min: int,
+    expiration_time: Optional[datetime],
+    show_on_display: bool,
+    tg: TaskGroup,
+    config: Config,
+    route_substring_filter: Optional[str] = None,
+    session: ClientSession | None = None,
+) -> None:
+    tracer = get_tracer(__name__) if is_otel_enabled() else None
+
+    if tracer:
+        with tracer.start_as_current_span("mbta_sse.watch_station") as span:
+            add_span_attributes(
+                span,
+                {
+                    "stop.id": stop_id,
+                    "route.id": route or "all",
+                    "direction.filter": direction_filter
+                    if direction_filter is not None
+                    else "all",
+                    "task.type": "sse_watcher",
+                },
+            )
+            await _watch_station_impl(
+                r_client,
+                stop_id,
+                route,
+                direction_filter,
+                send_stream,
+                transit_time_min,
+                expiration_time,
+                show_on_display,
+                tg,
+                config,
+                route_substring_filter,
+                session,
+            )
+    else:
+        await _watch_station_impl(
+            r_client,
+            stop_id,
+            route,
+            direction_filter,
+            send_stream,
+            transit_time_min,
+            expiration_time,
+            show_on_display,
+            tg,
+            config,
+            route_substring_filter,
+            session,
+        )
+
+
+async def _watch_station_impl(
     r_client: Redis,
     stop_id: str,
     route: str | None,

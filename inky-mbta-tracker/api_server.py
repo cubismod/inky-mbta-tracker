@@ -18,6 +18,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from logging_setup import setup_logging
+from otel_config import initialize_otel, is_otel_enabled
 from prometheus_fastapi_instrumentator import Instrumentator
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -26,6 +27,9 @@ from slowapi.errors import RateLimitExceeded
 def create_app() -> FastAPI:
     load_dotenv()
     setup_logging()
+
+    # Initialize OpenTelemetry for the API server
+    initialize_otel(service_name_override="inky-mbta-tracker-api")
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -98,6 +102,15 @@ def create_app() -> FastAPI:
     )
 
     Instrumentator().instrument(app).expose(app)
+
+    # Apply FastAPI OTEL instrumentation if enabled
+    if is_otel_enabled():
+        try:
+            from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+
+            FastAPIInstrumentor.instrument_app(app)
+        except ImportError:
+            pass  # Instrumentation package not available
 
     # Include routers
     app.include_router(health_router)

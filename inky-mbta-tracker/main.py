@@ -22,6 +22,7 @@ from mbta_client_extended import (
     watch_station,
     watch_vehicles,
 )
+from otel_config import initialize_otel, is_otel_enabled, shutdown_otel
 from prometheus_client import start_http_server
 from redis.asyncio import Redis
 from redis.asyncio.connection import ConnectionPool
@@ -38,6 +39,9 @@ from utils import get_redis
 
 load_dotenv()
 setup_logging()
+
+# Initialize OpenTelemetry for the main worker process
+initialize_otel(service_name_override="inky-mbta-tracker-worker")
 
 logger = logging.getLogger(__name__)
 
@@ -264,4 +268,9 @@ async def __main__() -> None:
 
 @click.command()
 def run_main() -> None:
-    run(__main__, backend="asyncio", backend_options={"use_uvloop": True})
+    try:
+        run(__main__, backend="asyncio", backend_options={"use_uvloop": True})
+    finally:
+        # Ensure OTEL spans are flushed before exit
+        if is_otel_enabled():
+            shutdown_otel()

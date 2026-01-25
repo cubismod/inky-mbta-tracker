@@ -22,6 +22,8 @@ class ScheduleEvent(BaseModel):
     track_number: Optional[str] = None
     track_confidence: Optional[float] = None
     show_on_display: bool = True
+    # OpenTelemetry trace context for distributed tracing
+    trace_context: Optional[str] = None
 
 
 class VehicleRedisSchema(BaseModel):
@@ -39,6 +41,8 @@ class VehicleRedisSchema(BaseModel):
     occupancy_status: Optional[str] = None
     carriages: Optional[list[str]] = None
     headsign: Optional[str] = None
+    # OpenTelemetry trace context for distributed tracing
+    trace_context: Optional[str] = None
 
 
 class MLPredictionRequest(BaseModel):

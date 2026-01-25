@@ -9,6 +9,7 @@ from consts import VEHICLES_CACHE_TTL
 from fastapi import APIRouter, HTTPException, Request, Response
 from geojson import Feature, FeatureCollection, dumps
 from geojson_utils import get_vehicle_features
+from opentelemetry import trace
 from pydantic import ValidationError
 from starlette.responses import StreamingResponse
 from utils import get_vehicles_data
@@ -20,6 +21,7 @@ from ..models import VehiclesCountResponse
 router = APIRouter()
 
 logger = logging.getLogger(__name__)
+tracer = trace.get_tracer(__name__)
 
 
 @router.get(
@@ -32,23 +34,31 @@ logger = logging.getLogger(__name__)
 @cache_ttl(2)
 @limiter.limit("70/minute")
 async def get_vehicles(request: Request, commons: GET_DI) -> Response:
-    try:
-        cache_key = "api:vehicles"
-        cached_data = await commons.r_client.get(cache_key)
-        if cached_data:
-            return Response(content=cached_data, media_type="application/json")
+    with tracer.start_as_current_span("api.vehicles.get_vehicles") as span:
+        try:
+            cache_key = "api:vehicles"
+            cached_data = await commons.r_client.get(cache_key)
+            if cached_data:
+                span.set_attribute("cache.hit", True)
+                return Response(content=cached_data, media_type="application/json")
 
-        features = await get_vehicle_features(commons.r_client, commons.tg)
-        result = {"type": "FeatureCollection", "features": features}
-        await commons.r_client.setex(
-            cache_key,
-            VEHICLES_CACHE_TTL,
-            json.dumps(result),
-        )
-        return Response(content=json.dumps(result), media_type="application/json")
-    except (ConnectionError, TimeoutError):
-        logger.error("Error getting vehicles due to connection issue", exc_info=True)
-        raise HTTPException(status_code=500, detail="Internal server error")
+            span.set_attribute("cache.hit", False)
+            features = await get_vehicle_features(commons.r_client, commons.tg)
+            span.set_attribute("vehicles.count", len(features))
+            result = {"type": "FeatureCollection", "features": features}
+            await commons.r_client.setex(
+                cache_key,
+                VEHICLES_CACHE_TTL,
+                json.dumps(result),
+            )
+            return Response(content=json.dumps(result), media_type="application/json")
+        except (ConnectionError, TimeoutError):
+            logger.error(
+                "Error getting vehicles due to connection issue", exc_info=True
+            )
+            span.set_attribute("error", True)
+            span.set_attribute("error.type", "connection")
+            raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.get(
@@ -147,34 +157,46 @@ async def get_vehicles_sse(request: Request, delta: bool = False) -> StreamingRe
 @cache_ttl(2)
 @limiter.limit("70/minute")
 async def get_vehicles_json(request: Request, commons: GET_DI) -> Response:
-    try:
-        cache_key = "api:vehicles:json"
-        cached_data = await commons.r_client.get(cache_key)
-        if cached_data:
-            return Response(
-                content=cached_data,
-                media_type="application/json",
-                headers={"Content-Disposition": "attachment; filename=vehicles.json"},
-            )
+    with tracer.start_as_current_span("api.vehicles.get_vehicles_json") as span:
+        try:
+            cache_key = "api:vehicles:json"
+            cached_data = await commons.r_client.get(cache_key)
+            if cached_data:
+                span.set_attribute("cache.hit", True)
+                return Response(
+                    content=cached_data,
+                    media_type="application/json",
+                    headers={
+                        "Content-Disposition": "attachment; filename=vehicles.json"
+                    },
+                )
 
-        if commons.tg:
-            features = await get_vehicle_features(commons.r_client)
-            feature_collection = FeatureCollection(features)
-            geojson_str = dumps(feature_collection, sort_keys=True)
-            await commons.r_client.setex(cache_key, VEHICLES_CACHE_TTL, geojson_str)
+            span.set_attribute("cache.hit", False)
+            if commons.tg:
+                features = await get_vehicle_features(commons.r_client)
+                span.set_attribute("vehicles.count", len(features))
+                feature_collection = FeatureCollection(features)
+                geojson_str = dumps(feature_collection, sort_keys=True)
+                await commons.r_client.setex(cache_key, VEHICLES_CACHE_TTL, geojson_str)
 
-            return Response(
-                content=geojson_str,
-                media_type="application/json",
-                headers={"Content-Disposition": "attachment; filename=vehicles.json"},
+                return Response(
+                    content=geojson_str,
+                    media_type="application/json",
+                    headers={
+                        "Content-Disposition": "attachment; filename=vehicles.json"
+                    },
+                )
+            else:
+                span.set_attribute("error", True)
+                span.set_attribute("error.type", "no_task_group")
+                return Response(status_code=500)
+        except (ConnectionError, TimeoutError):
+            logger.error(
+                "Error getting vehicles JSON due to connection issue", exc_info=True
             )
-        else:
-            return Response(status_code=500)
-    except (ConnectionError, TimeoutError):
-        logger.error(
-            "Error getting vehicles JSON due to connection issue", exc_info=True
-        )
-        raise HTTPException(status_code=500, detail="Internal server error")
+            span.set_attribute("error", True)
+            span.set_attribute("error.type", "connection")
+            raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.get(
@@ -188,198 +210,218 @@ async def get_vehicles_json(request: Request, commons: GET_DI) -> Response:
 async def get_vehicles_counts(
     request: Request, commons: GET_DI
 ) -> VehiclesCountResponse:
-    try:
-        cache_key = "api:vehicles:counts"
-        cached = await commons.r_client.get(cache_key)
-        if cached:
-            # cached is the JSON string previously produced by the pydantic model.
-            # Decode bytes if necessary and return a typed VehiclesCountResponse.
-            cached_str = (
-                cached.decode("utf-8")
-                if isinstance(cached, (bytes, bytearray))
-                else cached
-            )
-            try:
-                # Use pydantic validation to produce the typed response object.
-                return VehiclesCountResponse.model_validate_json(cached_str)
-            except ValidationError:
-                logger.debug(
-                    "Failed to parse cached vehicle counts; recomputing", exc_info=True
+    with tracer.start_as_current_span("api.vehicles.get_vehicles_counts") as span:
+        try:
+            cache_key = "api:vehicles:counts"
+            cached = await commons.r_client.get(cache_key)
+            if cached:
+                span.set_attribute("cache.hit", True)
+                # cached is the JSON string previously produced by the pydantic model.
+                # Decode bytes if necessary and return a typed VehiclesCountResponse.
+                cached_str = (
+                    cached.decode("utf-8")
+                    if isinstance(cached, (bytes, bytearray))
+                    else cached
                 )
+                try:
+                    # Use pydantic validation to produce the typed response object.
+                    return VehiclesCountResponse.model_validate_json(cached_str)
+                except ValidationError:
+                    logger.debug(
+                        "Failed to parse cached vehicle counts; recomputing",
+                        exc_info=True,
+                    )
 
-        data = await get_vehicles_data(commons.r_client)
+            span.set_attribute("cache.hit", False)
+            data = await get_vehicles_data(commons.r_client)
 
-        # Initialize counts
-        counts = {
-            "light_rail": {
-                "RL": 0,
-                "GL": 0,
-                "BL": 0,
-                "OL": 0,
-                "SL": 0,
-                "CR": 0,
-                "total": 0,
-            },
-            "heavy_rail": {
-                "RL": 0,
-                "GL": 0,
-                "BL": 0,
-                "OL": 0,
-                "SL": 0,
-                "CR": 0,
-                "total": 0,
-            },
-            "regional_rail": {
-                "RL": 0,
-                "GL": 0,
-                "BL": 0,
-                "OL": 0,
-                "SL": 0,
-                "CR": 0,
-                "total": 0,
-            },
-            "bus": {"RL": 0, "GL": 0, "BL": 0, "OL": 0, "SL": 0, "CR": 0, "total": 0},
-        }
+            # Initialize counts
+            counts = {
+                "light_rail": {
+                    "RL": 0,
+                    "GL": 0,
+                    "BL": 0,
+                    "OL": 0,
+                    "SL": 0,
+                    "CR": 0,
+                    "total": 0,
+                },
+                "heavy_rail": {
+                    "RL": 0,
+                    "GL": 0,
+                    "BL": 0,
+                    "OL": 0,
+                    "SL": 0,
+                    "CR": 0,
+                    "total": 0,
+                },
+                "regional_rail": {
+                    "RL": 0,
+                    "GL": 0,
+                    "BL": 0,
+                    "OL": 0,
+                    "SL": 0,
+                    "CR": 0,
+                    "total": 0,
+                },
+                "bus": {
+                    "RL": 0,
+                    "GL": 0,
+                    "BL": 0,
+                    "OL": 0,
+                    "SL": 0,
+                    "CR": 0,
+                    "total": 0,
+                },
+            }
 
-        # Helper to increment
-        def inc(vtype: str, line: str) -> None:
-            counts[vtype][line] += 1
-            counts[vtype]["total"] += 1
+            # Helper to increment
+            def inc(vtype: str, line: str) -> None:
+                counts[vtype][line] += 1
+                counts[vtype]["total"] += 1
 
-        # Map features to our line buckets and types
-        for feat in data.values():
-            try:
-                props = getattr(feat, "properties", None) or (
-                    feat.get("properties") if isinstance(feat, dict) else {}
+            # Map features to our line buckets and types
+            for feat in data.values():
+                try:
+                    props = getattr(feat, "properties", None) or (
+                        feat.get("properties") if isinstance(feat, dict) else {}
+                    )
+                except Exception:
+                    props = {}
+                route = (
+                    (props.get("route") or "").strip()
+                    if isinstance(props, dict)
+                    else ""
                 )
-            except Exception:
-                props = {}
-            route = (
-                (props.get("route") or "").strip() if isinstance(props, dict) else ""
-            )
-            route_lower = str(route).lower()
+                route_lower = str(route).lower()
 
-            # determine line group (RL, GL, BL, OL, SL, CR)
-            # Map Mattapan explicitly to the Red Line column (RL). Do not conflate Mattapan with Green Line.
-            if route_lower.startswith("mattapan") or route_lower.startswith("red"):
-                line = "RL"
-            elif route_lower.startswith("green"):
-                line = "GL"
-            elif route_lower.startswith("blue"):
-                line = "BL"
-            elif route_lower.startswith("orange"):
-                line = "OL"
-            # silver line may be labeled SL1/SL2/... or 'silver line' or numeric codes - accept 'sl' prefix
-            elif (
-                route_lower.startswith("sl")
-                or "silver" in route_lower
-                or route_lower.startswith("741")
-                or route_lower.startswith("742")
-                or route_lower.startswith("743")
-                or route_lower.startswith("746")
-                or route_lower.startswith("749")
-                or route_lower.startswith("751")
-            ):
-                line = "SL"
-            elif (
-                route_lower.startswith("cr")
-                or route_lower.startswith("commuter")
-                or route_lower == "commuter rail"
-            ):
-                line = "CR"
-            else:
-                # not one of the tracked lines - ignore
-                continue
+                # determine line group (RL, GL, BL, OL, SL, CR)
+                # Map Mattapan explicitly to the Red Line column (RL). Do not conflate Mattapan with Green Line.
+                if route_lower.startswith("mattapan") or route_lower.startswith("red"):
+                    line = "RL"
+                elif route_lower.startswith("green"):
+                    line = "GL"
+                elif route_lower.startswith("blue"):
+                    line = "BL"
+                elif route_lower.startswith("orange"):
+                    line = "OL"
+                # silver line may be labeled SL1/SL2/... or 'silver line' or numeric codes - accept 'sl' prefix
+                elif (
+                    route_lower.startswith("sl")
+                    or "silver" in route_lower
+                    or route_lower.startswith("741")
+                    or route_lower.startswith("742")
+                    or route_lower.startswith("743")
+                    or route_lower.startswith("746")
+                    or route_lower.startswith("749")
+                    or route_lower.startswith("751")
+                ):
+                    line = "SL"
+                elif (
+                    route_lower.startswith("cr")
+                    or route_lower.startswith("commuter")
+                    or route_lower == "commuter rail"
+                ):
+                    line = "CR"
+                else:
+                    # not one of the tracked lines - ignore
+                    continue
 
-            # determine vehicle type independently so each line may contain multiple vehicle types
-            # (e.g., Mattapan PCC cars are light rail but sit in the Red Line column)
-            vtype = None
+                # determine vehicle type independently so each line may contain multiple vehicle types
+                # (e.g., Mattapan PCC cars are light rail but sit in the Red Line column)
+                vtype = None
 
-            # explicit rules from route string
-            if route_lower.startswith("mattapan"):
-                vtype = "light_rail"
-            elif route_lower.startswith("green"):
-                vtype = "light_rail"
-            elif route_lower.startswith("cr"):
-                vtype = "regional_rail"
-            elif (
-                route_lower.startswith("sl")
-                or "silver" in route_lower
-                or route_lower.startswith("741")
-                or route_lower.startswith("742")
-                or route_lower.startswith("743")
-                or route_lower.startswith("746")
-                or route_lower.startswith("749")
-                or route_lower.startswith("751")
-            ):
-                vtype = "bus"
-            elif route_lower.isdecimal() or route_lower.startswith("7"):
-                # numeric routes are buses
-                vtype = "bus"
-            else:
-                # default heuristics for subway lines: Red/Blue/Orange -> heavy rail
-                if line in ("RL", "BL", "OL"):
-                    vtype = "heavy_rail"
-
-            # fallback to marker-symbol if route-based heuristics are inconclusive
-            if vtype is None:
-                marker = props.get("marker-symbol") if isinstance(props, dict) else None
-                if marker == "bus":
-                    vtype = "bus"
-                elif marker == "rail_amtrak":
+                # explicit rules from route string
+                if route_lower.startswith("mattapan"):
+                    vtype = "light_rail"
+                elif route_lower.startswith("green"):
+                    vtype = "light_rail"
+                elif route_lower.startswith("cr"):
                     vtype = "regional_rail"
-                elif marker == "rail":
-                    if route_lower.startswith("mattapan") or route_lower.startswith(
-                        "green"
-                    ):
-                        vtype = "light_rail"
-                    elif route_lower.startswith("cr"):
-                        vtype = "regional_rail"
-                    else:
+                elif (
+                    route_lower.startswith("sl")
+                    or "silver" in route_lower
+                    or route_lower.startswith("741")
+                    or route_lower.startswith("742")
+                    or route_lower.startswith("743")
+                    or route_lower.startswith("746")
+                    or route_lower.startswith("749")
+                    or route_lower.startswith("751")
+                ):
+                    vtype = "bus"
+                elif route_lower.isdecimal() or route_lower.startswith("7"):
+                    # numeric routes are buses
+                    vtype = "bus"
+                else:
+                    # default heuristics for subway lines: Red/Blue/Orange -> heavy rail
+                    if line in ("RL", "BL", "OL"):
                         vtype = "heavy_rail"
 
-            # increment counts for the determined type and the determined line column
-            if vtype and line:
-                inc(vtype, line)
+                # fallback to marker-symbol if route-based heuristics are inconclusive
+                if vtype is None:
+                    marker = (
+                        props.get("marker-symbol") if isinstance(props, dict) else None
+                    )
+                    if marker == "bus":
+                        vtype = "bus"
+                    elif marker == "rail_amtrak":
+                        vtype = "regional_rail"
+                    elif marker == "rail":
+                        if route_lower.startswith("mattapan") or route_lower.startswith(
+                            "green"
+                        ):
+                            vtype = "light_rail"
+                        elif route_lower.startswith("cr"):
+                            vtype = "regional_rail"
+                        else:
+                            vtype = "heavy_rail"
 
-        # compute totals by line
-        totals_by_line = {
-            "RL": 0,
-            "GL": 0,
-            "BL": 0,
-            "OL": 0,
-            "SL": 0,
-            "CR": 0,
-            "total": 0,
-        }
-        for vtype, row in counts.items():
-            for col in ("RL", "GL", "BL", "OL", "SL", "CR"):
-                totals_by_line[col] += row[col]
-            totals_by_line["total"] += row["total"]
+                # increment counts for the determined type and the determined line column
+                if vtype and line:
+                    inc(vtype, line)
 
-        # Construct response payload (pydantic will validate/serialize)
-        response_payload = {
-            "success": True,
-            "counts": {
-                "light_rail": counts["light_rail"],
-                "heavy_rail": counts["heavy_rail"],
-                "regional_rail": counts["regional_rail"],
-                "bus": counts["bus"],
-            },
-            "totals_by_line": totals_by_line,
-            "generated_at": datetime.now(),
-        }
+            # compute totals by line
+            totals_by_line = {
+                "RL": 0,
+                "GL": 0,
+                "BL": 0,
+                "OL": 0,
+                "SL": 0,
+                "CR": 0,
+                "total": 0,
+            }
+            for vtype, row in counts.items():
+                for col in ("RL", "GL", "BL", "OL", "SL", "CR"):
+                    totals_by_line[col] += row[col]
+                totals_by_line["total"] += row["total"]
 
-        resp_model = VehiclesCountResponse(**response_payload)
+            span.set_attribute("vehicles.total", totals_by_line["total"])
 
-        # Cache serialized JSON (use pydantic's model_dump_json to ensure datetime formatting)
-        await commons.r_client.setex(
-            cache_key, VEHICLES_CACHE_TTL, resp_model.model_dump_json()
-        )
+            # Construct response payload (pydantic will validate/serialize)
+            response_payload = {
+                "success": True,
+                "counts": {
+                    "light_rail": counts["light_rail"],
+                    "heavy_rail": counts["heavy_rail"],
+                    "regional_rail": counts["regional_rail"],
+                    "bus": counts["bus"],
+                },
+                "totals_by_line": totals_by_line,
+                "generated_at": datetime.now(),
+            }
 
-        return resp_model
-    except (ConnectionError, TimeoutError):
-        logger.error(
-            "Error getting vehicle counts due to connection issue", exc_info=True
-        )
-        raise HTTPException(status_code=500, detail="Internal server error")
+            resp_model = VehiclesCountResponse(**response_payload)
+
+            # Cache serialized JSON (use pydantic's model_dump_json to ensure datetime formatting)
+            await commons.r_client.setex(
+                cache_key, VEHICLES_CACHE_TTL, resp_model.model_dump_json()
+            )
+
+            return resp_model
+        except (ConnectionError, TimeoutError):
+            logger.error(
+                "Error getting vehicle counts due to connection issue", exc_info=True
+            )
+            span.set_attribute("error", True)
+            span.set_attribute("error.type", "connection")
+            raise HTTPException(status_code=500, detail="Internal server error")

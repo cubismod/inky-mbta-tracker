@@ -16,6 +16,13 @@ from anyio import to_thread
 from anyio.abc import TaskGroup
 from anyio.streams.memory import MemoryObjectReceiveStream
 from geojson import Feature, Point
+from otel_config import get_tracer, is_otel_enabled
+from otel_utils import (
+    add_event_to_span,
+    add_span_attributes,
+    set_span_error,
+    should_trace_operation,
+)
 from paho.mqtt import MQTTException, publish
 from prometheus import (
     current_buffer_used,
@@ -527,6 +534,21 @@ async def process_queue_async(
     - Flushing on size or latency thresholds
     - Throttling MQTT/cleanup to a minimum interval
     """
+    tracer = get_tracer(__name__) if is_otel_enabled() else None
+
+    # Create root span for the entire queue processing task
+    if tracer:
+        root_span = tracer.start_span("schedule_tracker.process_queue_async")
+        add_span_attributes(
+            root_span,
+            {
+                "task.type": "queue_consumer",
+                "task.name": "schedule_and_vehicle_processor",
+            },
+        )
+    else:
+        root_span = None
+
     tracker = Tracker()
 
     batch_max_items = int(os.getenv("IMT_QUEUE_BATCH_SIZE", "256"))
@@ -537,23 +559,89 @@ async def process_queue_async(
     async def flush_batch(items: list[ScheduleEvent | VehicleRedisSchema]) -> None:
         if not items:
             return
+
+        # Use OTEL tracing with high-volume sampling for batch processing
+        tracer = get_tracer(__name__) if is_otel_enabled() else None
+        should_trace = tracer and should_trace_operation("high_volume")
+
         pipeline: Pipeline = tracker.redis.pipeline(transaction=False)
-        try:
-            for it in items:
-                await tracker.process_queue_item(it, pipeline)
 
-            # Housekeeping: prune expired entries in the same round trip
-            pipeline.zremrangebyscore("time", "-inf", str(datetime.now().timestamp()))
-            redis_commands.labels("zremrangebyscore").inc()
+        if should_trace and tracer:
+            with tracer.start_as_current_span("schedule_tracker.flush_batch") as span:
+                add_span_attributes(
+                    span,
+                    {
+                        "batch.size": len(items),
+                        "batch.has_schedule_events": any(
+                            isinstance(it, ScheduleEvent) for it in items
+                        ),
+                        "batch.has_vehicle_events": any(
+                            isinstance(it, VehicleRedisSchema) for it in items
+                        ),
+                    },
+                )
 
-            await pipeline.execute()
-            redis_commands.labels("execute").inc()
-        except ResponseError as err:
-            logger.error(
-                "Unable to communicate with Redis during batch flush", exc_info=err
-            )
-        except (AttributeError, TypeError, ValueError, RuntimeError, OSError) as err:
-            logger.error("Unexpected error during batch flush", exc_info=err)
+                # Extract trace context from first item if available
+                first_item = items[0]
+                if hasattr(first_item, "trace_context") and first_item.trace_context:
+                    add_span_attributes(span, {"trace.propagated": True})
+
+                try:
+                    for it in items:
+                        await tracker.process_queue_item(it, pipeline)
+
+                    # Housekeeping: prune expired entries in the same round trip
+                    pipeline.zremrangebyscore(
+                        "time", "-inf", str(datetime.now().timestamp())
+                    )
+                    redis_commands.labels("zremrangebyscore").inc()
+
+                    await pipeline.execute()
+                    redis_commands.labels("execute").inc()
+
+                    add_event_to_span(
+                        span, "batch_flushed", {"items_processed": len(items)}
+                    )
+                except ResponseError as err:
+                    set_span_error(span, err)
+                    logger.error(
+                        "Unable to communicate with Redis during batch flush",
+                        exc_info=err,
+                    )
+                except (
+                    AttributeError,
+                    TypeError,
+                    ValueError,
+                    RuntimeError,
+                    OSError,
+                ) as err:
+                    set_span_error(span, err)
+                    logger.error("Unexpected error during batch flush", exc_info=err)
+        else:
+            # No tracing - original logic
+            try:
+                for it in items:
+                    await tracker.process_queue_item(it, pipeline)
+
+                pipeline.zremrangebyscore(
+                    "time", "-inf", str(datetime.now().timestamp())
+                )
+                redis_commands.labels("zremrangebyscore").inc()
+
+                await pipeline.execute()
+                redis_commands.labels("execute").inc()
+            except ResponseError as err:
+                logger.error(
+                    "Unable to communicate with Redis during batch flush", exc_info=err
+                )
+            except (
+                AttributeError,
+                TypeError,
+                ValueError,
+                RuntimeError,
+                OSError,
+            ) as err:
+                logger.error("Unexpected error during batch flush", exc_info=err)
 
     # Main consumer loop: receive, then drain to form a batch
     while True:
