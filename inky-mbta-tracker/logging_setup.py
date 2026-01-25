@@ -4,6 +4,36 @@ import os
 import re
 from datetime import UTC, datetime
 
+from opentelemetry import trace
+from opentelemetry.trace import format_span_id, format_trace_id
+
+
+class TraceContextFilter(logging.Filter):
+    """Filter that injects OpenTelemetry trace context into log records.
+
+    Adds trace_id and span_id to each log record for correlation with distributed traces.
+    This enables trace-to-logs navigation in Grafana between Tempo and Loki.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        """Inject trace context into the log record."""
+        span = trace.get_current_span()
+        span_context = span.get_span_context()
+
+        if span_context.is_valid:
+            # Format trace and span IDs as hex strings (standard for Jaeger/Tempo)
+            record.trace_id = format_trace_id(span_context.trace_id)
+            record.span_id = format_span_id(span_context.span_id)
+            # Also set trace flags for completeness
+            record.trace_flags = f"{span_context.trace_flags:02x}"
+        else:
+            # No active span - set empty values
+            record.trace_id = ""
+            record.span_id = ""
+            record.trace_flags = ""
+
+        return True
+
 
 class APIKeyFilter(logging.Filter):
     """Filter to remove API keys from log messages."""
@@ -51,6 +81,23 @@ def _ensure_api_filter(logger: logging.Logger) -> None:
     for handler in logger.handlers:
         if not any(isinstance(f, APIKeyFilter) for f in handler.filters):
             handler.addFilter(APIKeyFilter())
+
+
+def _ensure_trace_context_filter(logger: logging.Logger) -> None:
+    """Add TraceContextFilter to logger and all handlers if not present.
+
+    This enables trace-to-logs correlation by injecting trace_id and span_id
+    into all log records when OpenTelemetry tracing is active.
+    """
+    # Add to logger itself
+    has_filter = any(isinstance(f, TraceContextFilter) for f in logger.filters)
+    if not has_filter:
+        logger.addFilter(TraceContextFilter())
+
+    # Add to all handlers
+    for handler in logger.handlers:
+        if not any(isinstance(f, TraceContextFilter) for f in handler.filters):
+            handler.addFilter(TraceContextFilter())
 
 
 class ColorFormatter(logging.Formatter):
@@ -120,6 +167,7 @@ class JSONFormatter(logging.Formatter):
     """Structured JSON formatter.
 
     Produces a single-line JSON object per record with stable keys.
+    Includes OpenTelemetry trace context (trace_id, span_id) for correlation.
     """
 
     _EXCLUDE_DEFAULT_KEYS: set[str] = {
@@ -144,6 +192,10 @@ class JSONFormatter(logging.Formatter):
         "processName",
         "process",
         "asctime",
+        # Trace context fields are handled explicitly below
+        "trace_id",
+        "span_id",
+        "trace_flags",
     }
 
     def format(self, record: logging.LogRecord) -> str:  # noqa: D401
@@ -157,6 +209,21 @@ class JSONFormatter(logging.Formatter):
             "line": record.lineno,
             "function": getattr(record, "funcName", None),
         }
+
+        # Add trace context for correlation with Tempo/Jaeger traces
+        # These fields are added by TraceContextFilter
+        trace_id = getattr(record, "trace_id", "")
+        span_id = getattr(record, "span_id", "")
+
+        if trace_id:
+            payload["trace_id"] = trace_id
+        if span_id:
+            payload["span_id"] = span_id
+
+        # Optionally include trace flags for debugging
+        trace_flags = getattr(record, "trace_flags", "")
+        if trace_flags:
+            payload["trace_flags"] = trace_flags
 
         # Extra fields (anything custom passed via logger.extra)
         for key, value in record.__dict__.items():
@@ -231,6 +298,7 @@ def _add_file_handler_if_configured(
                 logging.Formatter("%(levelname)-8s %(filename)s:%(lineno)d %(message)s")
             )
         fh.addFilter(APIKeyFilter())
+        fh.addFilter(TraceContextFilter())
         logger.addHandler(fh)
     except (OSError, PermissionError) as err:  # pragma: no cover - defensive only
         # Only catch expected file/OS related errors when attempting to create
@@ -274,6 +342,9 @@ def setup_logging() -> None:
 
     # Ensure API key filters are in place
     _ensure_api_filter(root)
+
+    # Ensure trace context filter is in place for trace-to-logs correlation
+    _ensure_trace_context_filter(root)
 
     # If JSON mode is enabled and handlers pre-exist, ensure they use JSON format
     if use_json:
