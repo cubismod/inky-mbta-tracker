@@ -1,6 +1,8 @@
 from typing import TYPE_CHECKING
 
 from geojson import Feature
+from otel_config import get_tracer, is_otel_enabled
+from otel_utils import should_trace_operation
 from redis.asyncio import Redis
 from redis.asyncio.connection import ConnectionPool
 
@@ -16,9 +18,14 @@ async def get_vehicles_data(r_client: Redis) -> dict[str, Feature]:
     """Get vehicle data with caching"""
     from geojson_utils import get_vehicle_features
 
-    features = await get_vehicle_features(r_client)
-
-    return features
+    tracer = get_tracer(__name__) if is_otel_enabled() else None
+    if tracer and should_trace_operation("medium_volume"):
+        with tracer.start_as_current_span("utils.get_vehicles_data"):
+            features = await get_vehicle_features(r_client)
+            return features
+    else:
+        features = await get_vehicle_features(r_client)
+        return features
 
 
 def hex_color_to_int(hex_color: str, default: int = 0) -> int:

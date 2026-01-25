@@ -3,12 +3,16 @@ import json
 import logging
 import os
 from asyncio import CancelledError
+from typing import Optional
 
 import aiohttp
 from config import Config
 from consts import DAY
 from exceptions import RateLimitExceeded
 from mbta_responses import AlertResource
+from opentelemetry.trace import Span
+from otel_config import get_tracer, is_otel_enabled
+from otel_utils import should_trace_operation
 from pydantic import ValidationError
 from redis.asyncio import Redis
 from redis_cache import check_cache, delete_cache, write_cache
@@ -102,6 +106,24 @@ async def post_webhook(
     r_client: Redis,
     session: aiohttp.ClientSession,
 ):
+    tracer = get_tracer(__name__) if is_otel_enabled() else None
+    if tracer and should_trace_operation("low_volume"):
+        with tracer.start_as_current_span(
+            "discord_webhook.post_webhook", attributes={"webhook_id": webhook_id}
+        ) as span:
+            await _post_webhook_impl(url, webhook_id, webhook, r_client, session, span)
+    else:
+        await _post_webhook_impl(url, webhook_id, webhook, r_client, session, None)
+
+
+async def _post_webhook_impl(
+    url: str,
+    webhook_id: str,
+    webhook: DiscordWebhook,
+    r_client: Redis,
+    session: aiohttp.ClientSession,
+    span: Optional[Span],
+):
     async with session.post(
         f"{url}?wait=true",
         data=webhook.model_dump_json(),
@@ -114,7 +136,13 @@ async def post_webhook(
             logger.error(
                 f"Failed to post webhook {webhook_id}, status {response.status}, body: {body}"
             )
+            if span:
+                span.set_attribute("error", True)
+                span.set_attribute("error.type", "http_error")
+                span.set_attribute("http.status_code", response.status)
             return
+        if span:
+            span.set_attribute("http.status_code", response.status)
         json_body = json.loads(body)
         if "id" in json_body:
             message_id = json_body["id"]

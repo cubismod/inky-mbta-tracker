@@ -23,6 +23,7 @@ from mbta_responses import (
     Schedules,
     Shapes,
 )
+from opentelemetry.trace import Span
 from otel_config import get_tracer, is_otel_enabled
 from otel_utils import (
     add_span_attributes,
@@ -148,6 +149,23 @@ async def light_get_stop(
     session: ClientSession,
     tg: Optional[TaskGroup] = None,
 ) -> Optional[LightStop]:
+    tracer = get_tracer(__name__) if is_otel_enabled() else None
+    if tracer:
+        with tracer.start_as_current_span(
+            "mbta_client_extended.light_get_stop", attributes={"stop_id": stop_id}
+        ) as span:
+            return await _light_get_stop_impl(r_client, stop_id, session, tg, span)
+    else:
+        return await _light_get_stop_impl(r_client, stop_id, session, tg, None)
+
+
+async def _light_get_stop_impl(
+    r_client: Redis,
+    stop_id: str,
+    session: ClientSession,
+    tg: Optional[TaskGroup],
+    span: Optional[Span],
+) -> Optional[LightStop]:
     key = f"stop:{stop_id}:light"
     # Import the module and access functions from it so static analysis won't
     # complain about unknown import symbols and tests can still patch them.
@@ -155,11 +173,19 @@ async def light_get_stop(
 
     cached = await mbta_client.check_cache(r_client, key)
     if cached:
+        if span:
+            span.set_attribute("cache.hit", True)
         try:
             cached_model = LightStop.model_validate_json(cached)
             return cached_model
         except ValidationError as err:
             logger.error("unable to validate json", exc_info=err)
+            if span:
+                span.set_attribute("error", True)
+                span.set_attribute("error.type", "validation_error")
+    else:
+        if span:
+            span.set_attribute("cache.hit", False)
     ls = None
     # Local import to avoid circular module import at import-time
     import mbta_client
@@ -280,6 +306,32 @@ async def fetch_upcoming_departures(
     Returns:
         List of departure data dictionaries with scheduled times
     """
+    tracer = get_tracer(__name__) if is_otel_enabled() else None
+    if tracer:
+        with tracer.start_as_current_span(
+            "mbta_client_extended.fetch_upcoming_departures",
+            attributes={
+                "route_id": route_id,
+                "stations.count": len(station_ids),
+            },
+        ) as span:
+            return await _fetch_upcoming_departures_impl(
+                session, route_id, station_ids, target_date, limit, span
+            )
+    else:
+        return await _fetch_upcoming_departures_impl(
+            session, route_id, station_ids, target_date, limit, None
+        )
+
+
+async def _fetch_upcoming_departures_impl(
+    session: Any,
+    route_id: str,
+    station_ids: List[str],
+    target_date: Optional[datetime],
+    limit: Optional[int],
+    span: Optional[Span],
+) -> List[DepartureInfo]:
     max_attempts = int(os.getenv("IMT_PRECACHE_MAX_ATTEMPTS", "5"))
     base_backoff = float(os.getenv("IMT_PRECACHE_BASE_BACKOFF", "1.0"))
     attempt = 0
@@ -301,6 +353,9 @@ async def fetch_upcoming_departures(
                     f"Exceeded max attempts ({max_attempts}) in fetch_upcoming_departures for route {route_id}",
                     exc_info=e,
                 )
+                if span:
+                    span.set_attribute("error", True)
+                    span.set_attribute("error.type", "max_attempts_exceeded")
                 return []
             # Exponential backoff with small random jitter
             backoff = min(60.0, base_backoff * (2 ** (attempt - 1)))
@@ -331,6 +386,10 @@ async def fetch_upcoming_departures(
                 logger.error(
                     f"Failed to fetch schedules for {stations_str} on {route_id}: HTTP {response.status}"
                 )
+                if span:
+                    span.set_attribute("error", True)
+                    span.set_attribute("error.type", "http_error")
+                    span.set_attribute("http.status_code", response.status)
                 return []
 
             body = await response.text()
@@ -343,6 +402,9 @@ async def fetch_upcoming_departures(
                     f"Unable to parse schedules for {stations_str} on {route_id}",
                     exc_info=e,
                 )
+                if span:
+                    span.set_attribute("error", True)
+                    span.set_attribute("error.type", "validation_error")
                 return []
 
             # Process each scheduled departure
@@ -398,11 +460,16 @@ async def fetch_upcoming_departures(
             f"Error fetching schedules for {stations_str} on {route_id}",
             exc_info=e,
         )
+        if span:
+            span.set_attribute("error", True)
+            span.set_attribute("error.type", "network_error")
         return []
 
     logger.debug(
         f"Found {len(upcoming_departures)} upcoming departures for route {route_id} across {len(station_ids)} stations"
     )
+    if span:
+        span.set_attribute("departures.count", len(upcoming_departures))
     return upcoming_departures
 
 
