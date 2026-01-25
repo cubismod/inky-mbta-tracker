@@ -18,7 +18,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from logging_setup import setup_logging
-from otel_config import initialize_otel, is_otel_enabled
+from otel_config import initialize_otel, is_otel_enabled, shutdown_otel
 from prometheus_fastapi_instrumentator import Instrumentator
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -38,6 +38,9 @@ def create_app() -> FastAPI:
             yield
         finally:
             await app.state.session.close()
+            # Ensure OTEL spans are flushed before exit
+            if is_otel_enabled():
+                shutdown_otel()
 
     app = FastAPI(
         title="MBTA Transit Data API",

@@ -27,7 +27,7 @@ _is_initialized = False
 
 def is_otel_enabled() -> bool:
     """Check if OpenTelemetry is enabled via environment variable."""
-    return os.getenv("IMT_OTEL_ENABLED", "true").lower() in {"true", "1", "yes", "on"}
+    return os.getenv("IMT_OTEL_ENABLED", "false").lower() in {"true", "1", "yes", "on"}
 
 
 def get_otel_config() -> dict[str, str]:
