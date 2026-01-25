@@ -533,22 +533,10 @@ async def process_queue_async(
     - Processing items sequentially to avoid pipeline race conditions
     - Flushing on size or latency thresholds
     - Throttling MQTT/cleanup to a minimum interval
+
+    Note: This is a long-running background task. Individual operations are traced
+    via flush_batch spans rather than a single root span for the entire task.
     """
-    tracer = get_tracer(__name__) if is_otel_enabled() else None
-
-    # Create root span for the entire queue processing task
-    if tracer:
-        root_span = tracer.start_span("schedule_tracker.process_queue_async")
-        add_span_attributes(
-            root_span,
-            {
-                "task.type": "queue_consumer",
-                "task.name": "schedule_and_vehicle_processor",
-            },
-        )
-    else:
-        root_span = None
-
     tracker = Tracker()
 
     batch_max_items = int(os.getenv("IMT_QUEUE_BATCH_SIZE", "256"))
