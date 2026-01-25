@@ -93,7 +93,7 @@ async def generate_track_prediction(
             return TrackPredictionResponse(
                 success=False, prediction="Request timed out"
             )
-        except (ConnectionError, TimeoutError):
+        except ConnectionError:
             logger.error("Connection error generating prediction", exc_info=True)
             span.set_attribute("error", True)
             span.set_attribute("error.type", "connection")

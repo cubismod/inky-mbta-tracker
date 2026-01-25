@@ -3,7 +3,7 @@ from enum import Enum
 from typing import Dict, List, Optional, Set, Tuple, TypedDict
 
 from geojson import Feature
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ScheduleEvent(BaseModel):
@@ -214,13 +214,12 @@ class PrometheusAPIResponse(BaseModel):
 
 
 class DiffApiResponse(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
     updated: dict[
         str, Feature
     ]  # keys are the vehicle IDs, values are the full updated vehicle object
     removed: Set[str]  # keys are vehicle ids
-
-    class Config:
-        arbitrary_types_allowed = True
 
 
 class VehicleSpeedHistory(BaseModel):
