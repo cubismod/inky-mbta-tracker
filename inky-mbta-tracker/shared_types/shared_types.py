@@ -3,7 +3,7 @@ from enum import Enum
 from typing import Dict, List, Optional, Set, Tuple, TypedDict
 
 from geojson import Feature
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ScheduleEvent(BaseModel):
@@ -22,6 +22,8 @@ class ScheduleEvent(BaseModel):
     track_number: Optional[str] = None
     track_confidence: Optional[float] = None
     show_on_display: bool = True
+    # OpenTelemetry trace context for distributed tracing
+    trace_context: Optional[str] = None
 
 
 class VehicleRedisSchema(BaseModel):
@@ -39,6 +41,8 @@ class VehicleRedisSchema(BaseModel):
     occupancy_status: Optional[str] = None
     carriages: Optional[list[str]] = None
     headsign: Optional[str] = None
+    # OpenTelemetry trace context for distributed tracing
+    trace_context: Optional[str] = None
 
 
 class MLPredictionRequest(BaseModel):
@@ -210,13 +214,12 @@ class PrometheusAPIResponse(BaseModel):
 
 
 class DiffApiResponse(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
     updated: dict[
         str, Feature
     ]  # keys are the vehicle IDs, values are the full updated vehicle object
     removed: Set[str]  # keys are vehicle ids
-
-    class Config:
-        arbitrary_types_allowed = True
 
 
 class VehicleSpeedHistory(BaseModel):

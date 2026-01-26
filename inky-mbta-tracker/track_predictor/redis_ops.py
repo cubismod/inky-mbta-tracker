@@ -11,6 +11,9 @@ from datetime import UTC, datetime, timedelta
 from typing import Optional
 
 from consts import DAY, WEEK
+from opentelemetry.trace import Span
+from otel_config import get_tracer, is_otel_enabled
+from otel_utils import should_trace_operation
 from pydantic import ValidationError
 from redis.asyncio import Redis
 from redis.exceptions import ConnectionError, TimeoutError
@@ -35,15 +38,45 @@ async def get_allowed_tracks(
     Cached in Redis for 1 day to avoid heavy scans. Falls back to empty set
     meaning "no restriction" if nothing found.
     """
+    tracer = get_tracer(__name__) if is_otel_enabled() else None
+    if tracer and should_trace_operation("medium_volume"):
+        with tracer.start_as_current_span(
+            "track_predictor.get_allowed_tracks",
+            attributes={"station_id": station_id, "route_id": route_id},
+        ) as span:
+            result = await _get_allowed_tracks_impl(
+                redis, station_id, route_id, assignments, span
+            )
+            if span:
+                span.set_attribute("allowed_tracks.count", len(result))
+            return result
+    else:
+        return await _get_allowed_tracks_impl(
+            redis, station_id, route_id, assignments, None
+        )
+
+
+async def _get_allowed_tracks_impl(
+    redis: Redis,
+    station_id: str,
+    route_id: str,
+    assignments: Optional[list[TrackAssignment]],
+    span: Optional[Span],
+) -> set[str]:
     cache_key = f"allowed_tracks:{station_id}:{route_id}"
     cached = await check_cache(redis, cache_key)
     if cached:
+        if span:
+            span.set_attribute("cache.hit", True)
         try:
             lst = json.loads(cached)
             return set(str(x) for x in lst)
         except (json.JSONDecodeError, TypeError):
             # cached value couldn't be parsed or isn't iterable as expected
             pass
+
+    if span:
+        span.set_attribute("cache.hit", False)
 
     # Build from historical assignments over the last 180 days
     try:

@@ -17,6 +17,7 @@ from mbta_client_extended import (
     get_commuter_station_human_readable,
 )
 from numpy.typing import NDArray
+from otel_config import get_tracer, is_otel_enabled
 from prometheus import (
     redis_commands,
     track_historical_assignments_stored,
@@ -769,6 +770,10 @@ class TrackPredictor:
         Returns:
             TrackPrediction object or None if no prediction can be made
         """
+        # OTEL tracing is handled via context manager to ensure proper cleanup
+        tracer = get_tracer(__name__) if is_otel_enabled() else None
+        use_tracing = tracer is not None
+
         # Added rich debug logging throughout this method to help diagnose
         # missing predictions (e.g., for North Station / place-north).
         try:

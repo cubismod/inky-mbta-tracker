@@ -3,6 +3,8 @@ import os
 import pathlib
 from typing import Optional
 
+from opentelemetry.trace import Span
+from otel_config import get_tracer, is_otel_enabled
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
@@ -143,7 +145,18 @@ class Config(BaseModel):
 
 
 def load_config() -> Config:
+    tracer = get_tracer(__name__) if is_otel_enabled() else None
+    if tracer:
+        with tracer.start_as_current_span("config.load_config") as span:
+            return _load_config_impl(span)
+    else:
+        return _load_config_impl(None)
+
+
+def _load_config_impl(span: Optional[Span]) -> Config:
     conf_location = os.getenv("IMT_CONFIG", "./config.json")
+    if span:
+        span.set_attribute("config.location", conf_location)
 
     json_conf = pathlib.Path(conf_location).read_text()
     config = Config.model_validate_json(json_conf)

@@ -40,6 +40,9 @@ from mbta_responses import (
     Vehicle,
 )
 from ollama_imt import OllamaClientIMT
+from opentelemetry.trace import Span
+from otel_config import get_tracer, is_otel_enabled
+from otel_utils import should_trace_operation
 from prometheus import (
     mbta_api_requests,
     query_server_side_events,
@@ -989,16 +992,34 @@ class MBTAApi:
     async def get_trip(
         self, trip_id: str, session: ClientSession, tg: TaskGroup
     ) -> Optional[Trips]:
+        tracer = get_tracer(__name__) if is_otel_enabled() else None
+        if tracer and should_trace_operation("high_volume"):
+            with tracer.start_as_current_span(
+                "mbta_client.get_trip", attributes={"trip_id": trip_id}
+            ) as span:
+                return await self._get_trip_impl(trip_id, session, tg, span)
+        else:
+            return await self._get_trip_impl(trip_id, session, tg, None)
+
+    async def _get_trip_impl(
+        self, trip_id: str, session: ClientSession, tg: TaskGroup, span: Optional[Span]
+    ) -> Optional[Trips]:
         if session.closed:
             logger.debug("get_trip called with a closed session; skipping fetch")
+            if span:
+                span.set_attribute("session.closed", True)
             return None
         key = f"trip:{trip_id}:full"
         cached = await check_cache(self.r_client, key)
         try:
             if cached:
+                if span:
+                    span.set_attribute("cache.hit", True)
                 trip = Trips.model_validate_json(cached, strict=False)
                 return trip
             else:
+                if span:
+                    span.set_attribute("cache.hit", False)
                 async with session.get(
                     f"trips?filter[id]={trip_id}&api_key={MBTA_AUTH}"
                 ) as response:
@@ -1014,6 +1035,9 @@ class MBTAApi:
                     return trip
         except ValidationError as err:
             logger.error("Unable to parse trip", exc_info=err)
+            if span:
+                span.set_attribute("error", True)
+                span.set_attribute("error.type", "validation_error")
         return None
 
     # saves a route to the dict of routes rather than redis
@@ -1057,6 +1081,27 @@ class MBTAApi:
         trip_id: Optional[str] = None,
         route_id: Optional[str] = None,
     ) -> Optional[list[AlertResource]]:
+        tracer = get_tracer(__name__) if is_otel_enabled() else None
+        if tracer and should_trace_operation("high_volume"):
+            attrs = {}
+            if trip_id:
+                attrs["trip_id"] = trip_id
+            if route_id:
+                attrs["route_id"] = route_id
+            with tracer.start_as_current_span(
+                "mbta_client.get_alerts", attributes=attrs
+            ) as span:
+                return await self._get_alerts_impl(session, trip_id, route_id, span)
+        else:
+            return await self._get_alerts_impl(session, trip_id, route_id, None)
+
+    async def _get_alerts_impl(
+        self,
+        session: ClientSession,
+        trip_id: Optional[str],
+        route_id: Optional[str],
+        span: Optional[Span],
+    ) -> Optional[list[AlertResource]]:
         # Read alerts from Redis sets populated by SSE watchers
         key: Optional[str] = None
         if trip_id:
@@ -1065,11 +1110,16 @@ class MBTAApi:
             key = f"alerts:route:{route_id}"
         else:
             logging.error("you need to specify a trip_id or route_id to fetch alerts")
+            if span:
+                span.set_attribute("error", True)
+                span.set_attribute("error.type", "missing_parameters")
             return None
 
         try:
             ids = await self.r_client.smembers(key)  # type: ignore[misc]
             if not ids:
+                if span:
+                    span.set_attribute("alerts.count", 0)
                 return []
             # Fetch alert objects in a pipeline
             pl = self.r_client.pipeline()
@@ -1100,12 +1150,20 @@ class MBTAApi:
                     ret.append(alert)
                 except ValidationError:
                     continue
+            if span:
+                span.set_attribute("alerts.count", len(ret))
             return ret
         except RedisError as e:
             logger.error("Redis error while loading alerts", exc_info=e)
+            if span:
+                span.set_attribute("error", True)
+                span.set_attribute("error.type", "redis_error")
             return None
         except (ConnectionError, TimeoutError) as e:
             logger.error("Connection error while loading alerts", exc_info=e)
+            if span:
+                span.set_attribute("error", True)
+                span.set_attribute("error.type", "connection_error")
             return None
 
     @retry(
@@ -1175,31 +1233,62 @@ class MBTAApi:
     async def get_stop(
         self, session: ClientSession, stop_id: str, tg: Optional[TaskGroup] = None
     ) -> tuple[Optional[Stop], Optional[Facilities]]:
+        tracer = get_tracer(__name__) if is_otel_enabled() else None
+        if tracer and should_trace_operation("high_volume"):
+            with tracer.start_as_current_span(
+                "mbta_client.get_stop", attributes={"stop_id": stop_id}
+            ) as span:
+                return await self._get_stop_impl(session, stop_id, tg, span)
+        else:
+            return await self._get_stop_impl(session, stop_id, tg, None)
+
+    async def _get_stop_impl(
+        self,
+        session: ClientSession,
+        stop_id: str,
+        tg: Optional[TaskGroup],
+        span: Optional[Span],
+    ) -> tuple[Optional[Stop], Optional[Facilities]]:
         if session.closed:
             logger.debug("get_stop called with a closed session; skipping fetch")
+            if span:
+                span.set_attribute("session.closed", True)
             return None, None
         key = f"stop:{stop_id}:full"
         stop = None
         facilities = None
         cached = await check_cache(self.r_client, key)
         if cached:
+            if span:
+                span.set_attribute("cache.hit", True)
             try:
                 s_and_f = StopAndFacilities.model_validate_json(cached)
                 return s_and_f.stop, s_and_f.facilities
             except ValidationError as err:
                 logger.error("validation err", exc_info=err)
+                if span:
+                    span.set_attribute("error", True)
+                    span.set_attribute("error.type", "validation_error")
         else:
+            if span:
+                span.set_attribute("cache.hit", False)
             async with session.get(f"/stops/{stop_id}?api_key={MBTA_AUTH}") as response:
                 try:
                     if response.status == 429:
                         raise RateLimitExceeded()
                     if response.status == 404:
+                        if span:
+                            span.set_attribute("error", True)
+                            span.set_attribute("error.type", "not_found")
                         return None, None
                     body = await response.text()
                     mbta_api_requests.labels("stops").inc()
                     stop = Stop.model_validate_json(body, strict=False)
                 except ValidationError as err:
                     logger.error("Unable to parse stop", exc_info=err)
+                    if span:
+                        span.set_attribute("error", True)
+                        span.set_attribute("error.type", "validation_error")
             # retrieve bike facility info
             async with session.get(
                 f"/facilities/?filter[stop]={self.stop_id}&filter[type]=BIKE_STORAGE"
