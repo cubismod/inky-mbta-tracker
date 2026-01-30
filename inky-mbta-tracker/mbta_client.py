@@ -39,7 +39,6 @@ from mbta_responses import (
     TypeAndID,
     Vehicle,
 )
-from ollama_imt import OllamaClientIMT
 from opentelemetry.trace import Span
 from otel_config import get_tracer, is_otel_enabled
 from otel_utils import should_trace_operation
@@ -1135,18 +1134,6 @@ class MBTAApi:
                     continue
                 try:
                     alert = AlertResource.model_validate_json(raw, strict=False)
-                    # Optionally attach cached AI summary if available
-                    if os.getenv("IMT_OLLAMA_ENABLE", "false") == "true":
-                        try:
-                            async with OllamaClientIMT(
-                                r_client=self.r_client
-                            ) as ollama:
-                                resp = await ollama.fetch_cached_summary(alert)
-                                if resp:
-                                    alert.ai_summary = resp
-                        except (ConnectionError, TimeoutError, RedisError):
-                            # Best-effort attach of cached summaries; ignore connectivity/cache issues
-                            pass
                     ret.append(alert)
                 except ValidationError:
                     continue

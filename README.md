@@ -214,27 +214,19 @@ flowchart TD
     D{{queue}}
     C(queue processor)
     TP[Track Predictor]
-    AI[AI Summarizer]
-    AQ{{AI Job Queue}}
     end
     B --> D
     C --> D
     B --> TP
     TP --> B
-    B --> AI
-    AI --> AQ
-    AQ --> AI
 
     C -->E@{ shape: cyl, label: "Redis"}
     C -->F@{ shape: bow-rect, label: "MQTT" }
     TP --> E
-    AI --> E
-    AI --> O[Ollama API]
 
     G@{ shape: curv-trap, label: "inky-display" } -->|reads| E
     H[/Home Assistant/] -->|reads| F
     I[Track Prediction API] --> TP
-    J[AI Summary API] --> AI
 ```
 
 At a base level, this project makes use of the MBTA V3 API, especially the [streaming API for predictions](https://www.mbta.com/developers/v3-api/streaming)
