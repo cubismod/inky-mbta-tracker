@@ -20,6 +20,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from logging_setup import setup_logging
 from otel_config import initialize_otel, is_otel_enabled, shutdown_otel
 from prometheus_fastapi_instrumentator import Instrumentator
+from sentry_config import initialize_sentry
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
@@ -27,6 +28,11 @@ from slowapi.errors import RateLimitExceeded
 def create_app() -> FastAPI:
     load_dotenv()
     setup_logging()
+
+    # Initialize Sentry for error tracking (with FastAPI integration)
+    initialize_sentry(
+        service_name_override="inky-mbta-tracker-api", include_fastapi=True
+    )
 
     # Initialize OpenTelemetry for the API server
     initialize_otel(service_name_override="inky-mbta-tracker-api")
