@@ -136,38 +136,6 @@ class MBTAServiceType(Enum):
     NO_SERVICE = 9
 
 
-class SummarizationResponse(BaseModel):
-    """Response model for alert summarization"""
-
-    summary: str
-    alert_count: int
-    model_used: str
-    processing_time_ms: float
-
-
-class SummaryCacheEntry(BaseModel):
-    """Cache entry for stored summaries"""
-
-    summary: str
-    alert_count: int
-    alerts_hash: str
-    generated_at: datetime
-    config: dict
-    ttl: int = 3600  # 1 hour default TTL
-
-
-class IndividualSummaryCacheEntry(BaseModel):
-    """Cache entry for individual alert summaries"""
-
-    alert_id: str
-    summary: str
-    style: str
-    sentence_limit: int
-    generated_at: datetime
-    format: str
-    ttl: int = 3600  # 1 hour default TTL
-
-
 type ShapeTuple = Tuple[float, float]
 
 type LineRoute = List[List[ShapeTuple]]
