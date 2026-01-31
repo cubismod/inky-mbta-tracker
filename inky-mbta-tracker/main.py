@@ -32,6 +32,7 @@ from schedule_tracker import (
     VehicleRedisSchema,
     process_queue_async,
 )
+from sentry_config import initialize_sentry
 from shared_types.schema_versioner import schema_versioner
 from shared_types.shared_types import TaskType
 from track_predictor.track_predictor import TrackPredictor
@@ -39,6 +40,11 @@ from utils import get_redis
 
 load_dotenv()
 setup_logging()
+
+# Initialize Sentry for error tracking
+initialize_sentry(
+    service_name_override=os.getenv("IMT_OTEL_SERVICE_NAME", "inky-mbta-tracker-worker")
+)
 
 # Initialize OpenTelemetry for the main worker process
 initialize_otel(
