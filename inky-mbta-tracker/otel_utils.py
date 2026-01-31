@@ -34,10 +34,10 @@ user_query_txn_context: ContextVar[Optional[str]] = ContextVar(
     "user_query_txn_id", default=None
 )
 
-# Transaction ID attribute keys
-ROUTE_MONITOR_TXN_ATTR = "business.transaction.route_monitor"
-VEHICLE_TRACK_TXN_ATTR = "business.transaction.vehicle_track"
-USER_QUERY_TXN_ATTR = "business.transaction.user_query"
+# Transaction ID attribute keys (Sentry-compatible naming)
+ROUTE_MONITOR_TXN_ATTR = "transaction.business.route_monitor"
+VEHICLE_TRACK_TXN_ATTR = "transaction.business.vehicle_track"
+USER_QUERY_TXN_ATTR = "transaction.business.user_query"
 
 
 def serialize_trace_context() -> Optional[str]:
@@ -199,6 +199,17 @@ def set_route_monitor_transaction_id(route_id: str = "") -> str:
     """
     txn_id = generate_transaction_id("route_monitor", route_id)
     route_monitor_txn_context.set(txn_id)
+
+    # Set Sentry transaction context if we have a current span
+    current_span = trace.get_current_span()
+    if current_span and current_span.is_recording():
+        context_name = (
+            f"route_monitor.{route_id}" if route_id else "route_monitor.batch"
+        )
+        set_sentry_transaction_context(current_span, context_name, "task")
+        # Also add the transaction ID immediately
+        add_transaction_ids_to_span(current_span)
+
     logger.debug(f"Set route monitor transaction ID: {txn_id}")
     return txn_id
 
@@ -215,6 +226,17 @@ def set_vehicle_track_transaction_id(vehicle_id: str = "") -> str:
     """
     txn_id = generate_transaction_id("vehicle_track", vehicle_id)
     vehicle_track_txn_context.set(txn_id)
+
+    # Set Sentry transaction context if we have a current span
+    current_span = trace.get_current_span()
+    if current_span and current_span.is_recording():
+        context_name = (
+            f"vehicle_track.{vehicle_id}" if vehicle_id else "vehicle_track.event"
+        )
+        set_sentry_transaction_context(current_span, context_name, "task")
+        # Also add the transaction ID immediately
+        add_transaction_ids_to_span(current_span)
+
     logger.debug(f"Set vehicle track transaction ID: {txn_id}")
     return txn_id
 
@@ -231,6 +253,17 @@ def set_user_query_transaction_id(endpoint: str = "") -> str:
     """
     txn_id = generate_transaction_id("user_query", endpoint)
     user_query_txn_context.set(txn_id)
+
+    # Set Sentry transaction context if we have a current span
+    current_span = trace.get_current_span()
+    if current_span and current_span.is_recording():
+        # Clean endpoint for transaction naming
+        clean_endpoint = endpoint.replace("/", "_").replace("-", "_").strip("_")
+        context_name = f"api.{clean_endpoint}" if clean_endpoint else "api.request"
+        set_sentry_transaction_context(current_span, context_name, "request")
+        # Also add the transaction ID immediately
+        add_transaction_ids_to_span(current_span)
+
     logger.debug(f"Set user query transaction ID: {txn_id}")
     return txn_id
 
@@ -302,9 +335,34 @@ def add_span_attributes(span: Optional[Span], attributes: dict[str, Any]) -> Non
             logger.debug(f"Failed to set attribute {key}={value}: {e}")
 
 
+def set_sentry_transaction_context(
+    span: Optional[Span], transaction_name: str, transaction_type: str = "task"
+) -> None:
+    """
+    Set Sentry-specific transaction context on a span for better transaction grouping.
+
+    This helps Sentry group related operations and provides better performance insights.
+
+    Args:
+        span: The span to add Sentry context to
+        transaction_name: Human-readable transaction name (e.g., "route_monitor_Red", "user_query_vehicles")
+        transaction_type: Transaction type for Sentry grouping (e.g., "task", "request", "cron")
+    """
+    if span is None or not span.is_recording():
+        return
+
+    # Set Sentry transaction name - this is key for transaction grouping
+    span.set_attribute("sentry.transaction", transaction_name)
+    span.set_attribute("sentry.transaction_info.source", "custom")
+    span.set_attribute("sentry.transaction_info.transaction_type", transaction_type)
+
+    # Add transaction source for debugging
+    span.set_attribute("sentry.tags.transaction_source", "business_logic")
+
+
 def add_transaction_ids_to_span(span: Optional[Span]) -> None:
     """
-    Add current transaction IDs as span attributes.
+    Add current transaction IDs as span attributes with Sentry-compatible naming.
 
     Args:
         span: The span to add transaction IDs to (can be None)
@@ -314,13 +372,26 @@ def add_transaction_ids_to_span(span: Optional[Span]) -> None:
 
     txn_ids = get_current_transaction_ids()
 
-    # Add transaction IDs as span attributes
+    # Add transaction IDs as span attributes (primary attributes for OTEL)
     if txn_ids["route_monitor"]:
         span.set_attribute(ROUTE_MONITOR_TXN_ATTR, txn_ids["route_monitor"])
+        # Also add as Sentry custom tag for better visibility
+        span.set_attribute("sentry.tags.route_monitor_txn", txn_ids["route_monitor"])
+
     if txn_ids["vehicle_track"]:
         span.set_attribute(VEHICLE_TRACK_TXN_ATTR, txn_ids["vehicle_track"])
+        # Also add as Sentry custom tag for better visibility
+        span.set_attribute("sentry.tags.vehicle_track_txn", txn_ids["vehicle_track"])
+
     if txn_ids["user_query"]:
         span.set_attribute(USER_QUERY_TXN_ATTR, txn_ids["user_query"])
+        # Also add as Sentry custom tag for better visibility
+        span.set_attribute("sentry.tags.user_query_txn", txn_ids["user_query"])
+
+    # Add a general business transaction indicator
+    active_txns = [k for k, v in txn_ids.items() if v is not None]
+    if active_txns:
+        span.set_attribute("sentry.tags.business_context", ",".join(active_txns))
 
 
 def add_event_to_span(
