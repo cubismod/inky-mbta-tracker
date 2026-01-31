@@ -20,7 +20,9 @@ from otel_config import get_tracer, is_otel_enabled
 from otel_utils import (
     add_event_to_span,
     add_span_attributes,
+    add_transaction_ids_to_span,
     set_span_error,
+    set_vehicle_track_transaction_id,
     should_trace_operation,
 )
 from paho.mqtt import MQTTException, publish
@@ -274,6 +276,12 @@ class Tracker:
                 schedule_events.labels(action, event.route_id, event.stop).inc()
                 self.log_prediction(event)
         if isinstance(event, VehicleRedisSchema):
+            # Generate vehicle tracking transaction ID for individual vehicle updates
+            vehicle_track_txn_id = set_vehicle_track_transaction_id(event.id)
+            logger.debug(
+                f"Processing vehicle {event.id} with transaction ID: {vehicle_track_txn_id}"
+            )
+
             redis_key = f"vehicle:{event.id}"
             event.speed, approximate = await self.calculate_vehicle_speed(event)
             event.approximate_speed = approximate
@@ -548,6 +556,17 @@ async def process_queue_async(
         if not items:
             return
 
+        # Generate route monitoring transaction ID for this batch processing cycle
+        route_ids = set()
+        for item in items:
+            if isinstance(item, ScheduleEvent):
+                route_ids.add(item.route_id)
+            elif isinstance(item, VehicleRedisSchema):
+                route_ids.add(item.route)
+
+        # Create transaction ID with multiple routes if applicable
+        route_context = "_".join(sorted(route_ids)) if route_ids else "batch"
+
         # Use OTEL tracing with high-volume sampling for batch processing
         tracer = get_tracer(__name__) if is_otel_enabled() else None
         should_trace = tracer and should_trace_operation("high_volume")
@@ -566,8 +585,12 @@ async def process_queue_async(
                         "batch.has_vehicle_events": any(
                             isinstance(it, VehicleRedisSchema) for it in items
                         ),
+                        "batch.route_context": route_context,
                     },
                 )
+
+                # Add transaction IDs to the span
+                add_transaction_ids_to_span(span)
 
                 try:
                     for it in items:

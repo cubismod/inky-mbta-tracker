@@ -2,13 +2,16 @@
 OpenTelemetry utilities for trace context propagation and span management.
 
 This module provides helpers for working with OTEL in anyio concurrent contexts,
-including context serialization for queue-based trace propagation and decorators
-for common tracing patterns.
+including context serialization for queue-based trace propagation, decorators
+for common tracing patterns, and business transaction ID management.
 """
 
 import functools
 import json
 import logging
+import time
+import uuid
+from contextvars import ContextVar
 from typing import Any, Callable, Optional, ParamSpec, TypeVar
 
 from opentelemetry import trace
@@ -19,6 +22,22 @@ logger = logging.getLogger(__name__)
 
 P = ParamSpec("P")
 R = TypeVar("R")
+
+# Context variables for business transaction IDs
+route_monitor_txn_context: ContextVar[Optional[str]] = ContextVar(
+    "route_monitor_txn_id", default=None
+)
+vehicle_track_txn_context: ContextVar[Optional[str]] = ContextVar(
+    "vehicle_track_txn_id", default=None
+)
+user_query_txn_context: ContextVar[Optional[str]] = ContextVar(
+    "user_query_txn_id", default=None
+)
+
+# Transaction ID attribute keys
+ROUTE_MONITOR_TXN_ATTR = "business.transaction.route_monitor"
+VEHICLE_TRACK_TXN_ATTR = "business.transaction.vehicle_track"
+USER_QUERY_TXN_ATTR = "business.transaction.user_query"
 
 
 def serialize_trace_context() -> Optional[str]:
@@ -48,6 +67,14 @@ def serialize_trace_context() -> Optional[str]:
                 str(span_context.trace_state) if span_context.trace_state else None
             ),
         }
+
+        # Include current transaction IDs in serialized context
+        txn_ids = get_current_transaction_ids()
+        if any(txn_ids.values()):
+            context_dict["transaction_ids"] = {
+                k: v for k, v in txn_ids.items() if v is not None
+            }
+
         return json.dumps(context_dict)
     except Exception as e:
         logger.debug(f"Failed to serialize trace context: {e}")
@@ -79,6 +106,10 @@ def deserialize_trace_context(context_json: Optional[str]) -> Optional[Context]:
             is_remote=True,
             trace_flags=trace_flags,
         )
+
+        # Restore transaction IDs if present
+        if "transaction_ids" in context_dict:
+            restore_transaction_context(context_dict["transaction_ids"])
 
         # Create a context with this span context
         ctx = trace.set_span_in_context(trace.NonRecordingSpan(span_context))
@@ -122,6 +153,124 @@ def create_span_link_from_context(context_json: Optional[str]) -> Optional[Link]
         return None
 
 
+# Transaction ID Management Functions
+
+
+def generate_transaction_id(
+    txn_type: str, context_info: str = "", include_timestamp: bool = True
+) -> str:
+    """
+    Generate a structured transaction ID for business operations.
+
+    Args:
+        txn_type: Transaction type prefix (e.g., 'route_monitor', 'vehicle_track', 'user_query')
+        context_info: Context-specific information (e.g., route_id, vehicle_id, endpoint)
+        include_timestamp: Whether to include timestamp in the ID
+
+    Returns:
+        Formatted transaction ID string
+    """
+    uuid_short = str(uuid.uuid4())[:8]
+    parts = [txn_type]
+
+    if context_info:
+        # Sanitize context info to avoid high cardinality issues
+        sanitized_context = context_info.replace("/", "_").replace(":", "_")[:50]
+        parts.append(sanitized_context)
+
+    if include_timestamp:
+        timestamp = int(time.time())
+        parts.append(str(timestamp))
+
+    parts.append(uuid_short)
+
+    return "_".join(parts)
+
+
+def set_route_monitor_transaction_id(route_id: str = "") -> str:
+    """
+    Set the route monitoring transaction ID in context.
+
+    Args:
+        route_id: Route ID for context
+
+    Returns:
+        Generated transaction ID
+    """
+    txn_id = generate_transaction_id("route_monitor", route_id)
+    route_monitor_txn_context.set(txn_id)
+    logger.debug(f"Set route monitor transaction ID: {txn_id}")
+    return txn_id
+
+
+def set_vehicle_track_transaction_id(vehicle_id: str = "") -> str:
+    """
+    Set the vehicle tracking transaction ID in context.
+
+    Args:
+        vehicle_id: Vehicle ID for context
+
+    Returns:
+        Generated transaction ID
+    """
+    txn_id = generate_transaction_id("vehicle_track", vehicle_id)
+    vehicle_track_txn_context.set(txn_id)
+    logger.debug(f"Set vehicle track transaction ID: {txn_id}")
+    return txn_id
+
+
+def set_user_query_transaction_id(endpoint: str = "") -> str:
+    """
+    Set the user query transaction ID in context.
+
+    Args:
+        endpoint: API endpoint for context
+
+    Returns:
+        Generated transaction ID
+    """
+    txn_id = generate_transaction_id("user_query", endpoint)
+    user_query_txn_context.set(txn_id)
+    logger.debug(f"Set user query transaction ID: {txn_id}")
+    return txn_id
+
+
+def get_current_transaction_ids() -> dict[str, Optional[str]]:
+    """
+    Get all current transaction IDs from context.
+
+    Returns:
+        Dictionary with transaction type keys and ID values
+    """
+    return {
+        "route_monitor": route_monitor_txn_context.get(),
+        "vehicle_track": vehicle_track_txn_context.get(),
+        "user_query": user_query_txn_context.get(),
+    }
+
+
+def restore_transaction_context(txn_ids: dict[str, str]) -> None:
+    """
+    Restore transaction IDs into context variables.
+
+    Args:
+        txn_ids: Dictionary of transaction type to ID mappings
+    """
+    if "route_monitor" in txn_ids:
+        route_monitor_txn_context.set(txn_ids["route_monitor"])
+    if "vehicle_track" in txn_ids:
+        vehicle_track_txn_context.set(txn_ids["vehicle_track"])
+    if "user_query" in txn_ids:
+        user_query_txn_context.set(txn_ids["user_query"])
+
+
+def clear_transaction_context() -> None:
+    """Clear all transaction IDs from context."""
+    route_monitor_txn_context.set(None)
+    vehicle_track_txn_context.set(None)
+    user_query_txn_context.set(None)
+
+
 def add_span_attributes(span: Optional[Span], attributes: dict[str, Any]) -> None:
     """
     Safely add multiple attributes to a span.
@@ -151,6 +300,27 @@ def add_span_attributes(span: Optional[Span], attributes: dict[str, Any]) -> Non
                 span.set_attribute(key, str(value))
         except Exception as e:
             logger.debug(f"Failed to set attribute {key}={value}: {e}")
+
+
+def add_transaction_ids_to_span(span: Optional[Span]) -> None:
+    """
+    Add current transaction IDs as span attributes.
+
+    Args:
+        span: The span to add transaction IDs to (can be None)
+    """
+    if span is None or not span.is_recording():
+        return
+
+    txn_ids = get_current_transaction_ids()
+
+    # Add transaction IDs as span attributes
+    if txn_ids["route_monitor"]:
+        span.set_attribute(ROUTE_MONITOR_TXN_ATTR, txn_ids["route_monitor"])
+    if txn_ids["vehicle_track"]:
+        span.set_attribute(VEHICLE_TRACK_TXN_ATTR, txn_ids["vehicle_track"])
+    if txn_ids["user_query"]:
+        span.set_attribute(USER_QUERY_TXN_ATTR, txn_ids["user_query"])
 
 
 def add_event_to_span(
@@ -198,6 +368,7 @@ def traced_anyio_task(
     operation_name: Optional[str] = None,
     span_kind: SpanKind = SpanKind.INTERNAL,
     attributes: Optional[dict[str, Any]] = None,
+    include_transaction_ids: bool = True,
 ):
     """
     Decorator to create a traced anyio task.
@@ -209,6 +380,7 @@ def traced_anyio_task(
         operation_name: Span name (defaults to function name)
         span_kind: Span kind (default: INTERNAL)
         attributes: Additional span attributes
+        include_transaction_ids: Whether to include current transaction IDs in span
 
     Example:
         @traced_anyio_task("watch_vehicles", attributes={"route.id": "Red"})
@@ -226,6 +398,9 @@ def traced_anyio_task(
                 if attributes:
                     add_span_attributes(span, attributes)
 
+                if include_transaction_ids:
+                    add_transaction_ids_to_span(span)
+
                 try:
                     return await func(*args, **kwargs)  # type: ignore
                 except Exception as e:
@@ -241,6 +416,7 @@ def traced_function(
     operation_name: Optional[str] = None,
     span_kind: SpanKind = SpanKind.INTERNAL,
     capture_args: bool = False,
+    include_transaction_ids: bool = True,
 ):
     """
     Decorator to create a traced async function.
@@ -252,6 +428,7 @@ def traced_function(
         operation_name: Span name (defaults to function name)
         span_kind: Span kind (default: INTERNAL)
         capture_args: Whether to capture function arguments as span attributes
+        include_transaction_ids: Whether to include current transaction IDs in span
 
     Example:
         @traced_function("compute_pattern_scores")
@@ -274,6 +451,9 @@ def traced_function(
                         if isinstance(v, (str, int, float, bool))
                     }
                     add_span_attributes(span, safe_attrs)
+
+                if include_transaction_ids:
+                    add_transaction_ids_to_span(span)
 
                 try:
                     result = func(*args, **kwargs)
@@ -298,6 +478,7 @@ def start_linked_span(
     context_json: Optional[str] = None,
     attributes: Optional[dict[str, Any]] = None,
     span_kind: SpanKind = SpanKind.INTERNAL,
+    include_transaction_ids: bool = True,
 ) -> trace.Span:
     """
     Start a new span with a link to a previous span context.
@@ -311,6 +492,7 @@ def start_linked_span(
         context_json: Serialized context to link to
         attributes: Span attributes
         span_kind: Span kind
+        include_transaction_ids: Whether to include current transaction IDs
 
     Returns:
         New span with link to previous context
@@ -329,6 +511,9 @@ def start_linked_span(
 
     if attributes:
         add_span_attributes(span, attributes)
+
+    if include_transaction_ids:
+        add_transaction_ids_to_span(span)
 
     return span
 

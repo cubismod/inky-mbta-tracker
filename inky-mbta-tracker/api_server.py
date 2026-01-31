@@ -13,6 +13,7 @@ from api.endpoints.vehicles import router as vehicles_router
 from api.limits import limiter
 from api.middleware.cache_middleware import create_cache_middleware
 from api.middleware.header_middleware import HeaderLoggingMiddleware
+from api.middleware.transaction_middleware import TransactionIDMiddleware
 from consts import MBTA_V3_ENDPOINT
 from dotenv import load_dotenv
 from fastapi import FastAPI
@@ -78,6 +79,8 @@ def create_app() -> FastAPI:
         app.state.limiter = limiter
         app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)  # type: ignore
 
+    # Add transaction ID middleware early in the chain to ensure it captures all requests
+    app.add_middleware(TransactionIDMiddleware)
     app.add_middleware(HeaderLoggingMiddleware)
     app.middleware("http")(
         create_cache_middleware(

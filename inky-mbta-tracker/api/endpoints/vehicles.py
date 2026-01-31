@@ -10,6 +10,7 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from geojson import Feature, FeatureCollection, dumps
 from geojson_utils import get_vehicle_features
 from opentelemetry import trace
+from otel_utils import add_transaction_ids_to_span
 from pydantic import ValidationError
 from starlette.responses import StreamingResponse
 from utils import get_vehicles_data
@@ -35,6 +36,9 @@ tracer = trace.get_tracer(__name__)
 @limiter.limit("70/minute")
 async def get_vehicles(request: Request, commons: GET_DI) -> Response:
     with tracer.start_as_current_span("api.vehicles.get_vehicles") as span:
+        # Add transaction IDs to the span
+        add_transaction_ids_to_span(span)
+
         try:
             cache_key = "api:vehicles"
             cached_data = await commons.r_client.get(cache_key)
@@ -158,6 +162,9 @@ async def get_vehicles_sse(request: Request, delta: bool = False) -> StreamingRe
 @limiter.limit("70/minute")
 async def get_vehicles_json(request: Request, commons: GET_DI) -> Response:
     with tracer.start_as_current_span("api.vehicles.get_vehicles_json") as span:
+        # Add transaction IDs to the span
+        add_transaction_ids_to_span(span)
+
         try:
             cache_key = "api:vehicles:json"
             cached_data = await commons.r_client.get(cache_key)
@@ -211,6 +218,9 @@ async def get_vehicles_counts(
     request: Request, commons: GET_DI
 ) -> VehiclesCountResponse:
     with tracer.start_as_current_span("api.vehicles.get_vehicles_counts") as span:
+        # Add transaction IDs to the span
+        add_transaction_ids_to_span(span)
+
         try:
             cache_key = "api:vehicles:counts"
             cached = await commons.r_client.get(cache_key)

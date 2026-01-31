@@ -9,14 +9,14 @@ from opentelemetry.trace import format_span_id, format_trace_id
 
 
 class TraceContextFilter(logging.Filter):
-    """Filter that injects OpenTelemetry trace context into log records.
+    """Filter that injects OpenTelemetry trace context and business transaction IDs into log records.
 
-    Adds trace_id and span_id to each log record for correlation with distributed traces.
-    This enables trace-to-logs navigation in Grafana between Tempo and Loki.
+    Adds trace_id, span_id, and business transaction IDs to each log record for correlation
+    with distributed traces. This enables trace-to-logs navigation in Grafana between Tempo and Loki.
     """
 
     def filter(self, record: logging.LogRecord) -> bool:
-        """Inject trace context into the log record."""
+        """Inject trace context and transaction IDs into the log record."""
         span = trace.get_current_span()
         span_context = span.get_span_context()
 
@@ -31,6 +31,30 @@ class TraceContextFilter(logging.Filter):
             record.trace_id = ""
             record.span_id = ""
             record.trace_flags = ""
+
+        # Add business transaction IDs if available
+        try:
+            # Import here to avoid circular imports
+            from otel_utils import get_current_transaction_ids
+
+            txn_ids = get_current_transaction_ids()
+
+            # Add transaction IDs to the record for structured logging
+            record.route_monitor_txn_id = txn_ids.get("route_monitor") or ""
+            record.vehicle_track_txn_id = txn_ids.get("vehicle_track") or ""
+            record.user_query_txn_id = txn_ids.get("user_query") or ""
+
+        except ImportError:
+            # If otel_utils isn't available, set empty values
+            record.route_monitor_txn_id = ""
+            record.vehicle_track_txn_id = ""
+            record.user_query_txn_id = ""
+        except Exception as e:
+            # On any other error, log debug message and set empty values
+            logging.getLogger(__name__).debug(f"Failed to get transaction IDs: {e}")
+            record.route_monitor_txn_id = ""
+            record.vehicle_track_txn_id = ""
+            record.user_query_txn_id = ""
 
         return True
 
@@ -167,7 +191,8 @@ class JSONFormatter(logging.Formatter):
     """Structured JSON formatter.
 
     Produces a single-line JSON object per record with stable keys.
-    Includes OpenTelemetry trace context (trace_id, span_id) for correlation.
+    Includes OpenTelemetry trace context (trace_id, span_id) and business
+    transaction IDs for correlation.
     """
 
     _EXCLUDE_DEFAULT_KEYS: set[str] = {
@@ -196,6 +221,10 @@ class JSONFormatter(logging.Formatter):
         "trace_id",
         "span_id",
         "trace_flags",
+        # Business transaction ID fields are handled explicitly below
+        "route_monitor_txn_id",
+        "vehicle_track_txn_id",
+        "user_query_txn_id",
     }
 
     def format(self, record: logging.LogRecord) -> str:  # noqa: D401
@@ -224,6 +253,18 @@ class JSONFormatter(logging.Formatter):
         trace_flags = getattr(record, "trace_flags", "")
         if trace_flags:
             payload["trace_flags"] = trace_flags
+
+        # Add business transaction IDs for business-level correlation
+        route_monitor_txn_id = getattr(record, "route_monitor_txn_id", "")
+        vehicle_track_txn_id = getattr(record, "vehicle_track_txn_id", "")
+        user_query_txn_id = getattr(record, "user_query_txn_id", "")
+
+        if route_monitor_txn_id:
+            payload["route_monitor_txn_id"] = route_monitor_txn_id
+        if vehicle_track_txn_id:
+            payload["vehicle_track_txn_id"] = vehicle_track_txn_id
+        if user_query_txn_id:
+            payload["user_query_txn_id"] = user_query_txn_id
 
         # Extra fields (anything custom passed via logger.extra)
         for key, value in record.__dict__.items():

@@ -8,6 +8,7 @@ import logging
 from deepdiff import DeepDiff
 from geojson import Feature
 from opentelemetry import trace
+from otel_utils import add_transaction_ids_to_span
 from shared_types.shared_types import DiffApiResponse
 
 logger = logging.getLogger(__name__)
@@ -20,6 +21,9 @@ def calculate_diff(
     with tracer.start_as_current_span("api.services.calculate_vehicle_diff") as span:
         span.set_attribute("vehicles.original_count", len(original))
         span.set_attribute("vehicles.new_count", len(new))
+
+        # Add transaction IDs to the span
+        add_transaction_ids_to_span(span)
 
         # Handle case where original is empty (first load)
         if not original:

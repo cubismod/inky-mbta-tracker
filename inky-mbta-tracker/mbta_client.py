@@ -41,7 +41,10 @@ from mbta_responses import (
 )
 from opentelemetry.trace import Span
 from otel_config import get_tracer, is_otel_enabled
-from otel_utils import should_trace_operation
+from otel_utils import (
+    add_transaction_ids_to_span,
+    should_trace_operation,
+)
 from prometheus import (
     mbta_api_requests,
     query_server_side_events,
@@ -996,6 +999,8 @@ class MBTAApi:
             with tracer.start_as_current_span(
                 "mbta_client.get_trip", attributes={"trip_id": trip_id}
             ) as span:
+                # Add transaction IDs to the span
+                add_transaction_ids_to_span(span)
                 return await self._get_trip_impl(trip_id, session, tg, span)
         else:
             return await self._get_trip_impl(trip_id, session, tg, None)
