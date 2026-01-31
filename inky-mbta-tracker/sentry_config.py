@@ -48,8 +48,8 @@ def initialize_sentry(
     release = os.getenv("IMT_OTEL_SERVICE_VERSION", "1.2.0")
 
     # Get sampling rates from environment
-    traces_sample_rate = float(os.getenv("IMT_TRACE_SAMPLE", "0.05"))
-    profiles_sample_rate = float(os.getenv("IMT_PROFILE_SAMPLE", "0.05"))
+    traces_sample_rate = float(os.getenv("IMT_SENTRY_TRACE_SAMPLE", "0.05"))
+    profiles_sample_rate = float(os.getenv("IMT_SENTRY_PROFILE_TRACE_SAMPLE", "0.05"))
 
     # Configure logging integration
     # This will automatically capture ERROR and above logs as Sentry events
