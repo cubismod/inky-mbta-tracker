@@ -88,6 +88,7 @@ def create_resource(config: dict[str, str]) -> Resource:
         "service.version": config["service_version"],
         "service.instance.id": config["instance_id"],
         "deployment.environment": config["deployment_environment"],
+        "environment": config["deployment_environment"],
     }
     return Resource.create(attributes)
 
