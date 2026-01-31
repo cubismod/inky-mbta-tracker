@@ -87,9 +87,11 @@ def initialize_sentry(
             integrations=integrations,
             # Set additional context
             send_default_pii=True,
-            enable_tracing=os.getenv("IMT_SENTRY_ENABLE_TRACING", "false").lower(),
+            enable_tracing=bool(
+                os.getenv("IMT_SENTRY_ENABLE_TRACING", "false").lower()
+            ),
             enable_logs=True,
-            sample_rate=os.getenv("IMT_SENTRY_SAMPLE_RATE", "0.8"),
+            sample_rate=float(os.getenv("IMT_SENTRY_SAMPLE_RATE", "0.8")),
             attach_stacktrace=True,  # Include stack traces for all messages
             # Set custom tags
             _experiments={

@@ -7,7 +7,7 @@ smart sampling strategies for high-throughput MBTA tracking operations.
 
 import logging
 import os
-from typing import Optional
+from typing import Any, Optional
 
 from opentelemetry import trace
 from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
@@ -18,6 +18,7 @@ from opentelemetry.sdk.trace.sampling import (
     ParentBasedTraceIdRatio,
     TraceIdRatioBased,
 )
+from opentelemetry.trace import Span
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +69,7 @@ def get_otel_config() -> dict[str, str]:
         "instrument_fastapi": os.getenv("IMT_OTEL_INSTRUMENT_FASTAPI", "true"),
         "include_vehicle_ids": os.getenv("IMT_OTEL_INCLUDE_VEHICLE_IDS", "false"),
         "include_trip_ids": os.getenv("IMT_OTEL_INCLUDE_TRIP_IDS", "true"),
+        "redis_sanitize_queries": os.getenv("IMT_OTEL_REDIS_SANITIZE_QUERIES", "false"),
     }
 
 
@@ -221,13 +223,51 @@ def _auto_instrument(config: dict[str, str]) -> None:
     Args:
         config: OTEL configuration dictionary
     """
+
+    def redis_request_hook(
+        span: Span, instance: Any, args: list[Any], kwargs: dict[str, Any]
+    ) -> None:
+        """
+        Custom Redis request hook to control query sanitization.
+
+        By default, OpenTelemetry Redis instrumentation sanitizes queries for security,
+        converting commands like 'GET mykey' to 'GET ?'. This hook allows overriding
+        that behavior when IMT_OTEL_REDIS_SANITIZE_QUERIES is set to 'false'.
+        """
+        if not span or not span.is_recording():
+            return
+
+        sanitize = config.get("redis_sanitize_queries", "false").lower() in {
+            "true",
+            "1",
+            "yes",
+        }
+
+        if not sanitize and args:
+            # Override the sanitized db.statement with the full command
+            try:
+                full_command = " ".join(str(arg) for arg in args)
+                # Limit command length to prevent excessively large spans
+                max_length = 1000
+                if len(full_command) > max_length:
+                    full_command = full_command[:max_length] + "..."
+                span.set_attribute("db.statement", full_command)
+            except Exception as e:
+                logger.debug(f"Failed to set full Redis command in span: {e}")
+
     # Redis instrumentation
     if config["instrument_redis"].lower() in {"true", "1", "yes"}:
         try:
             from opentelemetry.instrumentation.redis import RedisInstrumentor
 
-            RedisInstrumentor().instrument()
-            logger.info("Redis auto-instrumentation enabled")
+            RedisInstrumentor().instrument(request_hook=redis_request_hook)
+
+            sanitize_enabled = config.get(
+                "redis_sanitize_queries", "false"
+            ).lower() in {"true", "1", "yes"}
+            logger.info(
+                f"Redis auto-instrumentation enabled (sanitize_queries={sanitize_enabled})"
+            )
         except ImportError:
             logger.warning(
                 "Redis instrumentation not available (package not installed)"
