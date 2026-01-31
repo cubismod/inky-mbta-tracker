@@ -87,8 +87,7 @@ def create_resource(config: dict[str, str]) -> Resource:
         "service.name": config["service_name"],
         "service.version": config["service_version"],
         "service.instance.id": config["instance_id"],
-        "deployment.environment": config["deployment_environment"],
-        "environment": config["deployment_environment"],
+        "deployment.environment.name": config["deployment_environment"],
     }
     return Resource.create(attributes)
 
@@ -137,10 +136,7 @@ def create_exporter(config: dict[str, str]) -> OTLPSpanExporter:
         f"Creating OTLP exporter with endpoint: {endpoint} (insecure={insecure})"
     )
 
-    return OTLPSpanExporter(
-        endpoint=endpoint,
-        insecure=insecure,
-    )
+    return OTLPSpanExporter(endpoint=endpoint, insecure=insecure)
 
 
 def initialize_otel(service_name_override: Optional[str] = None) -> bool:
