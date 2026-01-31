@@ -580,6 +580,17 @@ async def watch_vehicles(
     config: Config,
     session: ClientSession | None = None,
 ) -> None:
+    # Set route monitor transaction ID for this route monitoring task
+    from logging import getLogger
+
+    from otel_utils import set_route_monitor_transaction_id
+
+    route_monitor_txn_id = set_route_monitor_transaction_id(route_id)
+    logger = getLogger(__name__)
+    logger.info(
+        f"Starting route monitoring for {route_id} with transaction ID: {route_monitor_txn_id}"
+    )
+
     endpoint = f"{MBTA_V3_ENDPOINT}/vehicles?fields[vehicle]=direction_id,latitude,longitude,speed,current_status,occupancy_status,carriages&filter[route]={route_id}&api_key={MBTA_AUTH}"
     mbta_api_requests.labels("vehicles").inc()
     headers = {"accept": "text/event-stream"}

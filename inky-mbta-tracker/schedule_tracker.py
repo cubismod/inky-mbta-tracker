@@ -594,7 +594,23 @@ async def process_queue_async(
 
                 try:
                     for it in items:
-                        await tracker.process_queue_item(it, pipeline)
+                        # Create individual spans for vehicle events to enable transaction visibility
+                        if isinstance(it, VehicleRedisSchema):
+                            vehicle_span_name = (
+                                f"schedule_tracker.process_vehicle_{it.id}"
+                            )
+                            with tracer.start_as_current_span(
+                                vehicle_span_name
+                            ) as vehicle_span:
+                                # Set vehicle-specific transaction ID for this span
+                                set_vehicle_track_transaction_id(it.id)
+                                add_transaction_ids_to_span(vehicle_span)
+                                vehicle_span.set_attribute("vehicle.id", it.id)
+                                vehicle_span.set_attribute("vehicle.route", it.route)
+                                await tracker.process_queue_item(it, pipeline)
+                        else:
+                            # Process non-vehicle events normally
+                            await tracker.process_queue_item(it, pipeline)
 
                     # Housekeeping: prune expired entries in the same round trip
                     pipeline.zremrangebyscore(

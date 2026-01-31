@@ -6,6 +6,7 @@ from consts import ALERTS_CACHE_TTL
 from fastapi import APIRouter, HTTPException, Request, Response
 from mbta_responses import Alerts
 from opentelemetry import trace
+from otel_utils import add_transaction_ids_to_span
 from pydantic import ValidationError
 from redis.exceptions import RedisError
 
@@ -28,6 +29,9 @@ tracer = trace.get_tracer(__name__)
 @cache_ttl(60)
 async def get_alerts(request: Request, commons: GET_DI) -> Response:
     with tracer.start_as_current_span("api.alerts.get_alerts") as span:
+        # Add transaction IDs to the span
+        add_transaction_ids_to_span(span)
+
         try:
             alerts = await fetch_alerts_with_retry(
                 commons.config, commons.session, commons.r_client
@@ -63,6 +67,9 @@ async def get_alerts(request: Request, commons: GET_DI) -> Response:
 @limiter.limit("100/minute")
 async def get_alerts_json(request: Request, commons: GET_DI) -> Response:
     with tracer.start_as_current_span("api.alerts.get_alerts_json") as span:
+        # Add transaction IDs to the span
+        add_transaction_ids_to_span(span)
+
         try:
             cache_key = "api:alerts:json"
             cached_data = await commons.r_client.get(cache_key)

@@ -7,6 +7,7 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from geojson import FeatureCollection, dumps
 from geojson_utils import get_shapes_features
 from opentelemetry import trace
+from otel_utils import add_transaction_ids_to_span
 from pydantic import ValidationError
 
 from ..core import GET_DI
@@ -27,6 +28,9 @@ tracer = trace.get_tracer(__name__)
 @cache_ttl(2 * WEEK)
 async def get_shapes(request: Request, commons: GET_DI) -> Response:
     with tracer.start_as_current_span("api.shapes.get_shapes") as span:
+        # Add transaction IDs to the span
+        add_transaction_ids_to_span(span)
+
         try:
             features = await get_shapes_features(
                 commons.config, commons.r_client, commons.tg, commons.session
@@ -56,6 +60,9 @@ async def get_shapes(request: Request, commons: GET_DI) -> Response:
 @cache_ttl(2 * WEEK)
 async def get_shapes_json(request: Request, commons: GET_DI) -> Response:
     with tracer.start_as_current_span("api.shapes.get_shapes_json") as span:
+        # Add transaction IDs to the span
+        add_transaction_ids_to_span(span)
+
         try:
             features = await get_shapes_features(
                 commons.config, commons.r_client, commons.tg, commons.session

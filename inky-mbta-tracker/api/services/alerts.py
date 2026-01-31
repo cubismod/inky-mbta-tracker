@@ -7,6 +7,7 @@ from config import Config
 from geojson_utils import collect_alerts
 from mbta_responses import AlertResource
 from opentelemetry import trace
+from otel_utils import add_transaction_ids_to_span
 from redis.asyncio import Redis
 from tenacity import (
     before_log,
@@ -33,6 +34,9 @@ async def fetch_alerts_with_retry(
 ) -> List[AlertResource]:
     """Fetch alerts with retry logic for rate limiting."""
     with tracer.start_as_current_span("api.services.fetch_alerts_with_retry") as span:
+        # Add transaction IDs to the span
+        add_transaction_ids_to_span(span)
+
         try:
             result = await collect_alerts(config, session, r_client)
             span.set_attribute("alerts.fetched", len(result))
