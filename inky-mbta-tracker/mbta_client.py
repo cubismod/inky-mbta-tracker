@@ -323,7 +323,7 @@ class MBTAApi:
                     if self.route:
                         await self.r_client.delete(f"alerts:route:{self.route}")
                     for a in alerts:
-                        await process_alert_event(a, self.r_client, config)
+                        await process_alert_event(a, self.r_client, config, tg)
                         await write_cache(
                             self.r_client,
                             f"alert:{a.id}",
@@ -353,7 +353,7 @@ class MBTAApi:
                     )
                     if self.route:
                         await self.r_client.sadd(f"alerts:route:{self.route}", a.id)  # type: ignore[misc]
-                    await process_alert_event(a, self.r_client, config)
+                    await process_alert_event(a, self.r_client, config, tg)
                     if a.attributes and a.attributes.informed_entity:
                         for ent in a.attributes.informed_entity:
                             if ent.route:
