@@ -7,6 +7,7 @@ from api.endpoints.alerts import router as alerts_router
 
 # Routers
 from api.endpoints.health import router as health_router
+from api.endpoints.live_schedules import router as live_schedules_router
 from api.endpoints.predictions import router as predictions_router
 from api.endpoints.shapes import router as shapes_router
 from api.endpoints.vehicles import router as vehicles_router
@@ -95,7 +96,7 @@ def create_app() -> FastAPI:
                 "/shapes*",
                 "/vehicles*",
             },
-            exclude_paths={"/vehicles/stream"},
+            exclude_paths={"/vehicles/stream", "/schedules/stream"},
         )
     )
 
@@ -130,6 +131,7 @@ def create_app() -> FastAPI:
     app.include_router(vehicles_router)
     app.include_router(alerts_router)
     app.include_router(shapes_router)
+    app.include_router(live_schedules_router)
 
     return app
 
