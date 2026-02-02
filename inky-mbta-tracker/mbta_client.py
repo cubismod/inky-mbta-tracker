@@ -15,7 +15,7 @@ from anyio import sleep
 from anyio.abc import TaskGroup
 from anyio.streams.memory import MemoryObjectSendStream
 from config import Config
-from consts import DAY, HOUR, MINUTE, TWO_MONTHS, YEAR
+from consts import DAY, HOUR, MINUTE, TWO_MONTHS, WEEK, YEAR
 from discord_webhook import delete_webhook, process_alert_event
 from exceptions import RateLimitExceeded
 from mbta_client_extended import (
@@ -345,6 +345,9 @@ class MBTAApi:
                                     await self.r_client.sadd(
                                         f"alerts:trip:{ent.trip}", a.id
                                     )  # type: ignore[misc]
+                                    await self.r_client.expire(
+                                        f"alerts:trip:{ent.trip}", WEEK
+                                    )
                     return
                 elif event_type in ("add", "update"):
                     a = AlertResource.model_validate_json(data, strict=False)
@@ -364,6 +367,9 @@ class MBTAApi:
                                 await self.r_client.sadd(
                                     f"alerts:trip:{ent.trip}", a.id
                                 )  # type: ignore[misc]
+                                await self.r_client.expire(
+                                    f"alerts:trip:{ent.trip}", WEEK
+                                )
                     return
                 elif event_type == "remove":
                     type_and_id = TypeAndID.model_validate_json(data, strict=False)
@@ -390,6 +396,9 @@ class MBTAApi:
                                                 f"alerts:trip:{ent.trip}",
                                                 type_and_id.id,
                                             )  # type: ignore[misc]
+                                            await self.r_client.expire(
+                                                f"alerts:trip:{ent.trip}", WEEK
+                                            )
                             except ValidationError:
                                 pass
                     finally:
