@@ -6,7 +6,7 @@ import random
 import time
 from asyncio import CancelledError
 from datetime import datetime, timezone
-from typing import Callable, Optional
+from typing import Callable, Optional, Tuple
 
 import aiohttp
 import anyio
@@ -48,7 +48,7 @@ PENDING_WEBHOOK_TTL = 10 * MINUTE
 PENDING_WEBHOOK_LOCK_TTL = MINUTE
 PENDING_WEBHOOK_DELAY_RANGE = (5.0, 15.0)
 BATCH_WINDOW_SECONDS = 2 * MINUTE
-BATCH_ENTRY_PREFIX = "webhook:batch"
+BATCH_ENTRY_PREFIX = "webhook:batch:entry"
 ALERT_BATCH_PREFIX = "webhook:batch:alert"
 PENDING_BATCH_KEY = "webhook:pending:batch"
 PENDING_BATCH_LOCK_PREFIX = "webhook:pending:batch:lock"
@@ -92,14 +92,16 @@ async def process_alert_event(
 
     if WEBHOOK_URL:
         webhook = create_webhook_object(alert, routes, color, config)
-        scheduled = await enqueue_pending_batch(
+        scheduled, batch_id = await enqueue_pending_batch(
             alert.id,
             webhook,
             routes,
             alert.attributes.created_at,
             r_client,
         )
-        if scheduled:
+        if batch_id:
+            tg.start_soon(send_batch_entry, batch_id, r_client, config)
+        elif scheduled:
             tg.start_soon(_delayed_send_batch, r_client, config)
 
 
@@ -471,7 +473,7 @@ async def enqueue_pending_batch(
     r_client: RedisClient,
     delay_seconds: float = BATCH_WINDOW_SECONDS,
     clock: Callable[[], float] = time.time,
-) -> bool:
+) -> Tuple[bool, Optional[str]]:
     now = clock()
     item = PendingBatchItem(
         webhook_id=webhook_id,
@@ -495,7 +497,7 @@ async def enqueue_pending_batch(
                 updated_entry.model_dump_json(),
                 ex=BATCH_ENTRY_TTL,
             )
-            return True
+            return False, existing_batch_id
 
     pending = await _get_pending_batch_entry(r_client)
     if pending:
@@ -509,7 +511,7 @@ async def enqueue_pending_batch(
             "Updated pending batch entry",
             extra={"webhook_id": webhook_id, "ready_at": updated_entry.ready_at},
         )
-        return updated_entry.ready_at <= now
+        return updated_entry.ready_at <= now, None
 
     batch_id = str(int(now * 1000))
     ready_at = now + delay_seconds
@@ -522,7 +524,7 @@ async def enqueue_pending_batch(
             "Created pending batch entry",
             extra={"webhook_id": webhook_id, "ready_at": ready_at},
         )
-        return True
+        return True, None
 
     pending = await _get_pending_batch_entry(r_client)
     if pending:
@@ -536,10 +538,10 @@ async def enqueue_pending_batch(
             "Updated pending batch entry after race",
             extra={"webhook_id": webhook_id, "ready_at": updated_entry.ready_at},
         )
-        return updated_entry.ready_at <= now
+        return updated_entry.ready_at <= now, None
 
     await r_client.set(_batch_key(), entry.model_dump_json(), ex=PENDING_BATCH_TTL)
-    return True
+    return True, None
 
 
 async def _delayed_send_pending(
@@ -569,6 +571,34 @@ async def _delayed_send_batch(r_client: RedisClient, config: Config) -> None:
         delay = next_pending.ready_at - time.time()
         if delay > 0:
             await anyio.sleep(delay)
+
+
+async def send_batch_entry(
+    batch_id: str,
+    r_client: RedisClient,
+    config: Config,
+) -> None:
+    batch_entry = await _get_batch_entry(r_client, batch_id)
+    if not batch_entry:
+        return
+    lock_key = _batch_entry_lock_key(batch_id)
+    lock_acquired = await r_client.set(
+        lock_key, "1", ex=PENDING_WEBHOOK_LOCK_TTL, nx=True
+    )
+    if not lock_acquired:
+        return
+    batch_entry = await _get_batch_entry(r_client, batch_id)
+    if not batch_entry:
+        await r_client.delete(lock_key)
+        return
+    items = batch_entry.items
+    if not items:
+        await r_client.delete(lock_key)
+        return
+    grouped = build_grouped_webhook(items, config)
+    batch_message_id = f"{BATCH_WEBHOOK_ID}:{batch_id}"
+    await _send_webhook_payload(batch_message_id, grouped, r_client)
+    await r_client.delete(lock_key)
 
 
 async def _send_webhook_payload(
