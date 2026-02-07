@@ -7,7 +7,7 @@ services:
     ports:
       - "6379:6379"
     volumes:
-      - redis_data:/data
+      - "redis_data:/data"
   mosquitto:
     image: eclipse-mosquitto:2.0.22@sha256:6852da90a65dfff7aa3a1c8b249e92bb83c17ea8bbcce56bedff8707332a1a29
     restart: always

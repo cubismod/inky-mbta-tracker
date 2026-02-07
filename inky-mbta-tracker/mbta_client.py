@@ -16,7 +16,6 @@ from anyio.abc import TaskGroup
 from anyio.streams.memory import MemoryObjectSendStream
 from config import Config
 from consts import DAY, HOUR, MINUTE, TWO_MONTHS, WEEK, YEAR
-from discord_webhook import delete_webhook, process_alert_event
 from exceptions import RateLimitExceeded
 from mbta_client_extended import (
     determine_station_id,
@@ -65,6 +64,7 @@ from tenacity import (
     retry_if_not_exception_type,
     wait_exponential_jitter,
 )
+from webhook.discord_webhook import delete_webhook, process_alert_event
 
 if TYPE_CHECKING:
     from track_predictor.track_predictor import TrackPredictor

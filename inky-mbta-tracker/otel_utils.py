@@ -210,7 +210,6 @@ def set_route_monitor_transaction_id(route_id: str = "") -> str:
         # Also add the transaction ID immediately
         add_transaction_ids_to_span(current_span)
 
-    logger.debug(f"Set route monitor transaction ID: {txn_id}")
     return txn_id
 
 
@@ -237,7 +236,6 @@ def set_vehicle_track_transaction_id(vehicle_id: str = "") -> str:
         # Also add the transaction ID immediately
         add_transaction_ids_to_span(current_span)
 
-    logger.debug(f"Set vehicle track transaction ID: {txn_id}")
     return txn_id
 
 
@@ -264,7 +262,6 @@ def set_user_query_transaction_id(endpoint: str = "") -> str:
         # Also add the transaction ID immediately
         add_transaction_ids_to_span(current_span)
 
-    logger.debug(f"Set user query transaction ID: {txn_id}")
     return txn_id
 
 
