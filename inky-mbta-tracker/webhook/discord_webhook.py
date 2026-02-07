@@ -64,8 +64,7 @@ async def process_alert_event(
 ):
     routes = webhook_helpers.determine_alert_routes(alert)
     color = webhook_helpers.determine_alert_color(routes)
-    route = ", ".join(routes)
-    if "CR" in route and alert.attributes.severity <= 6:
+    if "CR" in routes and alert.attributes.severity <= 6:
         # filter out low severity commuter rail alerts
         return
 
@@ -219,115 +218,132 @@ async def enqueue_pending_batch(
         routes=routes,
     )
 
-    existing_batch_id = await r_client.get(webhook_helpers._alert_batch_key(webhook_id))
-    if existing_batch_id:
-        if isinstance(existing_batch_id, bytes):
-            existing_batch_id = existing_batch_id.decode("utf-8")
-        batch_entry = await _get_batch_entry(r_client, existing_batch_id)
-        if batch_entry:
-            updated_items = webhook_helpers._upsert_batch_items(batch_entry.items, item)
-            updated_entry = batch_entry.model_copy(update={"items": updated_items})
-            await r_client.set(
-                webhook_helpers._batch_entry_key(existing_batch_id),
-                updated_entry.model_dump_json(),
-                ex=BATCH_ENTRY_TTL,
+    async with RedisLock(
+        r_client,
+        webhook_helpers._batch_lock_key(),
+        blocking_timeout=15,
+        expire_timeout=60,
+    ):
+        existing_batch_id = await r_client.get(
+            webhook_helpers._alert_batch_key(webhook_id)
+        )
+        if existing_batch_id:
+            if isinstance(existing_batch_id, bytes):
+                existing_batch_id = existing_batch_id.decode("utf-8")
+            batch_entry = await _get_batch_entry(r_client, existing_batch_id)
+            if batch_entry:
+                updated_items = webhook_helpers._upsert_batch_items(
+                    batch_entry.items, item
+                )
+                updated_entry = batch_entry.model_copy(update={"items": updated_items})
+                await r_client.set(
+                    webhook_helpers._batch_entry_key(existing_batch_id),
+                    updated_entry.model_dump_json(),
+                    ex=BATCH_ENTRY_TTL,
+                )
+                return False, existing_batch_id
+
+        pending = await _get_pending_batch_entry(r_client)
+        if pending:
+            ready_at = pending.ready_at
+            extended = pending.extended
+            first_seen = pending.first_seen
+            if first_seen is None:
+                first_seen = pending.ready_at - BATCH_WINDOW_SECONDS
+            if not pending.extended:
+                ready_at = first_seen + BATCH_WINDOW_SECONDS
+                extended = True
+            updated_entry = pending.model_copy(
+                update={
+                    "items": webhook_helpers._upsert_batch_items(pending.items, item),
+                    "ready_at": ready_at,
+                    "first_seen": first_seen,
+                    "extended": extended,
+                }
             )
-            return False, existing_batch_id
+            await r_client.set(
+                webhook_helpers._batch_key(),
+                updated_entry.model_dump_json(),
+                ex=PENDING_BATCH_TTL,
+            )
+            return updated_entry.ready_at <= now, None
 
-    pending = await _get_pending_batch_entry(r_client)
-    if pending:
-        ready_at = pending.ready_at
-        extended = pending.extended
-        first_seen = pending.first_seen
-        if first_seen is None:
-            first_seen = pending.ready_at - BATCH_WINDOW_SECONDS
-        if not pending.extended:
-            ready_at = first_seen + BATCH_WINDOW_SECONDS
-            extended = True
-        updated_entry = pending.model_copy(
-            update={
-                "items": webhook_helpers._upsert_batch_items(pending.items, item),
-                "ready_at": ready_at,
-                "first_seen": first_seen,
-                "extended": extended,
-            }
+        batch_id = f"{int(now * 1000)}-{random.randint(0, 9999):04d}"
+        first_seen = now
+        ready_at = now + SHORT_BATCH_WINDOW_SECONDS
+        entry = PendingBatchEntry(
+            batch_id=batch_id,
+            ready_at=ready_at,
+            items=[item],
+            first_seen=first_seen,
+            extended=False,
         )
+        created = await r_client.set(
+            webhook_helpers._batch_key(),
+            entry.model_dump_json(),
+            ex=PENDING_BATCH_TTL,
+            nx=True,
+        )
+        if created:
+            return True, None
+
+        pending = await _get_pending_batch_entry(r_client)
+        if pending:
+            ready_at = pending.ready_at
+            extended = pending.extended
+            first_seen = pending.first_seen
+            if first_seen is None:
+                first_seen = pending.ready_at - BATCH_WINDOW_SECONDS
+            if not pending.extended:
+                ready_at = first_seen + BATCH_WINDOW_SECONDS
+                extended = True
+            updated_entry = pending.model_copy(
+                update={
+                    "items": webhook_helpers._upsert_batch_items(pending.items, item),
+                    "ready_at": ready_at,
+                    "first_seen": first_seen,
+                    "extended": extended,
+                }
+            )
+            await r_client.set(
+                webhook_helpers._batch_key(),
+                updated_entry.model_dump_json(),
+                ex=PENDING_BATCH_TTL,
+            )
+            return updated_entry.ready_at <= now, None
+
         await r_client.set(
             webhook_helpers._batch_key(),
-            updated_entry.model_dump_json(),
+            entry.model_dump_json(),
             ex=PENDING_BATCH_TTL,
         )
-        return updated_entry.ready_at <= now, None
-
-    batch_id = str(int(now * 1000))
-    first_seen = now
-    ready_at = now + SHORT_BATCH_WINDOW_SECONDS
-    entry = PendingBatchEntry(
-        batch_id=batch_id,
-        ready_at=ready_at,
-        items=[item],
-        first_seen=first_seen,
-        extended=False,
-    )
-    created = await r_client.set(
-        webhook_helpers._batch_key(),
-        entry.model_dump_json(),
-        ex=PENDING_BATCH_TTL,
-        nx=True,
-    )
-    if created:
         return True, None
-
-    pending = await _get_pending_batch_entry(r_client)
-    if pending:
-        ready_at = pending.ready_at
-        extended = pending.extended
-        first_seen = pending.first_seen
-        if first_seen is None:
-            first_seen = pending.ready_at - BATCH_WINDOW_SECONDS
-        if not pending.extended:
-            ready_at = first_seen + BATCH_WINDOW_SECONDS
-            extended = True
-        updated_entry = pending.model_copy(
-            update={
-                "items": webhook_helpers._upsert_batch_items(pending.items, item),
-                "ready_at": ready_at,
-                "first_seen": first_seen,
-                "extended": extended,
-            }
-        )
-        await r_client.set(
-            webhook_helpers._batch_key(),
-            updated_entry.model_dump_json(),
-            ex=PENDING_BATCH_TTL,
-        )
-        return updated_entry.ready_at <= now, None
-
-    await r_client.set(
-        webhook_helpers._batch_key(),
-        entry.model_dump_json(),
-        ex=PENDING_BATCH_TTL,
-    )
-    return True, None
 
 
 async def _delayed_send_batch(r_client: RedisClient, config: Config) -> None:
-    pending = await _get_pending_batch_entry(r_client)
-    if not pending:
+    if not await r_client.set(
+        webhook_helpers._batch_sender_key(), "1", nx=True, ex=PENDING_BATCH_TTL
+    ):
         return
-    delay = pending.ready_at - time.time()
-    if delay > 0:
-        await anyio.sleep(delay)
-    while True:
-        await send_pending_batch(r_client, config)
-        next_pending = await _get_pending_batch_entry(r_client)
-        if not next_pending:
+    try:
+        pending = await _get_pending_batch_entry(r_client)
+        if not pending:
             return
-        delay = next_pending.ready_at - time.time()
+        delay = pending.ready_at - time.time()
         if delay > 0:
             await anyio.sleep(delay)
-        else:
-            await anyio.sleep(0)
+        while True:
+            await send_pending_batch(r_client, config)
+            next_pending = await _get_pending_batch_entry(r_client)
+            if not next_pending:
+                return
+            delay = next_pending.ready_at - time.time()
+            if delay > 0:
+                await anyio.sleep(delay)
+            else:
+                await anyio.sleep(0)
+    finally:
+        await r_client.delete(webhook_helpers._batch_sender_key())
 
 
 @retry(stop=stop_after_attempt(5), wait=wait_exponential(multiplier=1, min=4, max=10))

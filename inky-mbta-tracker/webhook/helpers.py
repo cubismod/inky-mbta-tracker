@@ -7,7 +7,7 @@ from typing import Callable, Optional
 from config import Config
 from consts import DAY, MINUTE
 from mbta_responses import AlertResource
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, Field, ValidationError
 from shared_types.shared_types import (
     DiscordEmbed,
     DiscordEmbedAuthor,
@@ -29,6 +29,7 @@ BATCH_ENTRY_PREFIX = "webhook:batch:entry"
 ALERT_BATCH_PREFIX = "webhook:batch:alert"
 PENDING_BATCH_KEY = "webhook:pending:batch"
 PENDING_BATCH_LOCK_PREFIX = "webhook:pending:batch:lock"
+PENDING_BATCH_SENDER_KEY = "webhook:pending:batch:sender"
 PENDING_BATCH_TTL = 5 * MINUTE
 BATCH_ENTRY_TTL = DAY
 BATCH_WEBHOOK_ID = "batch"
@@ -46,7 +47,7 @@ class PendingBatchItem(BaseModel):
     message_hash: str
     updated_at: float
     created_at: Optional[str] = None
-    routes: list[str] = []
+    routes: list[str] = Field(default_factory=list)
 
 
 class PendingBatchEntry(BaseModel):
@@ -89,6 +90,10 @@ def _batch_key() -> str:
 
 def _batch_lock_key() -> str:
     return f"{PENDING_BATCH_LOCK_PREFIX}:pending"
+
+
+def _batch_sender_key() -> str:
+    return PENDING_BATCH_SENDER_KEY
 
 
 def _batch_entry_key(batch_id: str) -> str:
@@ -230,7 +235,6 @@ def build_grouped_webhook(
         parsed_items.append((item, webhook))
 
     fields: list[DiscordEmbedField] = []
-    timestamps: list[int] = []
     created_with_webhook: list[tuple[float, PendingBatchItem, DiscordWebhook]] = []
     for item, webhook in parsed_items:
         created_at = _to_unix_timestamp(item.created_at)
@@ -259,8 +263,6 @@ def build_grouped_webhook(
         prefix = f"{route_label} — " if route_label else ""
         emoji = _line_color_emoji(embed.color)
         updated_at = _to_unix_timestamp(embed.timestamp)
-        if updated_at is not None:
-            timestamps.append(updated_at)
         updated_text = (
             f"Updated: <t:{updated_at}:R>" if updated_at is not None else "Updated"
         )
