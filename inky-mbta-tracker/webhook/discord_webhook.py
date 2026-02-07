@@ -68,8 +68,6 @@ async def process_alert_event(
     if "CR" in route and alert.attributes.severity <= 6:
         # filter out low severity commuter rail alerts
         return
-    if len(routes) == 1:
-        route = routes[0]
 
     if WEBHOOK_URL:
         webhook = create_webhook_object(alert, routes, color, config)
