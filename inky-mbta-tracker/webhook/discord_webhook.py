@@ -234,47 +234,50 @@ async def enqueue_pending_batch(
             )
             return False, existing_batch_id
 
-    pending = await _get_pending_batch_entry(r_client)
-    if pending:
-        ready_at = pending.ready_at
-        extended = pending.extended
-        first_seen = pending.first_seen
-        if first_seen is None:
-            first_seen = pending.ready_at - BATCH_WINDOW_SECONDS
-        if not pending.extended:
-            ready_at = first_seen + BATCH_WINDOW_SECONDS
-            extended = True
-        updated_entry = pending.model_copy(
-            update={
-                "items": webhook_helpers._upsert_batch_items(pending.items, item),
-                "ready_at": ready_at,
-                "first_seen": first_seen,
-                "extended": extended,
-            }
-        )
-        await r_client.set(
-            webhook_helpers._batch_key(),
-            updated_entry.model_dump_json(),
-            ex=PENDING_BATCH_TTL,
-        )
-        return updated_entry.ready_at <= now, None
+    # Guard pending-batch updates with a RedisLock to make the read-modify-write atomic.
+    lock_key = f"{webhook_helpers._batch_key()}:lock"
+    async with RedisLock(r_client, lock_key, expire=PENDING_BATCH_TTL):
+        pending = await _get_pending_batch_entry(r_client)
+        if pending:
+            ready_at = pending.ready_at
+            extended = pending.extended
+            first_seen = pending.first_seen
+            if first_seen is None:
+                first_seen = pending.ready_at - BATCH_WINDOW_SECONDS
+            if not pending.extended:
+                ready_at = first_seen + BATCH_WINDOW_SECONDS
+                extended = True
+            updated_entry = pending.model_copy(
+                update={
+                    "items": webhook_helpers._upsert_batch_items(pending.items, item),
+                    "ready_at": ready_at,
+                    "first_seen": first_seen,
+                    "extended": extended,
+                }
+            )
+            await r_client.set(
+                webhook_helpers._batch_key(),
+                updated_entry.model_dump_json(),
+                ex=PENDING_BATCH_TTL,
+            )
+            return updated_entry.ready_at <= now, None
 
-    batch_id = str(int(now * 1000))
-    first_seen = now
-    ready_at = now + SHORT_BATCH_WINDOW_SECONDS
-    entry = PendingBatchEntry(
-        batch_id=batch_id,
-        ready_at=ready_at,
-        items=[item],
-        first_seen=first_seen,
-        extended=False,
-    )
-    created = await r_client.set(
-        webhook_helpers._batch_key(),
-        entry.model_dump_json(),
-        ex=PENDING_BATCH_TTL,
-        nx=True,
-    )
+        batch_id = str(int(now * 1000))
+        first_seen = now
+        ready_at = now + SHORT_BATCH_WINDOW_SECONDS
+        entry = PendingBatchEntry(
+            batch_id=batch_id,
+            ready_at=ready_at,
+            items=[item],
+            first_seen=first_seen,
+            extended=False,
+        )
+        created = await r_client.set(
+            webhook_helpers._batch_key(),
+            entry.model_dump_json(),
+            ex=PENDING_BATCH_TTL,
+            nx=True,
+        )
     if created:
         return True, None
 
