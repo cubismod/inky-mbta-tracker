@@ -11,7 +11,7 @@ import aiohttp
 import anyio
 from anyio.abc import TaskGroup
 from config import Config
-from consts import DAY, MINUTE
+from consts import DAY
 from exceptions import RateLimitExceeded
 from mbta_responses import AlertResource
 from opentelemetry.trace import Span
@@ -21,6 +21,7 @@ from pydantic import ValidationError
 from redis.asyncio import Redis
 from redis.asyncio.client import Redis as RedisClient
 from redis_cache import check_cache, delete_cache, write_cache
+from redis_lock.asyncio import RedisLock
 from shared_types.shared_types import (
     DiscordEmbed,
     DiscordEmbedAuthor,
@@ -34,6 +35,8 @@ from tenacity import (
     before_sleep_log,
     retry,
     retry_if_not_exception_type,
+    stop_after_attempt,
+    wait_exponential,
     wait_exponential_jitter,
 )
 
@@ -42,7 +45,6 @@ from webhook import helpers as webhook_helpers
 logger = logging.getLogger(__name__)
 
 WEBHOOK_URL = os.getenv("IMT_DISCORD_URL")
-PENDING_WEBHOOK_LOCK_TTL = MINUTE
 
 
 PendingWebhookEntry = webhook_helpers.PendingWebhookEntry
@@ -110,6 +112,14 @@ def create_webhook_object(
     return DiscordWebhook(avatar_url=avatar_url, embeds=[embed])
 
 
+def _validate_batch_entry(raw: str) -> Optional[PendingBatchEntry]:
+    try:
+        return PendingBatchEntry.model_validate_json(raw)
+    except ValidationError as err:
+        logger.error("Failed to parse pending batch cache", exc_info=err)
+        return None
+
+
 async def _get_pending_entry(
     r_client: RedisClient, webhook_id: str
 ) -> Optional[PendingWebhookEntry]:
@@ -135,11 +145,7 @@ async def _get_pending_batch_entry(
         return None
     if isinstance(raw, bytes):
         raw = raw.decode("utf-8")
-    try:
-        return PendingBatchEntry.model_validate_json(raw)
-    except ValidationError as err:
-        logger.error("Failed to parse pending batch cache", exc_info=err)
-        return None
+    return _validate_batch_entry(raw)
 
 
 async def _get_batch_entry(
@@ -150,11 +156,7 @@ async def _get_batch_entry(
         return None
     if isinstance(raw, bytes):
         raw = raw.decode("utf-8")
-    try:
-        return PendingBatchEntry.model_validate_json(raw)
-    except ValidationError as err:
-        logger.error("Failed to parse batch entry", exc_info=err)
-        return None
+    return _validate_batch_entry(raw)
 
 
 async def enqueue_pending_webhook(
@@ -207,7 +209,6 @@ async def enqueue_pending_batch(
     routes: list[str],
     created_at: Optional[str],
     r_client: RedisClient,
-    delay_seconds: float = BATCH_WINDOW_SECONDS,
     clock: Callable[[], float] = time.time,
 ) -> Tuple[bool, Optional[str]]:
     now = clock()
@@ -312,18 +313,6 @@ async def enqueue_pending_batch(
     return True, None
 
 
-async def _delayed_send_pending(
-    webhook_id: str, r_client: RedisClient, config: Config
-) -> None:
-    pending = await _get_pending_entry(r_client, webhook_id)
-    if not pending:
-        return
-    delay = pending.ready_at - time.time()
-    if delay > 0:
-        await anyio.sleep(delay)
-    await send_pending_webhook(webhook_id, r_client, config)
-
-
 async def _delayed_send_batch(r_client: RedisClient, config: Config) -> None:
     pending = await _get_pending_batch_entry(r_client)
     if not pending:
@@ -343,6 +332,7 @@ async def _delayed_send_batch(r_client: RedisClient, config: Config) -> None:
             await anyio.sleep(0)
 
 
+@retry(stop=stop_after_attempt(5), wait=wait_exponential(multiplier=1, min=4, max=10))
 async def send_batch_entry(
     batch_id: str,
     r_client: RedisClient,
@@ -351,24 +341,21 @@ async def send_batch_entry(
     batch_entry = await _get_batch_entry(r_client, batch_id)
     if not batch_entry:
         return
-    lock_key = webhook_helpers._batch_entry_lock_key(batch_id)
-    lock_acquired = await r_client.set(
-        lock_key, "1", ex=PENDING_WEBHOOK_LOCK_TTL, nx=True
-    )
-    if not lock_acquired:
-        return
-    batch_entry = await _get_batch_entry(r_client, batch_id)
-    if not batch_entry:
-        await r_client.delete(lock_key)
-        return
-    items = batch_entry.items
-    if not items:
-        await r_client.delete(lock_key)
-        return
-    grouped = webhook_helpers.build_grouped_webhook(items, config)
-    batch_message_id = f"{BATCH_WEBHOOK_ID}:{batch_id}"
-    await _send_webhook_payload(batch_message_id, grouped, r_client)
-    await r_client.delete(lock_key)
+    async with RedisLock(
+        r_client,
+        webhook_helpers._batch_entry_lock_key(batch_id),
+        blocking_timeout=15,
+        expire_timeout=60,
+    ):
+        batch_entry = await _get_batch_entry(r_client, batch_id)
+        if not batch_entry:
+            return
+        items = batch_entry.items
+        if not items:
+            return
+        grouped = webhook_helpers.build_grouped_webhook(items, config)
+        batch_message_id = f"{BATCH_WEBHOOK_ID}:{batch_id}"
+        await _send_webhook_payload(batch_message_id, grouped, r_client)
 
 
 async def _send_webhook_payload(
@@ -397,10 +384,10 @@ async def _send_webhook_payload(
                 await post_webhook(WEBHOOK_URL, webhook_id, webhook, r_client, session)
 
 
+@retry(stop=stop_after_attempt(5), wait=wait_exponential(multiplier=1, min=4, max=10))
 async def send_pending_webhook(
     webhook_id: str,
     r_client: RedisClient,
-    config: Config,
     clock: Callable[[], float] = time.time,
 ) -> None:
     pending = await _get_pending_entry(r_client, webhook_id)
@@ -409,33 +396,29 @@ async def send_pending_webhook(
     if pending.ready_at > clock():
         return
 
-    lock_key = webhook_helpers._pending_lock_key(webhook_id)
-    lock_acquired = await r_client.set(
-        lock_key, "1", ex=PENDING_WEBHOOK_LOCK_TTL, nx=True
-    )
-    if not lock_acquired:
-        return
+    async with RedisLock(
+        r_client,
+        webhook_helpers._pending_lock_key(webhook_id),
+        blocking_timeout=15,
+        expire_timeout=60,
+    ):
+        pending = await _get_pending_entry(r_client, webhook_id)
+        if not pending:
+            return
+        try:
+            webhook = DiscordWebhook.model_validate_json(pending.webhook_json)
+        except ValidationError as err:
+            logger.error(
+                f"Failed to parse pending webhook payload for {webhook_id}",
+                exc_info=err,
+            )
+            return
 
-    pending = await _get_pending_entry(r_client, webhook_id)
-    if not pending:
-        await r_client.delete(lock_key)
-        return
-
-    try:
-        webhook = DiscordWebhook.model_validate_json(pending.webhook_json)
-    except ValidationError as err:
-        logger.error(
-            f"Failed to parse pending webhook payload for {webhook_id}", exc_info=err
-        )
-        await r_client.delete(lock_key)
-        return
-
-    await _send_webhook_payload(webhook_id, webhook, r_client)
-
-    await r_client.delete(webhook_helpers._pending_key(webhook_id))
-    await r_client.delete(lock_key)
+        await _send_webhook_payload(webhook_id, webhook, r_client)
+        await r_client.delete(webhook_helpers._pending_key(webhook_id))
 
 
+@retry(stop=stop_after_attempt(5), wait=wait_exponential(multiplier=1, min=4, max=10))
 async def send_pending_batch(
     r_client: RedisClient,
     config: Config,
@@ -447,81 +430,66 @@ async def send_pending_batch(
     if pending.ready_at > clock():
         return
 
-    lock_key = webhook_helpers._batch_lock_key()
-    lock_acquired = await r_client.set(
-        lock_key, "1", ex=PENDING_WEBHOOK_LOCK_TTL, nx=True
-    )
-    if not lock_acquired:
-        logger.info("Batch lock not acquired")
-        return
-
-    pending = await _get_pending_batch_entry(r_client)
-    if not pending:
-        logger.info("Pending batch missing after lock")
-        await r_client.delete(lock_key)
-        return
-
-    batch_lock = webhook_helpers._batch_entry_lock_key(pending.batch_id)
-    batch_lock_acquired = await r_client.set(
-        batch_lock, "1", ex=PENDING_WEBHOOK_LOCK_TTL, nx=True
-    )
-    if not batch_lock_acquired:
-        logger.info("Batch entry lock not acquired", extra={"batch": pending.batch_id})
-        await r_client.delete(lock_key)
-        return
-
-    items: list[PendingBatchItem] = []
-    for item in pending.items:
-        items.append(item)
-    if not items:
-        await r_client.delete(webhook_helpers._batch_key())
-        await r_client.delete(lock_key)
-        return
-
-    if len(items) == 1:
-        item = items[0]
-        try:
-            webhook = DiscordWebhook.model_validate_json(item.webhook_json)
-        except ValidationError as err:
-            logger.error(
-                f"Failed to parse pending batch payload for {item.webhook_id}",
-                exc_info=err,
-            )
-            await r_client.delete(webhook_helpers._batch_key())
-            await r_client.delete(lock_key)
+    async with RedisLock(
+        r_client,
+        webhook_helpers._batch_lock_key(),
+        blocking_timeout=15,
+        expire_timeout=60,
+    ):
+        pending = await _get_pending_batch_entry(r_client)
+        if not pending:
+            logger.info("Pending batch missing after lock")
             return
-        await _send_webhook_payload(item.webhook_id, webhook, r_client)
-        await r_client.delete(webhook_helpers._batch_key())
-        await r_client.delete(lock_key)
-        await r_client.delete(batch_lock)
-        return
+        items: list[PendingBatchItem] = []
+        for item in pending.items:
+            items.append(item)
+        if not items:
+            await r_client.delete(webhook_helpers._batch_key())
+            return
 
-    grouped = webhook_helpers.build_grouped_webhook(items, config)
-    batch_id = f"{BATCH_WEBHOOK_ID}:{pending.batch_id}"
-    logger.debug(
-        "Sending batch",
-        extra={"batch_id": batch_id, "items": len(items), "ready_at": pending.ready_at},
-    )
-    await _send_webhook_payload(batch_id, grouped, r_client)
-    batch_entry = PendingBatchEntry(
-        batch_id=pending.batch_id,
-        ready_at=pending.ready_at,
-        items=items,
-    )
-    await r_client.set(
-        webhook_helpers._batch_entry_key(pending.batch_id),
-        batch_entry.model_dump_json(),
-        ex=BATCH_ENTRY_TTL,
-    )
-    for item in items:
+        if len(items) == 1:
+            item = items[0]
+            try:
+                webhook = DiscordWebhook.model_validate_json(item.webhook_json)
+            except ValidationError as err:
+                logger.error(
+                    f"Failed to parse pending batch payload for {item.webhook_id}",
+                    exc_info=err,
+                )
+                await r_client.delete(webhook_helpers._batch_key())
+                return
+            await _send_webhook_payload(item.webhook_id, webhook, r_client)
+            await r_client.delete(webhook_helpers._batch_key())
+            return
+
+        grouped = webhook_helpers.build_grouped_webhook(items, config)
+        batch_id = f"{BATCH_WEBHOOK_ID}:{pending.batch_id}"
+        logger.debug(
+            "Sending batch",
+            extra={
+                "batch_id": batch_id,
+                "items": len(items),
+                "ready_at": pending.ready_at,
+            },
+        )
+        await _send_webhook_payload(batch_id, grouped, r_client)
+        batch_entry = PendingBatchEntry(
+            batch_id=pending.batch_id,
+            ready_at=pending.ready_at,
+            items=items,
+        )
         await r_client.set(
-            webhook_helpers._alert_batch_key(item.webhook_id),
-            pending.batch_id,
+            webhook_helpers._batch_entry_key(pending.batch_id),
+            batch_entry.model_dump_json(),
             ex=BATCH_ENTRY_TTL,
         )
-    await r_client.delete(webhook_helpers._batch_key())
-    await r_client.delete(lock_key)
-    await r_client.delete(batch_lock)
+        for item in items:
+            await r_client.set(
+                webhook_helpers._alert_batch_key(item.webhook_id),
+                pending.batch_id,
+                ex=BATCH_ENTRY_TTL,
+            )
+        await r_client.delete(webhook_helpers._batch_key())
 
 
 @retry(
@@ -624,7 +592,9 @@ async def patch_webhook(
                     )
                     return
 
-                h.update(webhook.model_dump_json().encode("utf-8"))
+                logger.debug(
+                    f"Patched webhook ID: {webhook_id}. Old SHA: {existing_val.message_hash}, New SHA: {h.hexdigest()}"
+                )
                 await write_cache(
                     r_client,
                     f"webhook:{webhook_id}",
@@ -659,6 +629,7 @@ async def delete_webhook(webhook_id: str, r_client: Redis):
                             f"Failed to delete webhook msg {existing_val.message_id}, status {response.status}"
                         )
                         return
+                logger.debug(f"Deleted webhook ID: {webhook_id}")
             except ValidationError as err:
                 logger.error(
                     f"Failed to parse existing webhook cache for {webhook_id}",
