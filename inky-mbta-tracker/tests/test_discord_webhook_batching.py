@@ -2,19 +2,18 @@ from datetime import datetime, timezone
 
 import pytest
 from config import Config
-from discord_webhook import (
-    BATCH_WINDOW_SECONDS,
-    SHORT_BATCH_WINDOW_SECONDS,
-    PendingBatchItem,
-    _get_pending_batch_entry,
-    _line_color_emoji,
-    build_grouped_webhook,
-    enqueue_pending_batch,
-)
 from shared_types.shared_types import (
     DiscordEmbed,
     DiscordEmbedFooter,
     DiscordWebhook,
+)
+from webhook import helpers as webhook_helpers
+from webhook.discord_webhook import (
+    BATCH_WINDOW_SECONDS,
+    SHORT_BATCH_WINDOW_SECONDS,
+    PendingBatchItem,
+    _get_pending_batch_entry,
+    enqueue_pending_batch,
 )
 
 
@@ -47,13 +46,13 @@ class InMemoryRedis:
 
 
 def test_line_color_emoji_mapping():
-    assert _line_color_emoji(16395559) == "🔴"
-    assert _line_color_emoji(16615939) == "🟠"
-    assert _line_color_emoji(33104) == "🟢"
-    assert _line_color_emoji(3104166) == "🔵"
-    assert _line_color_emoji(8075404) == "🟣"
-    assert _line_color_emoji(10132637) == "🩶"
-    assert _line_color_emoji(0) == "⚪"
+    assert webhook_helpers._line_color_emoji(16395559) == "🔴"
+    assert webhook_helpers._line_color_emoji(16615939) == "🟠"
+    assert webhook_helpers._line_color_emoji(33104) == "🟢"
+    assert webhook_helpers._line_color_emoji(3104166) == "🔵"
+    assert webhook_helpers._line_color_emoji(8075404) == "🟣"
+    assert webhook_helpers._line_color_emoji(10132637) == "🩶"
+    assert webhook_helpers._line_color_emoji(0) == "⚪"
 
 
 def test_grouped_webhook_includes_timestamp_and_expired():
@@ -85,7 +84,7 @@ def test_grouped_webhook_includes_timestamp_and_expired():
             routes=["Orange"],
         ),
     ]
-    grouped = build_grouped_webhook(items, Config(stops=[]))
+    grouped = webhook_helpers.build_grouped_webhook(items, Config(stops=[]))
     assert grouped.embeds
     fields = grouped.embeds[0].fields
     assert fields
@@ -106,7 +105,7 @@ def test_grouped_webhook_dedupes_items():
         created_at=updated_at,
         routes=["Red"],
     )
-    grouped = build_grouped_webhook([item, item], Config(stops=[]))
+    grouped = webhook_helpers.build_grouped_webhook([item, item], Config(stops=[]))
     assert grouped.embeds
     assert grouped.embeds[0].fields
     assert len(grouped.embeds[0].fields) == 1
