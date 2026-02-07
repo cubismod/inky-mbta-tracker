@@ -498,7 +498,7 @@ async def send_pending_batch(
 
     grouped = webhook_helpers.build_grouped_webhook(items, config)
     batch_id = f"{BATCH_WEBHOOK_ID}:{pending.batch_id}"
-    logger.info(
+    logger.debug(
         "Sending batch",
         extra={"batch_id": batch_id, "items": len(items), "ready_at": pending.ready_at},
     )

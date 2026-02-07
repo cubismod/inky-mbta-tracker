@@ -23,7 +23,7 @@ PENDING_WEBHOOK_PREFIX = "webhook:pending"
 PENDING_WEBHOOK_LOCK_PREFIX = "webhook:pending:lock"
 PENDING_WEBHOOK_TTL = 10 * MINUTE
 PENDING_WEBHOOK_DELAY_RANGE = (5.0, 15.0)
-BATCH_WINDOW_SECONDS = 2 * MINUTE
+BATCH_WINDOW_SECONDS = 4 * MINUTE
 SHORT_BATCH_WINDOW_SECONDS = MINUTE
 BATCH_ENTRY_PREFIX = "webhook:batch:entry"
 ALERT_BATCH_PREFIX = "webhook:batch:alert"
@@ -274,16 +274,12 @@ def build_grouped_webhook(
             value = _truncate(updated_text, 1024)
         fields.append(DiscordEmbedField(name=name, value=value, inline=False))
 
-    most_recent = max(timestamps) if timestamps else None
     total_count = len(created_with_webhook)
     description = f"{total_count} alerts"
     if total_count > 25:
         description = f"{total_count} alerts (showing 25)"
     embed = DiscordEmbed(
         description=description,
-        timestamp=datetime.fromtimestamp(most_recent, tz=timezone.utc).isoformat()
-        if most_recent is not None
-        else None,
         author=DiscordEmbedAuthor(
             name="MBTA Alerts (batch)",
             url="https://ryanwallace.cloud/alerts",
