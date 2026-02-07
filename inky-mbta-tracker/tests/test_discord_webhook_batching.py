@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from unittest.mock import patch
 
 import pytest
 from config import Config
@@ -43,6 +44,22 @@ class InMemoryRedis:
 
     async def delete(self, key: str) -> None:
         self.store.pop(key, None)
+
+
+class DummyLock:
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        pass
+
+    async def __aenter__(self) -> "DummyLock":
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: object | None,
+    ) -> None:
+        return None
 
 
 def test_line_color_emoji_mapping():
@@ -117,14 +134,15 @@ async def test_batch_short_circuit_extends_to_full_window():
     now = 1_000.0
     webhook = DiscordWebhook(embeds=[DiscordEmbed(description="A")])
 
-    scheduled, batch_id = await enqueue_pending_batch(
-        "a",
-        webhook,
-        ["Red"],
-        "2024-01-01T00:00:00Z",
-        r_client,  # type: ignore[arg-type]
-        clock=lambda: now,
-    )
+    with patch("webhook.discord_webhook.RedisLock", DummyLock):
+        scheduled, batch_id = await enqueue_pending_batch(
+            "a",
+            webhook,
+            ["Red"],
+            "2024-01-01T00:00:00Z",
+            r_client,  # type: ignore[arg-type]
+            clock=lambda: now,
+        )
     assert scheduled is True
     assert batch_id is None
     pending = await _get_pending_batch_entry(r_client)  # type: ignore[arg-type]
@@ -135,14 +153,15 @@ async def test_batch_short_circuit_extends_to_full_window():
 
     now += 30
     webhook_b = DiscordWebhook(embeds=[DiscordEmbed(description="B")])
-    scheduled, batch_id = await enqueue_pending_batch(
-        "b",
-        webhook_b,
-        ["Red"],
-        "2024-01-01T00:00:10Z",
-        r_client,  # type: ignore[arg-type]
-        clock=lambda: now,
-    )
+    with patch("webhook.discord_webhook.RedisLock", DummyLock):
+        scheduled, batch_id = await enqueue_pending_batch(
+            "b",
+            webhook_b,
+            ["Red"],
+            "2024-01-01T00:00:10Z",
+            r_client,  # type: ignore[arg-type]
+            clock=lambda: now,
+        )
     assert batch_id is None
     pending = await _get_pending_batch_entry(r_client)  # type: ignore[arg-type]
     assert pending
