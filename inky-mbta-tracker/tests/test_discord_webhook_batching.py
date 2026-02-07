@@ -1,7 +1,16 @@
 from datetime import datetime, timezone
 
+import pytest
 from config import Config
-from discord_webhook import PendingBatchItem, _line_color_emoji, build_grouped_webhook
+from discord_webhook import (
+    BATCH_WINDOW_SECONDS,
+    SHORT_BATCH_WINDOW_SECONDS,
+    PendingBatchItem,
+    _get_pending_batch_entry,
+    _line_color_emoji,
+    build_grouped_webhook,
+    enqueue_pending_batch,
+)
 from shared_types.shared_types import (
     DiscordEmbed,
     DiscordEmbedFooter,
@@ -16,6 +25,25 @@ def _webhook_with_color(color: int, header: str, updated_at: str) -> DiscordWebh
 
 def _iso_time(value: int) -> str:
     return datetime.fromtimestamp(value, tz=timezone.utc).isoformat()
+
+
+class InMemoryRedis:
+    def __init__(self) -> None:
+        self.store: dict[str, str] = {}
+
+    async def get(self, key: str) -> str | None:
+        return self.store.get(key)
+
+    async def set(
+        self, key: str, value: str, ex: int | None = None, nx: bool = False
+    ) -> bool:
+        if nx and key in self.store:
+            return False
+        self.store[key] = value
+        return True
+
+    async def delete(self, key: str) -> None:
+        self.store.pop(key, None)
 
 
 def test_line_color_emoji_mapping():
@@ -82,3 +110,43 @@ def test_grouped_webhook_dedupes_items():
     assert grouped.embeds
     assert grouped.embeds[0].fields
     assert len(grouped.embeds[0].fields) == 1
+
+
+@pytest.mark.asyncio
+async def test_batch_short_circuit_extends_to_full_window():
+    r_client = InMemoryRedis()
+    now = 1_000.0
+    webhook = DiscordWebhook(embeds=[DiscordEmbed(description="A")])
+
+    scheduled, batch_id = await enqueue_pending_batch(
+        "a",
+        webhook,
+        ["Red"],
+        "2024-01-01T00:00:00Z",
+        r_client,  # type: ignore[arg-type]
+        clock=lambda: now,
+    )
+    assert scheduled is True
+    assert batch_id is None
+    pending = await _get_pending_batch_entry(r_client)  # type: ignore[arg-type]
+    assert pending
+    assert pending.ready_at == now + SHORT_BATCH_WINDOW_SECONDS
+    assert pending.first_seen == now
+    assert pending.extended is False
+
+    now += 30
+    webhook_b = DiscordWebhook(embeds=[DiscordEmbed(description="B")])
+    scheduled, batch_id = await enqueue_pending_batch(
+        "b",
+        webhook_b,
+        ["Red"],
+        "2024-01-01T00:00:10Z",
+        r_client,  # type: ignore[arg-type]
+        clock=lambda: now,
+    )
+    assert batch_id is None
+    pending = await _get_pending_batch_entry(r_client)  # type: ignore[arg-type]
+    assert pending
+    assert pending.first_seen is not None
+    assert pending.ready_at == pending.first_seen + BATCH_WINDOW_SECONDS
+    assert pending.extended is True
