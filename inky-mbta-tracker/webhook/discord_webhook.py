@@ -537,6 +537,11 @@ async def _post_webhook_impl(
     session: aiohttp.ClientSession,
     span: Optional[Span],
 ):
+    if await webhook_helpers.get_webhook_duplicate(r_client, webhook):
+        logger.debug(
+            f"Webhook {webhook_id} is a duplicate of an existing webhook, skipping post"
+        )
+        return
     async with session.post(
         f"{url}?wait=true",
         data=webhook.model_dump_json(),
@@ -559,7 +564,7 @@ async def _post_webhook_impl(
         json_body = json.loads(body)
         if "id" in json_body:
             message_id = json_body["id"]
-            h = hashlib.sha256()
+            h = hashlib.sha512()
             h.update(webhook.model_dump_json().encode("utf-8"))
             await write_cache(
                 r_client,
@@ -569,6 +574,7 @@ async def _post_webhook_impl(
                 ).model_dump_json(),
                 DAY,
             )
+        await webhook_helpers.set_webhook_duplicate(r_client, webhook)
 
 
 @retry(
@@ -588,10 +594,15 @@ async def patch_webhook(
     if existing:
         try:
             existing_val = WebhookRedisEntry.model_validate_json(existing)
-            h = hashlib.sha256()
+            h = hashlib.sha512()
             h.update(webhook.model_dump_json().encode("utf-8"))
             if existing_val.message_hash == h.hexdigest():
                 logger.debug(f"Webhook {webhook_id} unchanged, skipping patch")
+                return
+            if await webhook_helpers.get_webhook_duplicate(r_client, webhook):
+                logger.debug(
+                    f"Webhook {webhook_id} is a duplicate of an existing webhook, skipping patch"
+                )
                 return
             async with session.patch(
                 f"{url}/messages/{message_id}",
@@ -618,6 +629,7 @@ async def patch_webhook(
                     ).model_dump_json(),
                     DAY,
                 )
+                await webhook_helpers.set_webhook_duplicate(r_client, webhook)
         except ValidationError as err:
             logger.error(
                 f"Failed to parse existing webhook cache for {webhook_id}", exc_info=err

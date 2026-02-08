@@ -1,13 +1,16 @@
 import hashlib
 import logging
+import re
 import time
 from datetime import datetime, timezone
 from typing import Callable, Optional
 
 from config import Config
-from consts import DAY, MINUTE
+from consts import DAY, HOUR, MINUTE
 from mbta_responses import AlertResource
 from pydantic import BaseModel, Field, ValidationError
+from redis import ResponseError
+from redis.asyncio.client import Redis
 from shared_types.shared_types import (
     DiscordEmbed,
     DiscordEmbedAuthor,
@@ -27,6 +30,7 @@ BATCH_WINDOW_SECONDS = 4 * MINUTE
 SHORT_BATCH_WINDOW_SECONDS = MINUTE
 BATCH_ENTRY_PREFIX = "webhook:batch:entry"
 ALERT_BATCH_PREFIX = "webhook:batch:alert"
+ALERT_DEDUP_KEY = "webhook:dedup"
 PENDING_BATCH_KEY = "webhook:pending:batch"
 PENDING_BATCH_LOCK_PREFIX = "webhook:pending:batch:lock"
 PENDING_BATCH_SENDER_KEY = "webhook:pending:batch:sender"
@@ -56,6 +60,35 @@ class PendingBatchEntry(BaseModel):
     items: list[PendingBatchItem]
     first_seen: Optional[float] = None
     extended: bool = False
+
+
+def _create_embeds_hash(webhook: DiscordWebhook) -> str:
+    h = hashlib.sha512()
+    hashed_str = webhook.model_dump_json(include={"embeds": True})
+    regex = re.compile("<t:\d+:R>")
+    # strip timestamps to increase collisions
+    cleaned_str = regex.sub("<t:TIMESTAMP:R>", hashed_str)
+    h.update(cleaned_str.encode("utf-8"))
+    return h.hexdigest()
+
+
+async def set_webhook_duplicate(r_client: Redis, webhook: DiscordWebhook) -> None:
+    try:
+        await r_client.hsetex(
+            ALERT_DEDUP_KEY, _create_embeds_hash(webhook), "1", ex=4 * HOUR
+        )  # pyright: ignore
+    except ResponseError as Err:
+        logger.error("Redis error during duplicate set", exc_info=Err)
+
+
+async def get_webhook_duplicate(r_client: Redis, webhook: DiscordWebhook) -> bool:
+    try:
+        resp = await r_client.hget(ALERT_DEDUP_KEY, _create_embeds_hash(webhook))  # pyright: ignore
+        if resp:
+            return True
+    except ResponseError as Err:
+        logger.error("Redis error during duplicate check", exc_info=Err)
+    return False
 
 
 def determine_alert_routes(alert: AlertResource) -> list[str]:
@@ -109,7 +142,7 @@ def _alert_batch_key(alert_id: str) -> str:
 
 
 def _webhook_hash(webhook: DiscordWebhook) -> str:
-    h = hashlib.sha256()
+    h = hashlib.sha512()
     h.update(webhook.model_dump_json().encode("utf-8"))
     return h.hexdigest()
 
