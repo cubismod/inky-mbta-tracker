@@ -64,7 +64,8 @@ async def process_alert_event(
 ):
     routes = webhook_helpers.determine_alert_routes(alert)
     color = webhook_helpers.determine_alert_color(routes)
-    if "CR" in routes and alert.attributes.severity <= 6:
+    route = ", ".join(routes)
+    if "CR" in route and alert.attributes.severity <= 6:
         # filter out low severity commuter rail alerts
         return
 
