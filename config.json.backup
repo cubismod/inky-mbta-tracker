@@ -1,22 +1,4 @@
 {
-  "enable_track_predictions": true,
-  "track_prediction_routes": [
-    "CR-Fairmount",
-    "CR-Fitchburg",
-    "CR-Foxboro",
-    "CR-Franklin",
-    "CR-Greenbush",
-    "CR-Haverhill",
-    "CR-Kingston",
-    "CR-Lowell",
-    "CR-Middleborough",
-    "CR-Needham",
-    "CR-Newburyport",
-    "CR-Providence",
-    "CR-Worcester"
-  ],
-  "track_prediction_stations": ["place-sstat", "place-north","place-bbsta"],
-  "track_prediction_interval_hours": 1,
   "stops": [
     {
       "stop_id": "2637",

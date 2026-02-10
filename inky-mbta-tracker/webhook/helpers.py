@@ -65,7 +65,7 @@ class PendingBatchEntry(BaseModel):
 def _create_embeds_hash(webhook: DiscordWebhook) -> str:
     h = hashlib.sha512()
     hashed_str = webhook.model_dump_json(include={"embeds": True})
-    regex = re.compile("<t:\d+:R>")
+    regex = re.compile(r"<t:\d+:R>")
     # strip timestamps to increase collisions
     cleaned_str = regex.sub("<t:TIMESTAMP:R>", hashed_str)
     h.update(cleaned_str.encode("utf-8"))
