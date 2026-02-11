@@ -1,14 +1,10 @@
 import logging
 import os
-import random
 from asyncio import CancelledError
 from datetime import UTC, datetime, timedelta
 from random import randint
-from typing import TYPE_CHECKING, Any, List, Optional
-from zoneinfo import ZoneInfo
+from typing import TYPE_CHECKING, Optional
 
-import aiohttp
-import anyio
 from aiohttp import ClientSession
 from aiohttp.client_exceptions import ClientPayloadError
 from aiosseclient import aiosseclient
@@ -16,13 +12,9 @@ from anyio import create_task_group, sleep
 from anyio.abc import TaskGroup
 from anyio.streams.memory import MemoryObjectSendStream
 from config import Config
-from consts import FOUR_WEEKS, HOUR, MBTA_V3_ENDPOINT, TWO_MONTHS
+from consts import FOUR_WEEKS, MBTA_V3_ENDPOINT, TWO_MONTHS
 from exceptions import RateLimitExceeded
-from mbta_responses import (
-    AlertResource,
-    Schedules,
-    Shapes,
-)
+from mbta_responses import AlertResource, Shapes
 from opentelemetry.trace import Span
 from otel_config import get_tracer, is_otel_enabled
 from otel_utils import (
@@ -36,16 +28,9 @@ from prometheus import (
 )
 from pydantic import ValidationError
 from redis.asyncio.client import Redis
-from redis.exceptions import RedisError
 from redis_cache import check_cache, write_cache
 from schedule_tracker import ScheduleEvent, VehicleRedisSchema
-from shared_types.shared_types import (
-    DepartureInfo,
-    LightStop,
-    LineRoute,
-    RouteShapes,
-    TaskType,
-)
+from shared_types.shared_types import LightStop, LineRoute, RouteShapes, TaskType
 from tenacity import (
     before_log,
     before_sleep_log,
@@ -236,241 +221,6 @@ async def light_get_alerts(
         if alerts:
             return alerts
     return None
-
-
-async def precache_track_predictions_runner(
-    r_client: Redis,
-    tg: TaskGroup,
-    routes: Optional[list[str]] = None,
-    target_stations: Optional[list[str]] = None,
-    interval_hours: int = 12,
-) -> None:
-    """
-    Run track prediction precaching at regular intervals.
-
-    Args:
-        routes: List of route IDs to precache (defaults to all CR routes)
-        target_stations: List of station IDs to precache for (defaults to supported stations)
-        interval_hours: Hours between precaching runs (default: 12)
-    """
-    logger.info(
-        f"Starting track prediction precaching runner (interval: {interval_hours}h)"
-    )
-
-    while True:
-        try:
-            from mbta_client import MBTAApi
-
-            async with MBTAApi(
-                r_client, watcher_type=TaskType.TRACK_PREDICTIONS
-            ) as api:
-                try:
-                    num_cached = await api._precache_track_predictions(
-                        tg=tg,
-                        routes=routes,
-                        target_stations=target_stations,
-                    )
-                    logger.info(
-                        f"Track prediction precache completed: {num_cached} predictions cached; routes={routes}, stations={target_stations}"
-                    )
-                except (
-                    ValidationError,
-                    RedisError,
-                    ConnectionError,
-                    TimeoutError,
-                ) as e:
-                    logger.error("Error during precache operation", exc_info=e)
-        except (ValidationError, RedisError, ConnectionError, TimeoutError) as e:
-            logger.error("Error in track prediction precaching runner", exc_info=e)
-
-        # Wait for the specified interval
-        await sleep(interval_hours * HOUR)
-
-
-async def fetch_upcoming_departures(
-    session: Any,
-    route_id: str,
-    station_ids: List[str],
-    target_date: Optional[datetime] = None,
-    limit: Optional[int] = None,
-) -> List[DepartureInfo]:
-    """
-    Fetch upcoming departures for specific stations on a commuter rail route.
-
-    Args:
-        session: HTTP session for API calls
-        route_id: Commuter rail route ID (e.g., "CR-Worcester")
-        station_ids: List of station IDs to fetch departures for
-        target_date: Date to fetch departures for (defaults to today)
-
-    Returns:
-        List of departure data dictionaries with scheduled times
-    """
-    tracer = get_tracer(__name__) if is_otel_enabled() else None
-    if tracer:
-        with tracer.start_as_current_span(
-            "mbta_client_extended.fetch_upcoming_departures",
-            attributes={
-                "route_id": route_id,
-                "stations.count": len(station_ids),
-            },
-        ) as span:
-            return await _fetch_upcoming_departures_impl(
-                session, route_id, station_ids, target_date, limit, span
-            )
-    else:
-        return await _fetch_upcoming_departures_impl(
-            session, route_id, station_ids, target_date, limit, None
-        )
-
-
-async def _fetch_upcoming_departures_impl(
-    session: Any,
-    route_id: str,
-    station_ids: List[str],
-    target_date: Optional[datetime],
-    limit: Optional[int],
-    span: Optional[Span],
-) -> List[DepartureInfo]:
-    max_attempts = int(os.getenv("IMT_PRECACHE_MAX_ATTEMPTS", "5"))
-    base_backoff = float(os.getenv("IMT_PRECACHE_BASE_BACKOFF", "1.0"))
-    attempt = 0
-
-    while True:
-        try:
-            if target_date is None:
-                target_date = datetime.now(UTC)
-            # Proceed with the normal fetch logic below on success
-            break
-        except CancelledError:
-            # Preserve cancellation semantics
-            raise
-        except (TypeError, ValueError) as e:
-            # Only retry on errors likely to be caused by malformed inputs or similar recoverable issues.
-            attempt += 1
-            if attempt >= max_attempts:
-                logger.error(
-                    f"Exceeded max attempts ({max_attempts}) in fetch_upcoming_departures for route {route_id}",
-                    exc_info=e,
-                )
-                if span:
-                    span.set_attribute("error", True)
-                    span.set_attribute("error.type", "max_attempts_exceeded")
-                return []
-            # Exponential backoff with small random jitter
-            backoff = min(60.0, base_backoff * (2 ** (attempt - 1)))
-            jitter = random.random() * 0.5
-            sleep_for = backoff + jitter
-            logger.debug(
-                f"fetch_upcoming_departures attempt {attempt}/{max_attempts} failed for route {route_id}; retrying in {sleep_for:.2f}s",
-                exc_info=e,
-            )
-            await anyio.sleep(sleep_for)
-            # loop and retry
-
-    date_str = target_date.astimezone(ZoneInfo("America/New_York")).date().isoformat()
-    auth_token = os.environ.get("AUTH_TOKEN", "")
-    upcoming_departures: list[DepartureInfo] = []
-
-    # Fetch schedules for all stations in a single API call
-    stations_str = ",".join(station_ids)
-
-    endpoint = f"{MBTA_V3_ENDPOINT}/schedules?filter[stop]={stations_str}&filter[route]={route_id}&filter[date]={date_str}&sort=departure_time&include=trip&api_key={auth_token}"
-
-    try:
-        async with session.get(endpoint) as response:
-            if response.status == 429:
-                raise RateLimitExceeded()
-
-            if response.status != 200:
-                logger.error(
-                    f"Failed to fetch schedules for {stations_str} on {route_id}: HTTP {response.status}"
-                )
-                if span:
-                    span.set_attribute("error", True)
-                    span.set_attribute("error.type", "http_error")
-                    span.set_attribute("http.status_code", response.status)
-                return []
-
-            body = await response.text()
-            mbta_api_requests.labels("schedules").inc()
-
-            try:
-                schedules_data = Schedules.model_validate_json(body, strict=False)
-            except ValidationError as e:
-                logger.error(
-                    f"Unable to parse schedules for {stations_str} on {route_id}",
-                    exc_info=e,
-                )
-                if span:
-                    span.set_attribute("error", True)
-                    span.set_attribute("error.type", "validation_error")
-                return []
-
-            # Process each scheduled departure
-            for schedule in schedules_data.data:
-                schedule_time = (
-                    schedule.attributes.departure_time
-                    or schedule.attributes.arrival_time
-                )
-                if schedule_time and datetime.fromisoformat(schedule_time).astimezone(
-                    UTC
-                ) > datetime.now(UTC):
-                    # Get trip information from relationships
-                    trip_id = ""
-                    if (
-                        hasattr(schedule, "relationships")
-                        and hasattr(schedule.relationships, "trip")
-                        and schedule.relationships.trip.data
-                    ):
-                        trip_id = schedule.relationships.trip.data.id
-
-                    # Get station ID from relationships
-                    station_id = ""
-                    if (
-                        hasattr(schedule, "relationships")
-                        and hasattr(schedule.relationships, "stop")
-                        and schedule.relationships.stop.data
-                    ):
-                        station_id = schedule.relationships.stop.data.id
-
-                    departure_info: DepartureInfo = {
-                        "trip_id": trip_id,
-                        "station_id": station_id,
-                        "route_id": route_id,
-                        "direction_id": schedule.attributes.direction_id,
-                        "departure_time": schedule_time,
-                    }
-                    headsign = schedule.attributes.stop_headsign
-                    if (
-                        headsign
-                        and get_commuter_station_human_readable(
-                            departure_info["station_id"]
-                        )
-                        == headsign
-                    ):
-                        logger.debug("skipped redundant headsign")
-                        continue
-                    upcoming_departures.append(departure_info)
-                    if limit and len(upcoming_departures) > limit:
-                        break
-
-    except (aiohttp.ClientError, TimeoutError) as e:
-        logger.error(
-            f"Error fetching schedules for {stations_str} on {route_id}",
-            exc_info=e,
-        )
-        if span:
-            span.set_attribute("error", True)
-            span.set_attribute("error.type", "network_error")
-        return []
-
-    logger.debug(
-        f"Found {len(upcoming_departures)} upcoming departures for route {route_id} across {len(station_ids)} stations"
-    )
-    if span:
-        span.set_attribute("departures.count", len(upcoming_departures))
-    return upcoming_departures
 
 
 @retry(
@@ -731,21 +481,6 @@ async def _watch_station_impl(
         )
 
 
-# takes a stop_id from the vehicle API and returns the station_id and if it is one of the stations that has track predictions
-def determine_station_id(stop_id: str) -> tuple[str, bool]:
-    if "North Station" in stop_id or "BNT" in stop_id or "place-north" in stop_id:
-        return "place-north", True
-    if "South Station" in stop_id or "NEC-2287" in stop_id or "place-sstat" in stop_id:
-        return "place-sstat", True
-    if "Back Bay" in stop_id or "NEC-1851" in stop_id or "place-bbsta" in stop_id:
-        return "place-bbsta", True
-    if "Ruggles" in stop_id or "NEC-2265" in stop_id or "place-rugg" in stop_id:
-        return "place-rugg", True
-    if "Providence" in stop_id or "NEC-1851" in stop_id:
-        return "place-NEC-1851", True
-    return stop_id, False
-
-
 @retry(
     wait=wait_exponential_jitter(initial=5, jitter=20, max=60),
     before=before_log(logger, logging.INFO),
@@ -784,51 +519,3 @@ async def watch_alerts(
             transit_time_min=0,
             config=config,
         )
-
-
-def get_default_routes() -> List[str]:
-    """Get the default list of commuter rail routes for precaching."""
-    return [
-        "CR-Worcester",
-        "CR-Framingham",
-        "CR-Franklin",
-        "CR-Foxboro",
-        "CR-Providence",
-        "CR-Stoughton",
-        "CR-Needham",
-        "CR-Fairmount",
-        "CR-Fitchburg",
-        "CR-Lowell",
-        "CR-Haverhill",
-        "CR-Newburyport",
-        "CR-Rockport",
-        "CR-Kingston",
-        "CR-Plymouth",
-        "CR-Greenbush",
-    ]
-
-
-def get_default_target_stations() -> List[str]:
-    """Get the default list of stations for precaching."""
-    return [
-        "place-sstat",  # South Station
-        "place-north",  # North Station
-        "place-bbsta",  # Back Bay
-        "place-rugg",  # Ruggles
-    ]
-
-
-def get_commuter_station_human_readable(station_id: str) -> str:
-    match station_id:
-        case "place-sstat":
-            return "South Station"
-        case "place-north":
-            return "North Station"
-        case "place-bbsta":
-            return "Back Bay"
-        case "place-rugg":
-            return "Ruggles"
-        case "place-NEC-1851":
-            return "Providence"
-        case _:
-            return station_id

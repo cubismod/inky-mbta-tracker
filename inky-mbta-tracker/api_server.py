@@ -7,7 +7,6 @@ from api.endpoints.alerts import router as alerts_router
 
 # Routers
 from api.endpoints.health import router as health_router
-from api.endpoints.predictions import router as predictions_router
 from api.endpoints.shapes import router as shapes_router
 from api.endpoints.vehicles import router as vehicles_router
 from api.limits import limiter
@@ -52,7 +51,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="MBTA Transit Data API",
         description=(
-            "API for MBTA transit data including track predictions, vehicle positions, alerts, and route shapes"
+            "API for MBTA transit data including vehicle positions, alerts, and route shapes"
         ),
         version="2.1.0",
         docs_url="/",
@@ -89,9 +88,6 @@ def create_app() -> FastAPI:
             include_paths={
                 "/alerts*",
                 "/alerts.json",
-                "/predictions*",
-                "/chained-predictions",
-                "/historical*",
                 "/shapes*",
                 "/vehicles*",
             },
@@ -126,7 +122,6 @@ def create_app() -> FastAPI:
 
     # Include routers
     app.include_router(health_router)
-    app.include_router(predictions_router)
     app.include_router(vehicles_router)
     app.include_router(alerts_router)
     app.include_router(shapes_router)

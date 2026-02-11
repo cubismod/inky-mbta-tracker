@@ -2,8 +2,7 @@
 
 Inky MBTA Tracker or IMT is a multi-purpose, async Python application tracking the
 Massachusetts Bay Transit Authority. It relies on Redis for data storage in conjunction with
-[inky-display](https://github.com/cubismod/inky-display) for e-inky display functionality. Additionally,
-it provides a comprehensive API using FastAPI which serves [ryanwallace.cloud](https://ryanwallace.cloud).
+[inky-display](https://github.com/cubismod/inky-display) for e-inky display functionality.
 
 ## Configuring
 
@@ -57,30 +56,12 @@ IMT_TRACK_PREDICTION_TIMEOUT=15 # Track prediction timeout in seconds
 IMT_RATE_LIMITING_ENABLED=true # Enable/disable rate limiting
 IMT_SSE_ENABLED=true # Enable/disable Server-Sent Events
 
-# machine learning configuration for track predictions
-IMT_ML=true
-KERAS_BACKEND=jax # Jax is set by default and works well even on low spec hardware
-IMT_ML_CONF_GAMMA=1.3
-IMT_ML_CONF_HIST_WEIGHT=0.3
-IMT_BAYES_ALPHA=0.65
-IMT_ML_SAMPLE_PCT=0.1
-IMT_ML_REPLACE_DELTA=0.05
-IMT_ML_COMPARE=true # enable to compare pattern based predictions versus machine-learning approaches
-IMT_ML_MIN_CONFIDENCE=0.25
-IMT_ML_STORE_CONFIDENCE=0.25
-IMT_CR_LIMIT=10 # how many departures to fetch from each commuter rail station for date prediction requests
 
-# precaching
-IMT_PRECACHE_MAX_ATTEMPTS=5
-IMT_PRECACHE_BASE_BACKOFF=1.0
-IMT_PRED_JITTER_MS=200
 ```
 
 ## Prometheus & Grafana
 
 Prometheus is available at port 8000.
-
-New metric: `imt_track_predictions_ml_wins` — counts how often the live ML vs. historical/pattern comparison chose the ML result. Metric labels are `station_id`, `route_id`, and `instance`. This is exposed alongside the other `imt_` metrics on the same Prometheus endpoint.
 
 You can use my [dashboard JSON](./grafana-dashboard.json) for a Grafana dashboard combining
 the Prom metrics & a Loki datasource for logs.
@@ -95,138 +76,23 @@ Then run `task run` to start up the tracker.
 
 Note: On Linux/macOS, `uvloop` is enabled automatically when available for faster asyncio performance. If not present, the default loop is used.
 
-## ML Track Prediction (optional)
-
-The ML ensemble for track prediction is optional and off by default. To enable it:
-
-- Environment
-  - `IMT_ML=true` to enable the ML worker
-  - `KERAS_BACKEND=jax` to use the Keras-on-Jax backend
-
-- Behavior at a glance
-  - ML runs asynchronously; the predictor never blocks waiting for ML.
-  - The ML worker writes a `TrackPrediction` to Redis and clears any corresponding `negative_…` cache key to avoid suppression.
-  - Predictions with confidence below 25% are filtered out (hard floor).
-  - Confidence combines margin‑based probability, optional sharpening, historical accuracy, and (when available) Bayes fusion with latest ML outputs.
-
-- Tuning (env vars)
-  - `IMT_ML_CONF_GAMMA` (default `1.3`): probability sharpening factor used for display confidence.
-  - `IMT_CONF_HIST_WEIGHT` (default `0.3`): blend weight for historical accuracy into display confidence.
-  - `IMT_BAYES_ALPHA` (default `0.65`): weight for pattern vs. ML in Bayes fusion.
-  - `IMT_ML_SAMPLE_PCT` (default `0.10`): % of successful traditional predictions also queued to ML for exploration.
-  - `IMT_ML_REPLACE_DELTA` (default `0.05`): minimum ML confidence improvement to overwrite an existing non‑ML prediction.
-  - `IMT_ML_COMPARE` (default `false`): when `true` the predictor will attempt a short live comparison between the traditional/pattern result and the ML ensemble and choose the higher-confidence result. This is opt-in to avoid blocking the prediction flow.
-  - `IMT_ML_COMPARE_WAIT_MS` (default `200`): maximum time in milliseconds to wait for a recent ML result when `IMT_ML_COMPARE` is enabled. If no ML result is produced within this window the predictor falls back to the traditional result and continues (the ML worker still runs asynchronously).
-
-- Observability
-  - New Prometheus metric: `imt_track_predictions_ml_wins` — counts how often the live ML vs. pattern comparison chose the ML result. Labels: `station_id`, `route_id`, `instance`.
-
-## Track Prediction Feature
-
-The track prediction system analyzes historical track assignments to predict future track assignments for MBTA commuter rail trains before they are officially announced. This helps solve the "mad scramble" problem at major stations like South Station and North Station.
-
-### How It Works
-
-1. **Data Collection**: The system automatically captures track assignments from the MBTA API when trains arrive at stations
-2. **Pattern Analysis**: Historical data is analyzed to identify patterns based on:
-   - Headsign and destination
-   - Time of day and day of week
-   - Direction of travel
-   - Route information
-3. **Prediction Generation**: Before official track announcements, the system generates predictions with confidence scores
-4. **Validation**: Predictions are validated against actual track assignments to improve accuracy over time
-
-### Using Track Predictions
-
-Track predictions are automatically integrated into the existing display system:
-
-- **API Access**: Use the track prediction API to get detailed information:
-
-  ```bash
-  # Get predictions for a station
-  curl http://localhost:8080/predictions/place-sstat
-
-  # Get prediction statistics
-  curl http://localhost:8080/stats/place-sstat/CR-Providence
-
-  # Get historical data
-  curl http://localhost:8080/historical/place-sstat/CR-Providence?days=30
-  ```
-
-### Configuration
-
-Add this environment variable to enable track prediction features:
-
-```shell
-# Optional: Port for track prediction API (default: 8080)
-IMT_TRACK_API_PORT=8080
-```
-
-#### Track Prediction Precaching
-
-To enable automatic track prediction precaching, add these fields to your `config.json`:
-
-```json
-{
-  "enable_track_predictions": true,
-  "track_prediction_routes": ["CR-Worcester", "CR-Providence"],
-  "track_prediction_stations": ["place-sstat", "place-north", "place-bbsta"],
-  "track_prediction_interval_hours": 2
-}
-```
-
-- `enable_track_predictions`: Boolean to enable/disable precaching (default: false)
-- `track_prediction_routes`: List of commuter rail routes to precache (optional, defaults to all CR routes)
-- `track_prediction_stations`: List of station IDs to precache for (optional, defaults to major stations)
-- `track_prediction_interval_hours`: Hours between precaching runs (default: 2)
-
-Note that you will also need to add the following stations to your configuration:
-
-```json
-  "stops": [
-    {
-      "stop_id": "place-north",
-      "show_on_display": false,
-      "transit_time_min": 1,
-    },
-    {
-      "stop_id": "place-sstat",
-      "show_on_display": false,
-      "transit_time_min": 1
-    },
-    {
-      "stop_id": "place-bbsta",
-      "show_on_display": false,
-      "transit_time_min": 1
-    }
-  ]
-```
-
-This creates real time departure/arrival trackers for these stations which is required to generate track predictions
-but it doesn't show them on the Inky display or in MQTT.
-
 ## Architecture
 
 ```mermaid
 flowchart TD
     subgraph inky-mbta-tracker
-    B(schedule and prediction workers)
+    B(schedule and vehicle workers)
     D{{queue}}
     C(queue processor)
-    TP[Track Predictor]
     end
     B --> D
     C --> D
-    B --> TP
-    TP --> B
 
     C -->E@{ shape: cyl, label: "Redis"}
     C -->F@{ shape: bow-rect, label: "MQTT" }
-    TP --> E
 
     G@{ shape: curv-trap, label: "inky-display" } -->|reads| E
     H[/Home Assistant/] -->|reads| F
-    I[Track Prediction API] --> TP
 ```
 
 At a base level, this project makes use of the MBTA V3 API, especially the [streaming API for predictions](https://www.mbta.com/developers/v3-api/streaming)

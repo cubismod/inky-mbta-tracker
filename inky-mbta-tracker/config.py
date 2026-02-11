@@ -28,11 +28,6 @@ class Config(BaseModel):
     # git auth token to use when cloning
     vehicle_git_token: Optional[str] = None
     vehicle_git_email: Optional[str] = None
-    # track prediction precaching settings
-    enable_track_predictions: bool = Field(default=False)
-    track_prediction_routes: Optional[list[str]] = None
-    track_prediction_stations: Optional[list[str]] = None
-    track_prediction_interval_hours: int = Field(default=2)
     severity_icons: Optional[list[str]] = None
 
 

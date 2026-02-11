@@ -37,21 +37,6 @@ SCHEMAS = [
         hashes={class_hashes.VEHICLEREDISSCHEMA_HASH},
     ),
     RedisSchema(
-        id="track_assignment",
-        key_prefixes=["track_history", "track_timeseries"],
-        hashes={class_hashes.TRACKASSIGNMENT_HASH},
-    ),
-    RedisSchema(
-        id="track_prediction",
-        key_prefixes=["track_prediction"],
-        hashes={class_hashes.TRACKPREDICTION_HASH},
-    ),
-    RedisSchema(
-        id="track_stats",
-        key_prefixes=["track_stats"],
-        hashes={class_hashes.TRACKPREDICTIONSTATS_HASH},
-    ),
-    RedisSchema(
         id="stop",
         key_prefixes=["stop"],
         hashes={

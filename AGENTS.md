@@ -5,7 +5,6 @@ MBTA API available at <https://api-v3.mbta.com/docs/swagger/swagger.json>
 ## Project Structure & Module Organization
 - App code lives under `inky-mbta-tracker/`.
   - `api/`: FastAPI app, middleware, endpoints, and services.
-  - `track_predictor/`, `shared_types/`: core logic and shared schemas.
   - `main.py`, `api_server.py`: CLI entry and API bootstrap.
   - `tests/`: pytest tests.
 - Config and assets: `config.json`, `profiles/`, `*shapes*.json`, `grafana-dashboard.json`.
@@ -40,4 +39,4 @@ MBTA API available at <https://api-v3.mbta.com/docs/swagger/swagger.json>
 ## Security & Configuration Tips
 - Secrets via environment variables (see `.env` and tests): `IMT_REDIS_ENDPOINT`, `IMT_REDIS_PORT`, `IMT_REDIS_PASSWORD`, etc.
 - Never commit real secrets or personal data. Prefer local `.env` and Docker secrets.
-- Validate inputs on API routes; keep rate limits/middleware intact when modifying `api/`.
+- Validate inputs on data ingestion paths; keep rate limits/middleware intact when modifying request handlers.

@@ -16,7 +16,6 @@ from dotenv import load_dotenv
 from geojson_utils import background_refresh
 from logging_setup import setup_logging
 from mbta_client_extended import (
-    precache_track_predictions_runner,
     watch_alerts,
     watch_static_schedule,
     watch_station,
@@ -35,7 +34,6 @@ from schedule_tracker import (
 from sentry_config import initialize_sentry
 from shared_types.schema_versioner import schema_versioner
 from shared_types.shared_types import TaskType
-from track_predictor.track_predictor import TrackPredictor
 from utils import get_redis
 
 load_dotenv()
@@ -233,23 +231,6 @@ async def __main__() -> None:
                     tg.start_soon(
                         watch_alerts, get_redis(redis_pool), route_id, session, config
                     )
-
-            # Start track prediction precaching if enabled
-            if config.enable_track_predictions:
-                tg.start_soon(
-                    precache_track_predictions_runner,
-                    get_redis(redis_pool),
-                    tg,
-                    config.track_prediction_routes,
-                    config.track_prediction_stations,
-                    config.track_prediction_interval_hours,
-                )
-
-            # Start ML worker only if enabled via env IMT_ML
-            if os.getenv("IMT_ML", "").strip().lower() in {"1", "true", "yes", "on"}:
-                track_predictor = TrackPredictor(get_redis(redis_pool))
-                await track_predictor.initialize()
-                tg.start_soon(track_predictor.ml_prediction_worker)
 
             # consumer
             tg.start_soon(process_queue_async, receive_stream, tg)

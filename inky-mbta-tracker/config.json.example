@@ -13,9 +13,5 @@
   "vehicle_git_repo": null,
   "vehicle_git_user": null,
   "vehicle_git_token": null,
-  "vehicle_git_email": null,
-  "enable_track_predictions": false,
-  "track_prediction_routes": null,
-  "track_prediction_stations": null,
-  "track_prediction_interval_hours": 2
+  "vehicle_git_email": null
 }
