@@ -79,3 +79,26 @@ def test_check_vehicles_endpoint_skips_outside_service_hours(
 
     now = datetime(2026, 2, 16, 3, 0, tzinfo=ZoneInfo("America/New_York"))
     assert check_vehicles_endpoint("http://example.com/vehicles", now=now)
+
+
+def test_check_vehicles_endpoint_features_mapping_passes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # features as mapping id->Feature (project uses this shape)
+    payload = json.dumps(
+        {
+            "type": "FeatureCollection",
+            "features": {
+                "33": {"type": "Feature", "id": "33", "properties": {}},
+                "34": {"type": "Feature", "id": "34", "properties": {}},
+            },
+        }
+    )
+
+    def fake_urlopen(url: str, timeout: float = 5):
+        return DummyResponse(payload)
+
+    monkeypatch.setattr("healthcheck.urlopen", fake_urlopen)
+
+    now = datetime(2026, 2, 16, 10, 0, tzinfo=ZoneInfo("America/New_York"))
+    assert check_vehicles_endpoint("http://example.com/vehicles", now=now)

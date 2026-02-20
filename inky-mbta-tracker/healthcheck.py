@@ -47,13 +47,23 @@ def is_service_hours(now: datetime | None = None) -> bool:
 
 
 def _extract_vehicle_count(payload: object) -> int | None:
-    if isinstance(payload, dict):
-        features = payload.get("features")
-        if isinstance(features, list):
-            return len(features)
-        data = payload.get("data")
-        if isinstance(data, list):
-            return len(data)
+    if not isinstance(payload, dict):
+        return None
+
+    # FeatureCollection may use a list (GeoJSON typical) or a dict mapping id->feature
+    features = payload.get("features")
+    if isinstance(features, list):
+        return len(features)
+    if isinstance(features, dict):
+        return len(features)
+
+    # Some payloads may use a top-level 'data' array or mapping
+    data = payload.get("data")
+    if isinstance(data, list):
+        return len(data)
+    if isinstance(data, dict):
+        return len(data)
+
     return None
 
 
