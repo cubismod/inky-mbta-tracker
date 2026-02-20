@@ -69,6 +69,32 @@ server_side_events = Counter(
     "imt_server_side_events", "Number of server-side events", ["id"]
 )
 
+vehicle_batch_items = Gauge(
+    "imt_vehicle_batch_items", "Vehicles processed in last batch", ["name"]
+)
+
+schedule_batch_items = Gauge(
+    "imt_schedule_batch_items", "Schedule events processed in last batch", ["name"]
+)
+
+batch_flushes = Counter(
+    "imt_batch_flushes", "Batch flushes by outcome", ["name", "outcome"]
+)
+
+last_vehicle_write_ts = Gauge(
+    "imt_last_vehicle_write_ts_seconds",
+    "Epoch seconds of last vehicle write",
+    ["name"],
+)
+
+last_batch_flush_ts = Gauge(
+    "imt_last_batch_flush_ts_seconds",
+    "Epoch seconds of last batch flush",
+    ["name"],
+)
+
+pos_data_count = Gauge("imt_pos_data_count", "Count of members in pos-data", ["name"])
+
 
 async def query_server_side_events(
     session: aiohttp.ClientSession, job: str, id: str

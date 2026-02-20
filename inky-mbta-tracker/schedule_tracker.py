@@ -27,14 +27,20 @@ from otel_utils import (
 )
 from paho.mqtt import MQTTException, publish
 from prometheus import (
+    batch_flushes,
     current_buffer_used,
+    last_batch_flush_ts,
+    last_vehicle_write_ts,
     max_buffer_size,
     open_receive_streams,
     open_send_streams,
+    pos_data_count,
     redis_commands,
+    schedule_batch_items,
     schedule_events,
     tasks_waiting_receive,
     tasks_waiting_send,
+    vehicle_batch_items,
     vehicle_events,
     vehicle_speeds,
 )
@@ -308,6 +314,7 @@ class Tracker:
             await pipeline.sadd("pos-data", redis_key)  # type: ignore[misc]
             vehicle_events.labels(action, event.route).inc()
             redis_commands.labels("sadd").inc()
+            last_vehicle_write_ts.labels("tracker").set(time.time())
 
             self.log_vehicle(event)
 
@@ -558,14 +565,20 @@ async def process_queue_async(
 
         # Generate route monitoring transaction ID for this batch processing cycle
         route_ids = set()
+        vehicle_count = 0
+        schedule_count = 0
         for item in items:
             if isinstance(item, ScheduleEvent):
                 route_ids.add(item.route_id)
+                schedule_count += 1
             elif isinstance(item, VehicleRedisSchema):
                 route_ids.add(item.route)
+                vehicle_count += 1
 
         # Create transaction ID with multiple routes if applicable
         route_context = "_".join(sorted(route_ids)) if route_ids else "batch"
+        vehicle_batch_items.labels("tracker").set(vehicle_count)
+        schedule_batch_items.labels("tracker").set(schedule_count)
 
         # Use OTEL tracing with high-volume sampling for batch processing
         tracer = get_tracer(__name__) if is_otel_enabled() else None
@@ -620,6 +633,15 @@ async def process_queue_async(
 
                     await pipeline.execute()
                     redis_commands.labels("execute").inc()
+                    batch_flushes.labels("tracker", "ok").inc()
+                    last_batch_flush_ts.labels("tracker").set(time.time())
+                    try:
+                        pos_data_count.labels("tracker").set(
+                            await tracker.redis.scard("pos-data")  # type: ignore[misc]
+                        )
+                        redis_commands.labels("scard").inc()
+                    except ResponseError as err:
+                        logger.error("Unable to read pos-data size", exc_info=err)
 
                     add_event_to_span(
                         span, "batch_flushed", {"items_processed": len(items)}
@@ -630,6 +652,7 @@ async def process_queue_async(
                         "Unable to communicate with Redis during batch flush",
                         exc_info=err,
                     )
+                    batch_flushes.labels("tracker", "redis_error").inc()
                 except (
                     AttributeError,
                     TypeError,
@@ -639,6 +662,7 @@ async def process_queue_async(
                 ) as err:
                     set_span_error(span, err)
                     logger.error("Unexpected error during batch flush", exc_info=err)
+                    batch_flushes.labels("tracker", "error").inc()
         else:
             # No tracing - original logic
             try:
@@ -652,10 +676,20 @@ async def process_queue_async(
 
                 await pipeline.execute()
                 redis_commands.labels("execute").inc()
+                batch_flushes.labels("tracker", "ok").inc()
+                last_batch_flush_ts.labels("tracker").set(time.time())
+                try:
+                    pos_data_count.labels("tracker").set(
+                        await tracker.redis.scard("pos-data")  # type: ignore[misc]
+                    )
+                    redis_commands.labels("scard").inc()
+                except ResponseError as err:
+                    logger.error("Unable to read pos-data size", exc_info=err)
             except ResponseError as err:
                 logger.error(
                     "Unable to communicate with Redis during batch flush", exc_info=err
                 )
+                batch_flushes.labels("tracker", "redis_error").inc()
             except (
                 AttributeError,
                 TypeError,
@@ -664,6 +698,7 @@ async def process_queue_async(
                 OSError,
             ) as err:
                 logger.error("Unexpected error during batch flush", exc_info=err)
+                batch_flushes.labels("tracker", "error").inc()
 
     # Main consumer loop: receive, then drain to form a batch
     while True:
