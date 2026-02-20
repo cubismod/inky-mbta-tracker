@@ -7,10 +7,15 @@ is writing regular heartbeats. Exit code 0 indicates healthy, non-zero
 indicates unhealthy.
 """
 
+import argparse
+import json
 import logging
 import os
 import sys
-from datetime import UTC, datetime
+from datetime import UTC, datetime, time
+from urllib.error import URLError
+from urllib.request import urlopen
+from zoneinfo import ZoneInfo
 
 from redis import Redis
 from redis.exceptions import ConnectionError, TimeoutError
@@ -26,6 +31,59 @@ logger = logging.getLogger(__name__)
 HEARTBEAT_KEY = "healthcheck:heartbeat"
 # Maximum age of heartbeat in seconds before considering unhealthy
 MAX_HEARTBEAT_AGE_SECONDS = 120
+VEHICLES_ENDPOINT_TIMEOUT_SECONDS = 5
+
+
+def is_service_hours(now: datetime | None = None) -> bool:
+    ny_tz = ZoneInfo("America/New_York")
+    current = now.astimezone(ny_tz) if now else datetime.now(ny_tz)
+    weekday = current.isoweekday()
+    start = time(5, 0)
+    end = time(0, 30)
+    if weekday in (5, 6):
+        end = time(2, 0)
+    in_day_window = start <= current.time() <= time(23, 59, 59)
+    in_overnight_window = current.time() <= end
+    return in_day_window or in_overnight_window
+
+
+def _extract_vehicle_count(payload: object) -> int | None:
+    if isinstance(payload, dict):
+        features = payload.get("features")
+        if isinstance(features, list):
+            return len(features)
+        data = payload.get("data")
+        if isinstance(data, list):
+            return len(data)
+    return None
+
+
+def check_vehicles_endpoint(url: str, now: datetime | None = None) -> bool:
+    if not is_service_hours(now):
+        logger.info("Skipping vehicles check outside service hours")
+        return True
+
+    try:
+        with urlopen(url, timeout=VEHICLES_ENDPOINT_TIMEOUT_SECONDS) as response:
+            raw = response.read()
+    except URLError as e:
+        logger.error(f"Vehicles endpoint request failed: {e}")
+        return False
+
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as e:
+        logger.error(f"Vehicles endpoint response is not JSON: {e}")
+        return False
+
+    count = _extract_vehicle_count(payload)
+    if count is None:
+        logger.error("Vehicles endpoint response missing vehicles list")
+        return False
+    if count == 0:
+        logger.error("Vehicles endpoint returned empty vehicle list")
+        return False
+    return True
 
 
 def check_health() -> bool:
@@ -98,7 +156,22 @@ def main() -> int:
     Returns:
         0 if healthy, 1 if unhealthy
     """
+    parser = argparse.ArgumentParser(description="Run healthcheck.")
+    parser.add_argument(
+        "--check-vehicles",
+        action="store_true",
+        help="Verify vehicles endpoint has vehicles during service hours",
+    )
+    args = parser.parse_args()
+
     is_healthy = check_health()
+    if is_healthy and args.check_vehicles:
+        vehicles_url = os.environ.get("IMT_VEHICLES_URL")
+        if not vehicles_url:
+            logger.error("IMT_VEHICLES_URL is required for --check-vehicles")
+            is_healthy = False
+        else:
+            is_healthy = check_vehicles_endpoint(vehicles_url)
     if is_healthy:
         print("healthy")
         return 0

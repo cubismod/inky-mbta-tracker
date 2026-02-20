@@ -259,8 +259,9 @@ async def collect_alerts(
 
             collected_alerts = list(alerts.values())
             collected_alerts.sort(
-                key=lambda alert: alert.attributes.updated_at
-                or alert.attributes.created_at,
+                key=lambda alert: (
+                    alert.attributes.updated_at or alert.attributes.created_at
+                ),
                 reverse=True,
             )
 
@@ -344,8 +345,9 @@ async def collect_alerts(
 
         collected_alerts = list(alerts.values())
         collected_alerts.sort(
-            key=lambda alert: alert.attributes.updated_at
-            or alert.attributes.created_at,
+            key=lambda alert: (
+                alert.attributes.updated_at or alert.attributes.created_at
+            ),
             reverse=True,
         )
 
