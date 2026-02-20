@@ -7,7 +7,6 @@ is writing regular heartbeats. Exit code 0 indicates healthy, non-zero
 indicates unhealthy.
 """
 
-import argparse
 import json
 import logging
 import os
@@ -156,19 +155,23 @@ def main() -> int:
     Returns:
         0 if healthy, 1 if unhealthy
     """
-    parser = argparse.ArgumentParser(description="Run healthcheck.")
-    parser.add_argument(
-        "--check-vehicles",
-        action="store_true",
-        help="Verify vehicles endpoint has vehicles during service hours",
-    )
-    args = parser.parse_args()
+
+    # Determine behavior from environment variables (no CLI parsing)
+    def env_flag(name: str, default: bool = False) -> bool:
+        v = os.environ.get(name)
+        if v is None:
+            return default
+        return v.lower() in ("1", "true", "yes", "on")
+
+    check_vehicles = env_flag("IMT_HEALTHCHECK_CHECK_VEHICLES", False)
 
     is_healthy = check_health()
-    if is_healthy and args.check_vehicles:
+    if is_healthy and check_vehicles:
         vehicles_url = os.environ.get("IMT_VEHICLES_URL")
         if not vehicles_url:
-            logger.error("IMT_VEHICLES_URL is required for --check-vehicles")
+            logger.error(
+                "IMT_VEHICLES_URL is required when IMT_HEALTHCHECK_CHECK_VEHICLES is enabled"
+            )
             is_healthy = False
         else:
             is_healthy = check_vehicles_endpoint(vehicles_url)
