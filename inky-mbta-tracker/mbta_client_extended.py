@@ -71,7 +71,7 @@ def parse_shape_data(shapes: Shapes) -> LineRoute:
 # redis expires in 24 hours
 @retry(
     wait=wait_exponential_jitter(initial=5, jitter=20, max=60),
-    before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
+    before_sleep=before_sleep_log(logger, logging.WARNING, exc_info=True),
     retry=retry_if_not_exception_type(CancelledError),
 )
 async def get_shapes(
@@ -226,7 +226,7 @@ async def light_get_alerts(
 @retry(
     wait=wait_exponential_jitter(initial=5, jitter=20, max=60),
     before=before_log(logger, logging.INFO),
-    before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
+    before_sleep=before_sleep_log(logger, logging.WARNING, exc_info=True),
     retry=retry_if_not_exception_type(CancelledError),
 )
 async def watch_mbta_server_side_events(
@@ -277,7 +277,7 @@ async def watch_mbta_server_side_events(
 @retry(
     wait=wait_exponential_jitter(initial=5, jitter=20, max=60),
     before=before_log(logger, logging.INFO),
-    before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
+    before_sleep=before_sleep_log(logger, logging.WARNING, exc_info=True),
     retry=retry_if_not_exception_type(CancelledError),
 )
 async def watch_static_schedule(
@@ -325,7 +325,7 @@ async def watch_static_schedule(
 @retry(
     wait=wait_exponential_jitter(initial=5, jitter=20, max=60),
     before=before_log(logger, logging.INFO),
-    before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
+    before_sleep=before_sleep_log(logger, logging.WARNING, exc_info=True),
     retry=retry_if_not_exception_type(CancelledError),
 )
 async def watch_vehicles(
@@ -484,7 +484,7 @@ async def _watch_station_impl(
 @retry(
     wait=wait_exponential_jitter(initial=5, jitter=20, max=60),
     before=before_log(logger, logging.INFO),
-    before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
+    before_sleep=before_sleep_log(logger, logging.WARNING, exc_info=True),
     retry=retry_if_not_exception_type(CancelledError),
 )
 async def watch_alerts(
