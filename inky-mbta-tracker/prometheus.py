@@ -3,6 +3,7 @@ import os
 from typing import Optional
 
 import aiohttp
+from anyio import get_running_tasks, sleep
 from consts import AIOHTTP_TIMEOUT
 from prometheus_client import Counter, Gauge
 from pydantic import ValidationError
@@ -94,6 +95,13 @@ last_batch_flush_ts = Gauge(
 )
 
 pos_data_count = Gauge("imt_pos_data_count", "Count of members in pos-data", ["name"])
+
+running_tasks = Gauge("imt_tasks", "Number of anyio tasks")
+
+
+async def watch_running_tasks():
+    running_tasks.set(len(get_running_tasks()))
+    await sleep(15)
 
 
 async def query_server_side_events(

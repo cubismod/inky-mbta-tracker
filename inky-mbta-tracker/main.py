@@ -22,6 +22,7 @@ from mbta_client_extended import (
     watch_vehicles,
 )
 from otel_config import initialize_otel, is_otel_enabled, shutdown_otel
+from prometheus import watch_running_tasks
 from prometheus_client import start_http_server
 from redis.asyncio import Redis
 from redis.asyncio.connection import ConnectionPool
@@ -239,6 +240,8 @@ async def __main__() -> None:
 
             # Start heartbeat task for healthcheck monitoring
             tg.start_soon(heartbeat_task, get_redis(redis_pool))
+
+            tg.start_soon(watch_running_tasks)
 
             next_backup = get_next_backup_time()
             # cron/timed tasks
