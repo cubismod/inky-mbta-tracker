@@ -982,7 +982,7 @@ class MBTAApi:
             if span:
                 span.set_attribute("session.closed", True)
             return None, None
-        key = f"stop:{stop_id}:full"
+        key = stop_key(stop_id)
         stop = None
         facilities = None
         cached = await check_cache(self.r_client, key)
@@ -1050,3 +1050,7 @@ class MBTAApi:
                         randint(TWO_MONTHS, YEAR),
                     )
         return stop, facilities
+
+
+def stop_key(stop_id: str):
+    return f"stop:{stop_id}:full"

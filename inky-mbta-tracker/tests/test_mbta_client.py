@@ -175,13 +175,12 @@ class TestLightGetStop:
         self, mock_write_cache: MagicMock, mock_check_cache: MagicMock
     ) -> None:
         mock_redis = AsyncMock()
-        mock_session = AsyncMock()
 
         cached_data = '{"stop_id": "Davis", "long": -71.1218, "lat": 42.3967}'
         mock_check_cache.return_value = cached_data
 
         async with anyio.create_task_group() as tg:
-            result = await light_get_stop(mock_redis, "place-davis", mock_session, tg)
+            result = await light_get_stop(mock_redis, "place-davis", tg)
             tg.cancel_scope.cancel()
 
         assert result is not None
@@ -199,7 +198,6 @@ class TestLightGetStop:
         self, mock_mbta_api: MagicMock, mock_check_cache: MagicMock
     ) -> None:
         mock_redis = AsyncMock()
-        mock_session = AsyncMock()
 
         mock_check_cache.return_value = None
 
@@ -208,7 +206,7 @@ class TestLightGetStop:
         mock_watcher.get_stop.return_value = None
 
         async with anyio.create_task_group() as tg:
-            result = await light_get_stop(mock_redis, "place-davis", mock_session, tg)
+            result = await light_get_stop(mock_redis, "place-davis", tg)
             tg.cancel_scope.cancel()
 
         assert result is None

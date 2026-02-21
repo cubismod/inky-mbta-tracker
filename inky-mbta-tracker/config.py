@@ -18,16 +18,21 @@ class StopSetup(BaseModel):
 
 
 class Config(BaseModel):
+    # for use with the MBTA Inky Display component
     stops: list[StopSetup]
-    # fetches real-time vehicle information with the numbers referring to
-    # the routes
+    # for real-time vehicle mapping
     vehicles_by_route: Optional[list[str]] = None
-    # git repo to store vehicle location information in
+    # for real-time vehicle mapping
+    frequent_bus_lines: Optional[list[str]] = None
+    # deprecated
     vehicle_git_repo: Optional[str] = None
+    # deprecated
     vehicle_git_user: Optional[str] = None
-    # git auth token to use when cloning
+    # deprecated
     vehicle_git_token: Optional[str] = None
+    # deprecated
     vehicle_git_email: Optional[str] = None
+    # web links to status icons to use for Discord ordered in severity from 1-10
     severity_icons: Optional[list[str]] = None
 
 

@@ -9,7 +9,6 @@ from aiohttp import ClientSession
 from anyio import sleep
 from anyio.abc import TaskGroup
 from config import Config
-from consts import MBTA_V3_ENDPOINT
 from geojson import Feature, LineString, Point
 from mbta_client import (
     silver_line_lookup,
@@ -358,32 +357,31 @@ async def collect_alerts(
 
 
 async def get_vehicle_features(
-    r_client: Redis, tg: Optional[TaskGroup] = None
+    r_client: Redis, config: Config, tg: TaskGroup, frequent_buses: bool = False
 ) -> dict[str, Feature]:
     """Extract vehicle features from Redis data"""
     features = dict[str, Feature]()
 
-    async with aiohttp.ClientSession(base_url=MBTA_V3_ENDPOINT) as session:
-        # periodically clean up the set during overnight hours to avoid unnecessary redis calls
-        delete_all_pos_data = False
-        now = datetime.now().astimezone(ZoneInfo("US/Eastern"))
-        pos_data_count = await r_client.scard("pos-data")  # type: ignore[misc]
-        if pos_data_count > 500 and 4 > now.hour > 2:
-            redis_commands.labels("scard").inc()
-            delete_all_pos_data = True
+    # periodically clean up the set during overnight hours to avoid unnecessary redis calls
+    delete_all_pos_data = False
+    now = datetime.now().astimezone(ZoneInfo("US/Eastern"))
+    pos_data_count = await r_client.scard("pos-data")  # type: ignore[misc]
+    if pos_data_count > 500 and 4 > now.hour > 2:
+        redis_commands.labels("scard").inc()
+        delete_all_pos_data = True
 
-        vehicles = await r_client.smembers("pos-data")  # type: ignore[misc]
-        redis_commands.labels("smembers").inc()
-        pl = r_client.pipeline()
+    vehicles = await r_client.smembers("pos-data")  # type: ignore[misc]
+    redis_commands.labels("smembers").inc()
+    pl = r_client.pipeline()
 
-        for vehicle in vehicles:
-            if delete_all_pos_data:
-                await r_client.srem("pos-data", vehicle)  # type: ignore[misc]
-                redis_commands.labels("srem").inc()
-            dec_v = vehicle.decode("utf-8")
-            if dec_v:
-                await pl.get(vehicle)
-                redis_commands.labels("get").inc()
+    for vehicle in vehicles:
+        if delete_all_pos_data:
+            await r_client.srem("pos-data", vehicle)  # type: ignore[misc]
+            redis_commands.labels("srem").inc()
+        dec_v = vehicle.decode("utf-8")
+        if dec_v:
+            await pl.get(vehicle)
+            redis_commands.labels("get").inc()
 
         results = await pl.execute()
         redis_commands.labels("execute").inc()
@@ -399,6 +397,18 @@ async def get_vehicle_features(
                 except ValidationError:
                     continue
 
+                if (
+                    frequent_buses
+                    and config.frequent_bus_lines
+                    and vehicle_info.route not in config.frequent_bus_lines
+                ):
+                    continue
+                elif (
+                    not frequent_buses
+                    and config.frequent_bus_lines
+                    and vehicle_info.route in config.frequent_bus_lines
+                ):
+                    continue
                 if vehicle_info.route and vehicle_info.stop:
                     point = Point((vehicle_info.longitude, vehicle_info.latitude))
                     stop = None
@@ -408,9 +418,7 @@ async def get_vehicle_features(
                     route_icon = "rail"
                     stop_eta = None
                     if not vehicle_info.route.startswith("Amtrak"):
-                        stop = await light_get_stop(
-                            r_client, vehicle_info.stop, session
-                        )
+                        stop = await light_get_stop(r_client, vehicle_info.stop, tg)
                         platform_prediction = None
                         if stop:
                             stop_id = stop.stop_id
@@ -532,16 +540,18 @@ async def get_shapes_features(
     return lines
 
 
-async def background_refresh(r_client: Redis, tg: TaskGroup):
+async def background_refresh(r_client: Redis, config: Config, tg: TaskGroup):
     tracer = get_tracer(__name__) if is_otel_enabled() else None
 
     # Create root span for background refresh task
     if tracer and should_trace_operation("background"):
         with tracer.start_as_current_span("geojson_utils.background_refresh"):
             while True:
-                await get_vehicle_features(r_client, tg)
-                await sleep(2)
+                await get_vehicle_features(r_client, config, tg)
+                await get_vehicle_features(r_client, config, tg, frequent_buses=True)
+                await sleep(30)
     else:
         while True:
-            await get_vehicle_features(r_client, tg)
-            await sleep(2)
+            await get_vehicle_features(r_client, config, tg)
+            await get_vehicle_features(r_client, config, tg, frequent_buses=True)
+            await sleep(30)

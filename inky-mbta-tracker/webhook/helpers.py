@@ -18,7 +18,9 @@ from shared_types.shared_types import (
     DiscordEmbedFooter,
     DiscordWebhook,
 )
-from utils import hex_color_to_int
+
+# hex_color_to_int is imported locally inside functions that need it to avoid
+# circular import issues when this module is imported during test collection.
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +105,9 @@ def determine_alert_routes(alert: AlertResource) -> list[str]:
 
 def determine_alert_color(routes: list[str]) -> int:
     from geojson_utils import lookup_route_color
+
+    # Import locally to avoid circular import at module import time
+    from utils import hex_color_to_int
 
     if routes and len(routes) > 0:
         return hex_color_to_int(lookup_route_color(routes[0]))
@@ -224,6 +229,9 @@ def _webhook_updated_at(
 
 
 def _line_color_emoji(color: Optional[int]) -> str:
+    # Import locally to avoid circular import at module import time
+    from utils import hex_color_to_int
+
     if color is None:
         return "⚪"
     if color == hex_color_to_int("#FA2D27"):

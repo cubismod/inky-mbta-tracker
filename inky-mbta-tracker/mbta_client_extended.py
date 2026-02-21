@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 from random import randint
 from typing import TYPE_CHECKING, Optional
 
+import aiohttp
 from aiohttp import ClientSession
 from aiohttp.client_exceptions import ClientPayloadError
 from aiosseclient import aiosseclient
@@ -12,7 +13,7 @@ from anyio import create_task_group, sleep
 from anyio.abc import TaskGroup
 from anyio.streams.memory import MemoryObjectSendStream
 from config import Config
-from consts import FOUR_WEEKS, MBTA_V3_ENDPOINT, TWO_MONTHS
+from consts import FORTY_FIVE_MIN, FOUR_WEEKS, HOUR, MBTA_V3_ENDPOINT, TEN_MIN, THIRTY_MIN, TWO_MONTHS
 from exceptions import RateLimitExceeded
 from mbta_responses import AlertResource, Shapes
 from opentelemetry.trace import Span
@@ -131,29 +132,25 @@ def silver_line_lookup(route_id: str) -> str:
 async def light_get_stop(
     r_client: Redis,
     stop_id: str,
-    session: ClientSession,
-    tg: Optional[TaskGroup] = None,
+    tg: TaskGroup,
 ) -> Optional[LightStop]:
     tracer = get_tracer(__name__) if is_otel_enabled() else None
     if tracer:
         with tracer.start_as_current_span(
             "mbta_client_extended.light_get_stop", attributes={"stop_id": stop_id}
         ) as span:
-            return await _light_get_stop_impl(r_client, stop_id, session, tg, span)
+            return await _light_get_stop_impl(r_client, stop_id, tg, span)
     else:
-        return await _light_get_stop_impl(r_client, stop_id, session, tg, None)
+        return await _light_get_stop_impl(r_client, stop_id, tg, None)
 
 
 async def _light_get_stop_impl(
     r_client: Redis,
     stop_id: str,
-    session: ClientSession,
-    tg: Optional[TaskGroup],
+    tg: TaskGroup,
     span: Optional[Span],
 ) -> Optional[LightStop]:
     key = f"stop:{stop_id}:light"
-    # Import the module and access functions from it so static analysis won't
-    # complain about unknown import symbols and tests can still patch them.
     import mbta_client
 
     cached = await mbta_client.check_cache(r_client, key)
@@ -169,44 +166,44 @@ async def _light_get_stop_impl(
                 span.set_attribute("error", True)
                 span.set_attribute("error.type", "validation_error")
     else:
+        # if it's not cached then we fetch it in the background and return None; it will be cached for next time
         if span:
             span.set_attribute("cache.hit", False)
-    ls = None
-    # Local import to avoid circular module import at import-time
-    import mbta_client
 
-    MBTAApi = mbta_client.MBTAApi
+        async def fetch_stop(stop_id: str, tg: TaskGroup):
+            import mbta_client
 
-    async with MBTAApi(
-        r_client, stop_id=stop_id, watcher_type=TaskType.LIGHT_STOP
-    ) as watcher:
-        # avoid rate-limiting by spacing out requests
-        await sleep(randint(1, 3))
-        stop = await watcher.get_stop(session, stop_id, tg)
-        if stop and stop[0]:
-            if stop[0].data.attributes.description:
-                stop_id = stop[0].data.attributes.description
-            elif stop[0].data.attributes.name:
-                stop_id = stop[0].data.attributes.name
-            ls = LightStop(
-                stop_id=stop_id,
-                long=stop[0].data.attributes.longitude,
-                lat=stop[0].data.attributes.latitude,
-            )
-        if ls:
-            if tg:
-                tg.start_soon(
-                    write_cache,
-                    r_client,
-                    key,
-                    ls.model_dump_json(),
-                    randint(FOUR_WEEKS, TWO_MONTHS),
-                )
-            else:
-                await write_cache(
-                    r_client, key, ls.model_dump_json(), randint(FOUR_WEEKS, TWO_MONTHS)
-                )
-    return ls
+            await sleep(randint(1, FORTY_FIVE_MIN))
+
+            logger.debug(f"Fetching stop data for {stop_id} from MBTA API")
+            MBTAApi = mbta_client.MBTAApi
+            ls = None
+
+            async with aiohttp.ClientSession(base_url=MBTA_V3_ENDPOINT) as session:
+                async with MBTAApi(
+                    r_client, stop_id=stop_id, watcher_type=TaskType.LIGHT_STOP
+                ) as watcher:
+                    stop = await watcher.get_stop(session, stop_id, tg)
+                    if stop and stop[0]:
+                        if stop[0].data.attributes.description:
+                            stop_id = stop[0].data.attributes.description
+                        elif stop[0].data.attributes.name:
+                            stop_id = stop[0].data.attributes.name
+                        ls = LightStop(
+                            stop_id=stop_id,
+                            long=stop[0].data.attributes.longitude,
+                            lat=stop[0].data.attributes.latitude,
+                        )
+                    if ls:
+                        await write_cache(
+                            r_client,
+                            key,
+                            ls.model_dump_json(),
+                            randint(FOUR_WEEKS, TWO_MONTHS),
+                        )
+
+        tg.start_soon(fetch_stop, stop_id, tg)
+        return None
 
 
 async def light_get_alerts(
