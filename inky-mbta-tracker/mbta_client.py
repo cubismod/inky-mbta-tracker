@@ -954,7 +954,7 @@ class MBTAApi:
 
     # 3 weeks of caching in redis as maybe a stop will change? idk
     @retry(
-        wait=wait_exponential_jitter(initial=5, jitter=20, max=60),
+        wait=wait_exponential_jitter(initial=2, jitter=50, max=120),
         before_sleep=before_sleep_log(logger, logging.WARNING, exc_info=True),
         retry=retry_if_not_exception_type(CancelledError),
     )

@@ -26,14 +26,20 @@ tracer = trace.get_tracer(__name__)
 )
 @limiter.limit("70/minute")
 @cache_ttl(2 * WEEK)
-async def get_shapes(request: Request, commons: GET_DI) -> Response:
+async def get_shapes(
+    request: Request, commons: GET_DI, frequent_buses: bool = False
+) -> Response:
     with tracer.start_as_current_span("api.shapes.get_shapes") as span:
         # Add transaction IDs to the span
         add_transaction_ids_to_span(span)
 
         try:
             features = await get_shapes_features(
-                commons.config, commons.r_client, commons.tg, commons.session
+                commons.config,
+                commons.r_client,
+                commons.tg,
+                commons.session,
+                frequent_buses,
             )
             span.set_attribute("shapes.count", len(features))
             result = {"type": "FeatureCollection", "features": features}
@@ -58,14 +64,20 @@ async def get_shapes(request: Request, commons: GET_DI) -> Response:
 )
 @limiter.limit("70/minute")
 @cache_ttl(2 * WEEK)
-async def get_shapes_json(request: Request, commons: GET_DI) -> Response:
+async def get_shapes_json(
+    request: Request, commons: GET_DI, frequent_buses: bool = False
+) -> Response:
     with tracer.start_as_current_span("api.shapes.get_shapes_json") as span:
         # Add transaction IDs to the span
         add_transaction_ids_to_span(span)
 
         try:
             features = await get_shapes_features(
-                commons.config, commons.r_client, commons.tg, commons.session
+                commons.config,
+                commons.r_client,
+                commons.tg,
+                commons.session,
+                frequent_buses,
             )
             span.set_attribute("shapes.count", len(features))
             feature_collection = FeatureCollection(features)
