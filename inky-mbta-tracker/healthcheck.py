@@ -89,8 +89,8 @@ def check_vehicles_endpoint(url: str, now: datetime | None = None) -> bool:
     if count is None:
         logger.error("Vehicles endpoint response missing vehicles list")
         return False
-    if count == 0:
-        logger.error("Vehicles endpoint returned empty vehicle list")
+    if count <= 2:
+        logger.error("Vehicles endpoint returned nearly empty vehicle list")
         return False
     return True
 

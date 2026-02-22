@@ -55,20 +55,6 @@ def test_check_vehicles_endpoint_empty_features_fails(
     assert not check_vehicles_endpoint("http://example.com/vehicles", now=now)
 
 
-def test_check_vehicles_endpoint_non_empty_features_passes(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    payload = json.dumps({"features": [{"id": 1}]})
-
-    def fake_urlopen(url: str, timeout: float = 5):
-        return DummyResponse(payload)
-
-    monkeypatch.setattr("healthcheck.urlopen", fake_urlopen)
-
-    now = datetime(2026, 2, 16, 10, 0, tzinfo=ZoneInfo("America/New_York"))
-    assert check_vehicles_endpoint("http://example.com/vehicles", now=now)
-
-
 def test_check_vehicles_endpoint_skips_outside_service_hours(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -91,6 +77,8 @@ def test_check_vehicles_endpoint_features_mapping_passes(
             "features": {
                 "33": {"type": "Feature", "id": "33", "properties": {}},
                 "34": {"type": "Feature", "id": "34", "properties": {}},
+                "35": {"type": "Feature", "id": "35", "properties": {}},
+                "36": {"type": "Feature", "id": "36", "properties": {}},
             },
         }
     )
