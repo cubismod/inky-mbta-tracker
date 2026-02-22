@@ -503,40 +503,46 @@ def _optimize_line_geometry(
 
 
 async def get_shapes_features(
-    config: Config, redis_client: Redis, tg: Optional[TaskGroup], session: ClientSession
+    config: Config,
+    redis_client: Redis,
+    tg: Optional[TaskGroup],
+    session: ClientSession,
+    frequent_buses: bool = False,
 ) -> list[Feature]:
     """Get route shapes as GeoJSON features with geometric optimization"""
     lines = list()
-    if config.vehicles_by_route:
+    shapes = None
+    if frequent_buses and config.frequent_bus_lines:
+        shapes = await get_shapes(redis_client, config.frequent_bus_lines, session, tg)
+    elif not frequent_buses and config.vehicles_by_route:
         shapes = await get_shapes(redis_client, config.vehicles_by_route, session, None)
-        if shapes:
-            # Iterate over the mapping of route -> list of line coordinate sequences
-            for k, v in shapes.lines.items():
-                for line in v:
-                    if k.startswith("74") or k.startswith("75"):
-                        k = silver_line_lookup(k)
 
-                    # Optimize geometry based on route type
-                    # Use different tolerances for different route types
-                    if k.startswith("CR"):  # Commuter Rail - less precision needed
-                        tolerance = 0.00005
-                    elif k.startswith(
-                        ("Green", "Blue", "Red", "Orange")
-                    ):  # Rapid transit
-                        tolerance = 0.00002
-                    elif k.isdecimal() or k.startswith("7"):  # Bus routes
-                        tolerance = 0.00003
-                    else:  # Default (Silver Line, etc.)
-                        tolerance = 0.00002
+    if shapes:
+        # Iterate over the mapping of route -> list of line coordinate sequences
+        for k, v in shapes.lines.items():
+            for line in v:
+                if k.startswith("74") or k.startswith("75"):
+                    k = silver_line_lookup(k)
 
-                    optimized_coords = _optimize_line_geometry(line, tolerance)
+                # Optimize geometry based on route type
+                # Use different tolerances for different route types
+                if k.startswith("CR"):  # Commuter Rail - less precision needed
+                    tolerance = 0.00005
+                elif k.startswith(("Green", "Blue", "Red", "Orange")):  # Rapid transit
+                    tolerance = 0.00002
+                elif k.isdecimal() or k.startswith("7"):  # Bus routes
+                    tolerance = 0.00003
+                else:  # Default (Silver Line, etc.)
+                    tolerance = 0.00002
 
-                    lines.append(
-                        Feature(
-                            geometry=LineString(coordinates=optimized_coords),
-                            properties={"route": k},
-                        )
+                optimized_coords = _optimize_line_geometry(line, tolerance)
+
+                lines.append(
+                    Feature(
+                        geometry=LineString(coordinates=optimized_coords),
+                        properties={"route": k},
                     )
+                )
     return lines
 
 

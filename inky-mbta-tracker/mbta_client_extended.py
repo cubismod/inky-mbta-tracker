@@ -13,7 +13,13 @@ from anyio import create_task_group, sleep
 from anyio.abc import TaskGroup
 from anyio.streams.memory import MemoryObjectSendStream
 from config import Config
-from consts import FORTY_FIVE_MIN, FOUR_WEEKS, HOUR, MBTA_V3_ENDPOINT, TEN_MIN, THIRTY_MIN, TWO_MONTHS
+from consts import (
+    MBTA_V3_ENDPOINT,
+    MINUTE,
+    TEN_MIN,
+    TWO_MONTHS,
+    YEAR,
+)
 from exceptions import RateLimitExceeded
 from mbta_responses import AlertResource, Shapes
 from opentelemetry.trace import Span
@@ -173,7 +179,12 @@ async def _light_get_stop_impl(
         async def fetch_stop(stop_id: str, tg: TaskGroup):
             import mbta_client
 
-            await sleep(randint(1, FORTY_FIVE_MIN))
+            await sleep(randint(MINUTE, TEN_MIN))
+            if await check_cache(r_client, key):
+                logger.debug(
+                    f"Stop data for {stop_id} was cached while waiting; skipping fetch"
+                )
+                return
 
             logger.debug(f"Fetching stop data for {stop_id} from MBTA API")
             MBTAApi = mbta_client.MBTAApi
@@ -199,7 +210,7 @@ async def _light_get_stop_impl(
                             r_client,
                             key,
                             ls.model_dump_json(),
-                            randint(FOUR_WEEKS, TWO_MONTHS),
+                            randint(TWO_MONTHS, YEAR),
                         )
 
         tg.start_soon(fetch_stop, stop_id, tg)

@@ -5,13 +5,11 @@ from typing import Any, AsyncGenerator, Optional
 
 from api.middleware.cache_middleware import cache_ttl
 from api.services.vehicle_delta import calculate_diff
-from consts import VEHICLES_CACHE_TTL
 from fastapi import APIRouter, HTTPException, Request, Response
 from geojson import Feature, FeatureCollection, dumps
 from geojson_utils import get_vehicle_features
 from opentelemetry import trace
 from otel_utils import add_transaction_ids_to_span
-from pydantic import ValidationError
 from starlette.responses import StreamingResponse
 from utils import get_vehicles_data
 
@@ -42,12 +40,6 @@ async def get_vehicles(
         add_transaction_ids_to_span(span)
 
         try:
-            cache_key = "api:vehicles"
-            cached_data = await commons.r_client.get(cache_key)
-            if cached_data:
-                span.set_attribute("cache.hit", True)
-                return Response(content=cached_data, media_type="application/json")
-
             if commons.tg:
                 span.set_attribute("cache.hit", False)
                 features = await get_vehicle_features(
@@ -55,11 +47,6 @@ async def get_vehicles(
                 )
                 span.set_attribute("vehicles.count", len(features))
                 result = {"type": "FeatureCollection", "features": features}
-                await commons.r_client.setex(
-                    cache_key,
-                    VEHICLES_CACHE_TTL,
-                    json.dumps(result),
-                )
                 return Response(
                     content=json.dumps(result), media_type="application/json"
                 )
@@ -180,19 +167,6 @@ async def get_vehicles_json(
         add_transaction_ids_to_span(span)
 
         try:
-            cache_key = "api:vehicles:json"
-            cached_data = await commons.r_client.get(cache_key)
-            if cached_data:
-                span.set_attribute("cache.hit", True)
-                return Response(
-                    content=cached_data,
-                    media_type="application/json",
-                    headers={
-                        "Content-Disposition": "attachment; filename=vehicles.json"
-                    },
-                )
-
-            span.set_attribute("cache.hit", False)
             if commons.tg:
                 features = await get_vehicle_features(
                     commons.r_client, commons.config, commons.tg, frequent_buses
@@ -200,7 +174,6 @@ async def get_vehicles_json(
                 span.set_attribute("vehicles.count", len(features))
                 feature_collection = FeatureCollection(features)
                 geojson_str = dumps(feature_collection, sort_keys=True)
-                await commons.r_client.setex(cache_key, VEHICLES_CACHE_TTL, geojson_str)
 
                 return Response(
                     content=geojson_str,
@@ -238,27 +211,6 @@ async def get_vehicles_counts(
         add_transaction_ids_to_span(span)
 
         try:
-            cache_key = "api:vehicles:counts"
-            cached = await commons.r_client.get(cache_key)
-            if cached:
-                span.set_attribute("cache.hit", True)
-                # cached is the JSON string previously produced by the pydantic model.
-                # Decode bytes if necessary and return a typed VehiclesCountResponse.
-                cached_str = (
-                    cached.decode("utf-8")
-                    if isinstance(cached, (bytes, bytearray))
-                    else cached
-                )
-                try:
-                    # Use pydantic validation to produce the typed response object.
-                    return VehiclesCountResponse.model_validate_json(cached_str)
-                except ValidationError:
-                    logger.debug(
-                        "Failed to parse cached vehicle counts; recomputing",
-                        exc_info=True,
-                    )
-
-            span.set_attribute("cache.hit", False)
             if commons.tg:
                 data = await get_vehicles_data(
                     commons.r_client, commons.config, commons.tg
@@ -444,11 +396,6 @@ async def get_vehicles_counts(
                 }
 
                 resp_model = VehiclesCountResponse(**response_payload)
-
-                # Cache serialized JSON (use pydantic's model_dump_json to ensure datetime formatting)
-                await commons.r_client.setex(
-                    cache_key, VEHICLES_CACHE_TTL, resp_model.model_dump_json()
-                )
 
                 return resp_model
         except (ConnectionError, TimeoutError):
