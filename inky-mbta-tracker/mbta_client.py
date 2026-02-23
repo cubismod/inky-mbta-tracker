@@ -954,7 +954,7 @@ class MBTAApi:
 
     # 3 weeks of caching in redis as maybe a stop will change? idk
     @retry(
-        wait=wait_exponential_jitter(initial=5, jitter=20, max=60),
+        wait=wait_exponential_jitter(initial=2, jitter=50, max=120),
         before_sleep=before_sleep_log(logger, logging.WARNING, exc_info=True),
         retry=retry_if_not_exception_type(CancelledError),
     )
@@ -982,7 +982,7 @@ class MBTAApi:
             if span:
                 span.set_attribute("session.closed", True)
             return None, None
-        key = f"stop:{stop_id}:full"
+        key = stop_key(stop_id)
         stop = None
         facilities = None
         cached = await check_cache(self.r_client, key)
@@ -1050,3 +1050,7 @@ class MBTAApi:
                         randint(TWO_MONTHS, YEAR),
                     )
         return stop, facilities
+
+
+def stop_key(stop_id: str):
+    return f"stop:{stop_id}:full"

@@ -232,11 +232,23 @@ async def __main__() -> None:
                     tg.start_soon(
                         watch_alerts, get_redis(redis_pool), route_id, session, config
                     )
+            if config.frequent_bus_lines:
+                for route_id in config.frequent_bus_lines:
+                    start_task(
+                        get_redis(redis_pool),
+                        TaskType.VEHICLES,
+                        send_stream,
+                        tg,
+                        session,
+                        config,
+                        stop,
+                        route_id,
+                    )
 
             # consumer
             tg.start_soon(process_queue_async, receive_stream, tg)
 
-            tg.start_soon(background_refresh, get_redis(redis_pool), tg)
+            tg.start_soon(background_refresh, get_redis(redis_pool), config, tg)
 
             # Start heartbeat task for healthcheck monitoring
             tg.start_soon(heartbeat_task, get_redis(redis_pool))

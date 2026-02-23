@@ -56,15 +56,6 @@ jobs:
           enable-cache: true
       - name: Set up Python
         run: uv python install
-      - name: Cache uv dependencies
-        uses: actions/cache@9255dc7a253b0ccc959486e2bca901246202afeb # v5
-        with:
-          path: |
-            ~/.cache/uv
-            .venv
-          key: uv-${{ runner.os }}-${{ hashFiles('uv.lock', 'pyproject.toml') }}
-          restore-keys: |
-            uv-${{ runner.os }}-
       - name: Install dependencies
         run: uv sync --group dev
       - name: Run ruff check
