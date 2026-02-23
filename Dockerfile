@@ -24,7 +24,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 	--mount=type=cache,target=/root/.cache/uv \
 	uv sync --link-mode=copy --no-dev && uv lock --check
 
-HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=2 \
+HEALTHCHECK --interval=15s --timeout=10s --start-period=60s --retries=2 \
 	CMD uv run python inky-mbta-tracker/healthcheck.py || exit 1
 
 # replace for api server: ["uvicorn", "api_server:app", "--workers", "10", "--loop", "uvloop"]
