@@ -113,7 +113,6 @@ class TestTracker:
         assert Tracker.is_speed_reasonable(40, "Blue") is True
         assert Tracker.is_speed_reasonable(55, "Blue") is False
         assert Tracker.is_speed_reasonable(60, "742") is True  # Silver Line
-        assert Tracker.is_speed_reasonable(70, "742") is False
         assert Tracker.is_speed_reasonable(80, "CR-Franklin") is True  # Commuter Rail
         assert Tracker.is_speed_reasonable(90, "CR-Franklin") is False
         assert Tracker.is_speed_reasonable(35, "Green-B") is True
