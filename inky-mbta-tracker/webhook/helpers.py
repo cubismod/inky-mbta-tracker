@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from typing import Callable, Optional
 
 from config import Config
-from consts import DAY, HOUR, MINUTE
+from consts import DAY, MINUTE
 from mbta_responses import AlertResource
 from pydantic import BaseModel, Field, ValidationError
 from redis import ResponseError
@@ -77,7 +77,7 @@ def _create_embeds_hash(webhook: DiscordWebhook) -> str:
 async def set_webhook_duplicate(r_client: Redis, webhook: DiscordWebhook) -> None:
     try:
         await r_client.hsetex(
-            ALERT_DEDUP_KEY, _create_embeds_hash(webhook), "1", ex=4 * HOUR
+            ALERT_DEDUP_KEY, _create_embeds_hash(webhook), "1", ex=DAY
         )  # pyright: ignore
     except ResponseError as Err:
         logger.error("Redis error during duplicate set", exc_info=Err)
