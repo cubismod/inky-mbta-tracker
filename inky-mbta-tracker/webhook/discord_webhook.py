@@ -71,7 +71,7 @@ async def process_alert_event(
         # filter out low severity commuter rail alerts
         return
     updated_at = datetime.fromisoformat(alert.attributes.updated_at).astimezone(UTC)
-    if updated_at < (datetime.now(UTC) - timedelta(hours=1)):
+    if updated_at < (datetime.now(UTC) - timedelta(minutes=15)):
         logger.debug(
             f"Skipped event for alert {alert.id} due to staleness, timestamp: {updated_at.astimezone(ZoneInfo('America/New_York'))}"
         )
