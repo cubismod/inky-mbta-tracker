@@ -1,3 +1,4 @@
+from datetime import UTC, datetime, timedelta, tzinfo
 import hashlib
 import json
 import logging
@@ -6,6 +7,7 @@ import random
 import time
 from asyncio import CancelledError
 from typing import Callable, Optional, Tuple
+from zoneinfo import ZoneInfo
 
 import aiohttp
 import anyio
@@ -65,8 +67,14 @@ async def process_alert_event(
     routes = webhook_helpers.determine_alert_routes(alert)
     color = webhook_helpers.determine_alert_color(routes)
     route = ", ".join(routes)
-    if "CR" in route and alert.attributes.severity <= 6:
+    if "CR" in route and alert.attributes.severity <= 5:
         # filter out low severity commuter rail alerts
+        return
+    updated_at = datetime.fromisoformat(alert.attributes.updated_at).astimezone(UTC)
+    if updated_at < (
+        datetime.now(UTC) - timedelta(hours=1)
+    ):
+        logger.debug(f"Skipped event for alert {alert.id} due to staleness, timestamp: {updated_at.astimezone(ZoneInfo("America/New_York"))}")
         return
 
     if WEBHOOK_URL:
