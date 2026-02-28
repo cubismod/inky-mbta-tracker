@@ -1,4 +1,3 @@
-from datetime import UTC, datetime, timedelta, tzinfo
 import hashlib
 import json
 import logging
@@ -6,6 +5,7 @@ import os
 import random
 import time
 from asyncio import CancelledError
+from datetime import UTC, datetime, timedelta
 from typing import Callable, Optional, Tuple
 from zoneinfo import ZoneInfo
 
@@ -71,10 +71,10 @@ async def process_alert_event(
         # filter out low severity commuter rail alerts
         return
     updated_at = datetime.fromisoformat(alert.attributes.updated_at).astimezone(UTC)
-    if updated_at < (
-        datetime.now(UTC) - timedelta(hours=1)
-    ):
-        logger.debug(f"Skipped event for alert {alert.id} due to staleness, timestamp: {updated_at.astimezone(ZoneInfo("America/New_York"))}")
+    if updated_at < (datetime.now(UTC) - timedelta(hours=1)):
+        logger.debug(
+            f"Skipped event for alert {alert.id} due to staleness, timestamp: {updated_at.astimezone(ZoneInfo('America/New_York'))}"
+        )
         return
 
     if WEBHOOK_URL:
