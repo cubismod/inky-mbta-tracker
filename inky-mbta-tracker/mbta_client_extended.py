@@ -14,6 +14,7 @@ from anyio.abc import TaskGroup
 from anyio.streams.memory import MemoryObjectSendStream
 from config import Config
 from consts import (
+    HOUR,
     MBTA_V3_ENDPOINT,
     MINUTE,
     TEN_MIN,
@@ -251,8 +252,7 @@ async def watch_mbta_server_side_events(
             try:
                 async with create_task_group() as tg:
                     client = aiosseclient(endpoint, headers=headers)
-                    if os.getenv("IMT_PROMETHEUS_ENDPOINT"):
-                        tg.start_soon(watcher._monitor_health, tg)
+                    tg.start_soon(watcher._monitor_health, tg)
                     try:
                         async for event in client:
                             server_side_events.labels(watcher.gen_unique_id()).inc()
@@ -518,12 +518,28 @@ async def watch_alerts(
     ) as watcher:
         tracker_executions.labels("alerts").inc()
         await sleep(randint(1, 15))
-        await watch_mbta_server_side_events(
-            watcher,
-            endpoint,
-            headers,
-            None,
-            session=session,
-            transit_time_min=0,
-            config=config,
-        )
+
+        async def write_alerts_heartbeat() -> None:
+            heartbeat_key = "heartbeat:events:alerts"
+            if route_id:
+                heartbeat_key = f"heartbeat:events:alerts:{route_id}"
+            while True:
+                try:
+                    await r_client.set(
+                        heartbeat_key, datetime.now(UTC).isoformat(), ex=2 * HOUR
+                    )
+                except Exception as e:
+                    logger.error("Failed to write alerts heartbeat", exc_info=e)
+                await sleep(30)
+
+        async with create_task_group() as tg:
+            tg.start_soon(write_alerts_heartbeat)
+            await watch_mbta_server_side_events(
+                watcher,
+                endpoint,
+                headers,
+                None,
+                session=session,
+                transit_time_min=0,
+                config=config,
+            )
