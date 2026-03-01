@@ -194,27 +194,28 @@ async def __main__() -> None:
         start_http_server(int(os.getenv("IMT_PROM_PORT", "8000")))
     async with aiohttp.ClientSession(base_url=MBTA_V3_ENDPOINT) as session:
         async with create_task_group() as tg:
-            for stop in config.stops:
-                if stop.schedule_only:
-                    start_task(
-                        get_redis(redis_pool),
-                        TaskType.SCHEDULES,
-                        send_stream,
-                        tg,
-                        session,
-                        config,
-                        stop,
-                    )
-                else:
-                    start_task(
-                        get_redis(redis_pool),
-                        TaskType.SCHEDULE_PREDICTIONS,
-                        send_stream,
-                        tg,
-                        session,
-                        config,
-                        stop,
-                    )
+            if config.stops:
+                for stop in config.stops:
+                    if stop.schedule_only:
+                        start_task(
+                            get_redis(redis_pool),
+                            TaskType.SCHEDULES,
+                            send_stream,
+                            tg,
+                            session,
+                            config,
+                            stop,
+                        )
+                    else:
+                        start_task(
+                            get_redis(redis_pool),
+                            TaskType.SCHEDULE_PREDICTIONS,
+                            send_stream,
+                            tg,
+                            session,
+                            config,
+                            stop,
+                        )
             if config.vehicles_by_route:
                 for route_id in config.vehicles_by_route:
                     start_task(
@@ -224,7 +225,7 @@ async def __main__() -> None:
                         tg,
                         session,
                         config,
-                        stop,
+                        None,
                         route_id,
                     )
                 # Start alerts SSE watchers for each configured route
@@ -241,7 +242,7 @@ async def __main__() -> None:
                         tg,
                         session,
                         config,
-                        stop,
+                        None,
                         route_id,
                     )
 

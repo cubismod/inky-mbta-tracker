@@ -8,7 +8,6 @@ from types import TracebackType
 from typing import Optional
 from zoneinfo import ZoneInfo
 
-import aiohttp
 from aiohttp import ClientSession
 from anyio import sleep
 from anyio.abc import TaskGroup
@@ -40,10 +39,7 @@ from otel_utils import (
     add_transaction_ids_to_span,
     should_trace_operation,
 )
-from prometheus import (
-    mbta_api_requests,
-    query_server_side_events,
-)
+from prometheus import mbta_api_requests
 from pydantic import TypeAdapter, ValidationError
 from redis.asyncio.client import Redis
 from redis.exceptions import RedisError
@@ -225,56 +221,89 @@ class MBTAApi:
         return False
 
     async def _monitor_health(self, tg: TaskGroup) -> None:
-        hc_fail_threshold = 2 * HOUR
+        hc_fail_threshold = 5 * MINUTE
         ny_tz = ZoneInfo("America/New_York")
         failtime: Optional[datetime] = None
         if self.watcher_type == TaskType.ALERTS:
-            await sleep(6 * HOUR)
-            tg.cancel_scope.cancel()
-            return
-        if self.route:
-            if (
-                "Red" in self.route
-                or "Orange" in self.route
-                or "Blue" in self.route
-                or "Green" in self.route
-                or "Mattapan" in self.route
-                or self.route.startswith("7")
-            ):
-                hc_fail_threshold = 60
-            if "CR" in self.route or self.route == "746":
-                hc_fail_threshold = HOUR + (randint(0, 120) * 60)
-        async with aiohttp.ClientSession() as session:
-            logger.debug("started hc monitoring")
+            hc_fail_threshold = 30 * MINUTE
+            if self.route:
+                hc_fail_threshold = 20 * MINUTE
+            r = Redis(
+                host=os.environ.get("IMT_REDIS_ENDPOINT") or "",
+                port=int(os.environ.get("IMT_REDIS_PORT", "6379") or ""),
+                password=os.environ.get("IMT_REDIS_PASSWORD") or "",
+            )
+            logger.debug("started alerts hc monitoring")
             await sleep(10 * MINUTE)
             while True:
                 await sleep(randint(20, 90))
                 now = datetime.now(ny_tz)
                 if failtime and now >= failtime:
                     logger.info(
-                        "Refreshing MBTA server side events due to health check failure/scheduled restart."
+                        f"Refreshing alerts watcher (route={self.route}) due to health check failure/scheduled restart."
                     )
                     tg.cancel_scope.cancel()
                     return
-                if self.get_service_status():
-                    prom_resp = await query_server_side_events(
-                        session,
-                        os.getenv("IMT_PROMETHEUS_JOB", "imt"),
-                        self.gen_unique_id(),
-                    )
-                    if prom_resp:
-                        results = prom_resp.data.result
-                        if results:
-                            for result in results:
-                                if len(result.value) > 0:
-                                    val = float(result.value[1])
-                                    if val <= 0.001:
-                                        if not failtime:
-                                            failtime = now + timedelta(
-                                                seconds=hc_fail_threshold
-                                            )
-                                else:
-                                    failtime = None
+                heartbeat_key = "heartbeat:events:alerts"
+                if self.route:
+                    heartbeat_key = f"heartbeat:events:alerts:{self.route}"
+                try:
+                    heartbeat_value = await r.get(heartbeat_key)
+                    if heartbeat_value:
+                        heartbeat_time = datetime.fromisoformat(
+                            heartbeat_value.decode("utf-8")
+                        )
+                        now_utc = datetime.now(UTC)
+                        age_seconds = (now_utc - heartbeat_time).total_seconds()
+                        if age_seconds > hc_fail_threshold:
+                            if not failtime:
+                                failtime = now + timedelta(seconds=hc_fail_threshold)
+                    else:
+                        if not failtime:
+                            failtime = now + timedelta(seconds=hc_fail_threshold)
+                except (ValueError, TypeError) as err:
+                    logger.debug(f"Error reading alerts heartbeat: {err}")
+                    if not failtime:
+                        failtime = now + timedelta(seconds=hc_fail_threshold)
+        if self.route:
+            if "CR" in self.route or self.route == "746":
+                hc_fail_threshold = 90 * MINUTE
+        r = Redis(
+            host=os.environ.get("IMT_REDIS_ENDPOINT") or "",
+            port=int(os.environ.get("IMT_REDIS_PORT", "6379") or ""),
+            password=os.environ.get("IMT_REDIS_PASSWORD") or "",
+        )
+        logger.debug("started hc monitoring")
+        await sleep(10 * MINUTE)
+        while True:
+            await sleep(randint(20, 90))
+            now = datetime.now(ny_tz)
+            if failtime and now >= failtime:
+                logger.info(
+                    f"Refreshing {self.watcher_type} watcher (route={self.route}, stop={self.stop_id}) due to health check failure/scheduled restart."
+                )
+                tg.cancel_scope.cancel()
+                return
+            if self.get_service_status():
+                heartbeat_key = f"heartbeat:events:{self.route}"
+                try:
+                    heartbeat_value = await r.get(heartbeat_key)
+                    if heartbeat_value:
+                        heartbeat_time = datetime.fromisoformat(
+                            heartbeat_value.decode("utf-8")
+                        )
+                        now_utc = datetime.now(UTC)
+                        age_seconds = (now_utc - heartbeat_time).total_seconds()
+                        if age_seconds > hc_fail_threshold:
+                            if not failtime:
+                                failtime = now + timedelta(seconds=hc_fail_threshold)
+                    else:
+                        if not failtime:
+                            failtime = now + timedelta(seconds=hc_fail_threshold)
+                except (ValueError, TypeError) as err:
+                    logger.debug(f"Error reading heartbeat: {err}")
+                    if not failtime:
+                        failtime = now + timedelta(seconds=hc_fail_threshold)
 
     async def get_headsign(
         self, trip_id: str, session: ClientSession, tg: TaskGroup

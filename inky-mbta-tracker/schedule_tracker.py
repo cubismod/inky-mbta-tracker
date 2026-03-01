@@ -15,6 +15,7 @@ import humanize
 from anyio import to_thread
 from anyio.abc import TaskGroup
 from anyio.streams.memory import MemoryObjectReceiveStream
+from consts import HOUR
 from geojson import Feature, Point
 from otel_config import get_tracer, is_otel_enabled
 from otel_utils import (
@@ -114,6 +115,16 @@ class Tracker:
         logger.debug(
             f"action={event.action} route={event.route} vehicle_id={event.id} lat={event.latitude} long={event.longitude} status={event.current_status} speed={event.speed}"
         )
+
+    async def write_event_heartbeat(self, route_id: str) -> None:
+        heartbeat_key = f"heartbeat:events:{route_id}"
+        try:
+            await self.redis.set(
+                heartbeat_key, datetime.now(UTC).isoformat(), ex=2 * HOUR
+            )
+            redis_commands.labels("set").inc()
+        except ResponseError as err:
+            logger.error("Failed to write event heartbeat", exc_info=err)
 
     @staticmethod
     def is_speed_reasonable(speed: float, line: str) -> bool:
@@ -281,6 +292,7 @@ class Tracker:
 
                 schedule_events.labels(action, event.route_id, event.stop).inc()
                 self.log_prediction(event)
+                await self.write_event_heartbeat(event.route_id)
         if isinstance(event, VehicleRedisSchema):
             # Generate vehicle tracking transaction ID for individual vehicle updates
             vehicle_track_txn_id = set_vehicle_track_transaction_id(event.id)
@@ -317,6 +329,7 @@ class Tracker:
             last_vehicle_write_ts.labels("tracker").set(time.time())
 
             self.log_vehicle(event)
+            await self.write_event_heartbeat(event.route)
 
     async def rm(
         self, event: ScheduleEvent | VehicleRedisSchema, pipeline: Pipeline

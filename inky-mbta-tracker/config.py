@@ -19,7 +19,7 @@ class StopSetup(BaseModel):
 
 class Config(BaseModel):
     # for use with the MBTA Inky Display component
-    stops: list[StopSetup]
+    stops: Optional[list[StopSetup]] = None
     # for real-time vehicle mapping
     vehicles_by_route: Optional[list[str]] = None
     # for real-time vehicle mapping
