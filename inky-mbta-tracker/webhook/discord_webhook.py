@@ -114,7 +114,10 @@ def create_webhook_object(
     if alert.attributes.image:
         embed.image = DiscordEmbedMedia(url=alert.attributes.image)
     if config.severity_icons and len(config.severity_icons) >= 10:
-        avatar_url = config.severity_icons[alert.attributes.severity - 1]
+        severity_index = max(
+            0, min(alert.attributes.severity - 1, len(config.severity_icons) - 1)
+        )
+        avatar_url = config.severity_icons[severity_index]
     return DiscordWebhook(avatar_url=avatar_url, embeds=[embed])
 
 
@@ -355,7 +358,11 @@ async def _delayed_send_batch(r_client: RedisClient, config: Config) -> None:
         await r_client.delete(webhook_helpers._batch_sender_key())
 
 
-@retry(stop=stop_after_attempt(5), wait=wait_exponential(multiplier=1, min=4, max=10))
+@retry(
+    stop=stop_after_attempt(5),
+    wait=wait_exponential(multiplier=1, min=4, max=10),
+    retry=retry_if_not_exception_type(CancelledError),
+)
 async def send_batch_entry(
     batch_id: str,
     r_client: RedisClient,
@@ -375,6 +382,18 @@ async def send_batch_entry(
             return
         items = batch_entry.items
         if not items:
+            return
+        if len(items) == 1:
+            item = items[0]
+            try:
+                webhook = DiscordWebhook.model_validate_json(item.webhook_json)
+            except ValidationError as err:
+                logger.error(
+                    f"Failed to parse pending batch payload for {item.webhook_id}",
+                    exc_info=err,
+                )
+                return
+            await _send_webhook_payload(item.webhook_id, webhook, r_client)
             return
         grouped = webhook_helpers.build_grouped_webhook(items, config)
         batch_message_id = f"{BATCH_WEBHOOK_ID}:{batch_id}"
@@ -482,6 +501,21 @@ async def send_pending_batch(
                 await r_client.delete(webhook_helpers._batch_key())
                 return
             await _send_webhook_payload(item.webhook_id, webhook, r_client)
+            individual_entry = PendingBatchEntry(
+                batch_id=item.webhook_id,
+                ready_at=0.0,
+                items=[item],
+            )
+            await r_client.set(
+                webhook_helpers._batch_entry_key(item.webhook_id),
+                individual_entry.model_dump_json(),
+                ex=BATCH_ENTRY_TTL,
+            )
+            await r_client.set(
+                webhook_helpers._alert_batch_key(item.webhook_id),
+                item.webhook_id,
+                ex=BATCH_ENTRY_TTL,
+            )
             await r_client.delete(webhook_helpers._batch_key())
             return
 
@@ -653,7 +687,14 @@ async def delete_webhook(webhook_id: str, r_client: Redis):
     async with aiohttp.ClientSession() as session:
         existing = await check_cache(r_client, f"webhook:{webhook_id}")
         if existing and WEBHOOK_URL:
-            existing_val = WebhookRedisEntry.model_validate_json(existing)
+            try:
+                existing_val = WebhookRedisEntry.model_validate_json(existing)
+            except ValidationError as err:
+                logger.error(
+                    f"Failed to parse existing webhook cache for {webhook_id}",
+                    exc_info=err,
+                )
+                return
             await delete_cache(r_client, f"webhook:{webhook_id}")
             try:
                 async with session.delete(
@@ -665,8 +706,8 @@ async def delete_webhook(webhook_id: str, r_client: Redis):
                         )
                         return
                 logger.debug(f"Deleted webhook ID: {webhook_id}")
-            except ValidationError as err:
+            except aiohttp.ClientError as err:
                 logger.error(
-                    f"Failed to parse existing webhook cache for {webhook_id}",
+                    f"HTTP error deleting webhook {webhook_id}",
                     exc_info=err,
                 )
