@@ -251,10 +251,9 @@ async def watch_mbta_server_side_events(
         try:
             try:
                 async with create_task_group() as tg:
-                    client = aiosseclient(endpoint, headers=headers)
                     tg.start_soon(watcher._monitor_health, tg)
                     try:
-                        async for event in client:
+                        async for event in aiosseclient(endpoint, headers=headers):
                             server_side_events.labels(watcher.gen_unique_id()).inc()
                             tg.start_soon(
                                 watcher.parse_live_api_response,
