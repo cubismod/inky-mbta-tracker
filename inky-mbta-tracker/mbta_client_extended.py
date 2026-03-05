@@ -279,6 +279,7 @@ async def watch_mbta_server_side_events(
         except* ClientPayloadError as eg:
             for err in eg.exceptions:
                 logger.warning("SSE client payload error", exc_info=err)
+        await sleep(randint(5, 15))     # in case we invoke a 429 which is just logged but not thrown from aiosseclient
 
 
 @retry(
