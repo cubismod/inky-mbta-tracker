@@ -4,11 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import anyio
 import pytest
-from mbta_client import (
-    MBTAApi,
-    determine_station_id,
-    silver_line_lookup,
-)
+from mbta_client import MBTAApi, silver_line_lookup
 from mbta_client_extended import light_get_alerts, light_get_stop
 from mbta_responses import (
     CarriageStatus,
@@ -32,30 +28,6 @@ class TestSilverLineLookup:
     def test_silver_line_lookup_unknown_route(self) -> None:
         assert silver_line_lookup("999") == "999"
         assert silver_line_lookup("Red") == "Red"
-
-
-class TestDetermineStationId:
-    def test_north_station_variants(self) -> None:
-        assert determine_station_id("North Station") == ("place-north", True)
-        assert determine_station_id("BNT") == ("place-north", True)
-
-    def test_south_station_variants(self) -> None:
-        assert determine_station_id("South Station") == ("place-sstat", True)
-        assert determine_station_id("NEC-2287") == ("place-sstat", True)
-
-    def test_back_bay_variants(self) -> None:
-        assert determine_station_id("Back Bay") == ("place-bbsta", True)
-        assert determine_station_id("NEC-1851") == ("place-bbsta", True)
-
-    def test_ruggles_variants(self) -> None:
-        assert determine_station_id("Ruggles") == ("place-rugg", True)
-        assert determine_station_id("NEC-2265") == ("place-rugg", True)
-
-    def test_providence_variants(self) -> None:
-        assert determine_station_id("Providence") == ("place-NEC-1851", True)
-
-    def test_unknown_station(self) -> None:
-        assert determine_station_id("place-davis") == ("place-davis", False)
 
 
 class TestLightStop:
@@ -203,13 +175,12 @@ class TestLightGetStop:
         self, mock_write_cache: MagicMock, mock_check_cache: MagicMock
     ) -> None:
         mock_redis = AsyncMock()
-        mock_session = AsyncMock()
 
         cached_data = '{"stop_id": "Davis", "long": -71.1218, "lat": 42.3967}'
         mock_check_cache.return_value = cached_data
 
         async with anyio.create_task_group() as tg:
-            result = await light_get_stop(mock_redis, "place-davis", mock_session, tg)
+            result = await light_get_stop(mock_redis, "place-davis", tg)
             tg.cancel_scope.cancel()
 
         assert result is not None
@@ -227,7 +198,6 @@ class TestLightGetStop:
         self, mock_mbta_api: MagicMock, mock_check_cache: MagicMock
     ) -> None:
         mock_redis = AsyncMock()
-        mock_session = AsyncMock()
 
         mock_check_cache.return_value = None
 
@@ -236,7 +206,7 @@ class TestLightGetStop:
         mock_watcher.get_stop.return_value = None
 
         async with anyio.create_task_group() as tg:
-            result = await light_get_stop(mock_redis, "place-davis", mock_session, tg)
+            result = await light_get_stop(mock_redis, "place-davis", tg)
             tg.cancel_scope.cancel()
 
         assert result is None

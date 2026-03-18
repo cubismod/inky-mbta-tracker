@@ -5,23 +5,17 @@ from collections import Counter
 from datetime import UTC, datetime, timedelta
 from random import randint
 from types import TracebackType
-from typing import TYPE_CHECKING, Optional
+from typing import Optional
 from zoneinfo import ZoneInfo
 
-import aiohttp
-import anyio
 from aiohttp import ClientSession
 from anyio import sleep
 from anyio.abc import TaskGroup
 from anyio.streams.memory import MemoryObjectSendStream
 from config import Config
-from consts import DAY, HOUR, MINUTE, TWO_MONTHS, YEAR
-from discord_webhook import delete_webhook, process_alert_event
+from consts import DAY, HOUR, MINUTE, TWO_MONTHS, WEEK, YEAR
 from exceptions import RateLimitExceeded
-from mbta_client_extended import (
-    determine_station_id,
-    silver_line_lookup,
-)
+from mbta_client_extended import silver_line_lookup
 from mbta_responses import (
     AlertResource,
     Facilities,
@@ -39,30 +33,26 @@ from mbta_responses import (
     TypeAndID,
     Vehicle,
 )
-from ollama_imt import OllamaClientIMT
-from prometheus import (
-    mbta_api_requests,
-    query_server_side_events,
+from opentelemetry.trace import Span
+from otel_config import get_tracer, is_otel_enabled
+from otel_utils import (
+    add_transaction_ids_to_span,
+    should_trace_operation,
 )
+from prometheus import mbta_api_requests
 from pydantic import TypeAdapter, ValidationError
 from redis.asyncio.client import Redis
 from redis.exceptions import RedisError
 from redis_cache import check_cache, write_cache
 from schedule_tracker import ScheduleEvent, VehicleRedisSchema, dummy_schedule_event
-from shared_types.shared_types import (
-    TaskType,
-    TrackAssignment,
-    TrackAssignmentType,
-)
+from shared_types.shared_types import TaskType
 from tenacity import (
     before_sleep_log,
     retry,
     retry_if_not_exception_type,
     wait_exponential_jitter,
 )
-
-if TYPE_CHECKING:
-    from track_predictor.track_predictor import TrackPredictor
+from webhook.discord_webhook import delete_webhook, process_alert_event
 
 MBTA_AUTH = os.environ.get("AUTH_TOKEN")
 logger = logging.getLogger(__name__)
@@ -88,7 +78,6 @@ class MBTAApi:
     facilities: Optional[Facilities]
     expiration_time: Optional[datetime]
     r_client: Redis
-    track_predictor: "TrackPredictor"
     show_on_display: bool = True
     route_substring_filter: Optional[str] = None
 
@@ -111,9 +100,6 @@ class MBTAApi:
         self.expiration_time = expiration_time
         self.watcher_type = watcher_type
         self.r_client = r_client
-        from track_predictor.track_predictor import TrackPredictor
-
-        self.track_predictor = TrackPredictor(r_client)
         self.show_on_display = show_on_display
         self.route_substring_filter = route_substring_filter
 
@@ -235,56 +221,89 @@ class MBTAApi:
         return False
 
     async def _monitor_health(self, tg: TaskGroup) -> None:
-        hc_fail_threshold = 2 * HOUR
+        hc_fail_threshold = 5 * MINUTE
         ny_tz = ZoneInfo("America/New_York")
         failtime: Optional[datetime] = None
         if self.watcher_type == TaskType.ALERTS:
-            await sleep(6 * HOUR)
-            tg.cancel_scope.cancel()
-            return
-        if self.route:
-            if (
-                "Red" in self.route
-                or "Orange" in self.route
-                or "Blue" in self.route
-                or "Green" in self.route
-                or "Mattapan" in self.route
-                or self.route.startswith("7")
-            ):
-                hc_fail_threshold = 60
-            if "CR" in self.route or self.route == "746":
-                hc_fail_threshold = HOUR + (randint(0, 120) * 60)
-        async with aiohttp.ClientSession() as session:
-            logger.debug("started hc monitoring")
+            hc_fail_threshold = 30 * MINUTE
+            if self.route:
+                hc_fail_threshold = 20 * MINUTE
+            r = Redis(
+                host=os.environ.get("IMT_REDIS_ENDPOINT") or "",
+                port=int(os.environ.get("IMT_REDIS_PORT", "6379") or ""),
+                password=os.environ.get("IMT_REDIS_PASSWORD") or "",
+            )
+            logger.debug("started alerts hc monitoring")
             await sleep(10 * MINUTE)
             while True:
                 await sleep(randint(20, 90))
                 now = datetime.now(ny_tz)
                 if failtime and now >= failtime:
                     logger.info(
-                        "Refreshing MBTA server side events due to health check failure/scheduled restart."
+                        f"Refreshing alerts watcher (route={self.route}) due to health check failure/scheduled restart."
                     )
                     tg.cancel_scope.cancel()
                     return
-                if self.get_service_status():
-                    prom_resp = await query_server_side_events(
-                        session,
-                        os.getenv("IMT_PROMETHEUS_JOB", "imt"),
-                        self.gen_unique_id(),
-                    )
-                    if prom_resp:
-                        results = prom_resp.data.result
-                        if results:
-                            for result in results:
-                                if len(result.value) > 0:
-                                    val = float(result.value[1])
-                                    if val <= 0.001:
-                                        if not failtime:
-                                            failtime = now + timedelta(
-                                                seconds=hc_fail_threshold
-                                            )
-                                else:
-                                    failtime = None
+                heartbeat_key = "heartbeat:events:alerts"
+                if self.route:
+                    heartbeat_key = f"heartbeat:events:alerts:{self.route}"
+                try:
+                    heartbeat_value = await r.get(heartbeat_key)
+                    if heartbeat_value:
+                        heartbeat_time = datetime.fromisoformat(
+                            heartbeat_value.decode("utf-8")
+                        )
+                        now_utc = datetime.now(UTC)
+                        age_seconds = (now_utc - heartbeat_time).total_seconds()
+                        if age_seconds > hc_fail_threshold:
+                            if not failtime:
+                                failtime = now + timedelta(seconds=hc_fail_threshold)
+                    else:
+                        if not failtime:
+                            failtime = now + timedelta(seconds=hc_fail_threshold)
+                except (ValueError, TypeError) as err:
+                    logger.debug(f"Error reading alerts heartbeat: {err}")
+                    if not failtime:
+                        failtime = now + timedelta(seconds=hc_fail_threshold)
+        if self.route:
+            if "CR" in self.route or self.route == "746":
+                hc_fail_threshold = 90 * MINUTE
+        r = Redis(
+            host=os.environ.get("IMT_REDIS_ENDPOINT") or "",
+            port=int(os.environ.get("IMT_REDIS_PORT", "6379") or ""),
+            password=os.environ.get("IMT_REDIS_PASSWORD") or "",
+        )
+        logger.debug("started hc monitoring")
+        await sleep(10 * MINUTE)
+        while True:
+            await sleep(randint(20, 90))
+            now = datetime.now(ny_tz)
+            if failtime and now >= failtime:
+                logger.info(
+                    f"Refreshing {self.watcher_type} watcher (route={self.route}, stop={self.stop_id}) due to health check failure/scheduled restart."
+                )
+                tg.cancel_scope.cancel()
+                return
+            if self.get_service_status():
+                heartbeat_key = f"heartbeat:events:{self.route}"
+                try:
+                    heartbeat_value = await r.get(heartbeat_key)
+                    if heartbeat_value:
+                        heartbeat_time = datetime.fromisoformat(
+                            heartbeat_value.decode("utf-8")
+                        )
+                        now_utc = datetime.now(UTC)
+                        age_seconds = (now_utc - heartbeat_time).total_seconds()
+                        if age_seconds > hc_fail_threshold:
+                            if not failtime:
+                                failtime = now + timedelta(seconds=hc_fail_threshold)
+                    else:
+                        if not failtime:
+                            failtime = now + timedelta(seconds=hc_fail_threshold)
+                except (ValueError, TypeError) as err:
+                    logger.debug(f"Error reading heartbeat: {err}")
+                    if not failtime:
+                        failtime = now + timedelta(seconds=hc_fail_threshold)
 
     async def get_headsign(
         self, trip_id: str, session: ClientSession, tg: TaskGroup
@@ -318,7 +337,7 @@ class MBTAApi:
                     if self.route:
                         await self.r_client.delete(f"alerts:route:{self.route}")
                     for a in alerts:
-                        await process_alert_event(a, self.r_client, config)
+                        await process_alert_event(a, self.r_client, config, tg)
                         await write_cache(
                             self.r_client,
                             f"alert:{a.id}",
@@ -340,6 +359,9 @@ class MBTAApi:
                                     await self.r_client.sadd(
                                         f"alerts:trip:{ent.trip}", a.id
                                     )  # type: ignore[misc]
+                                    await self.r_client.expire(
+                                        f"alerts:trip:{ent.trip}", WEEK
+                                    )
                     return
                 elif event_type in ("add", "update"):
                     a = AlertResource.model_validate_json(data, strict=False)
@@ -348,7 +370,7 @@ class MBTAApi:
                     )
                     if self.route:
                         await self.r_client.sadd(f"alerts:route:{self.route}", a.id)  # type: ignore[misc]
-                    await process_alert_event(a, self.r_client, config)
+                    await process_alert_event(a, self.r_client, config, tg)
                     if a.attributes and a.attributes.informed_entity:
                         for ent in a.attributes.informed_entity:
                             if ent.route:
@@ -359,6 +381,9 @@ class MBTAApi:
                                 await self.r_client.sadd(
                                     f"alerts:trip:{ent.trip}", a.id
                                 )  # type: ignore[misc]
+                                await self.r_client.expire(
+                                    f"alerts:trip:{ent.trip}", WEEK
+                                )
                     return
                 elif event_type == "remove":
                     type_and_id = TypeAndID.model_validate_json(data, strict=False)
@@ -385,6 +410,9 @@ class MBTAApi:
                                                 f"alerts:trip:{ent.trip}",
                                                 type_and_id.id,
                                             )  # type: ignore[misc]
+                                            await self.r_client.expire(
+                                                f"alerts:trip:{ent.trip}", WEEK
+                                            )
                             except ValidationError:
                                 pass
                     finally:
@@ -640,262 +668,6 @@ class MBTAApi:
                     if self.stop:
                         stop_name = self.stop.data.attributes.name
 
-                    # Track prediction integration
-                    track_number = None
-                    track_confidence = None
-
-                    # Get detailed stop information for track data
-                    if item.relationships.stop and item.relationships.stop.data:
-                        stop_data = await self.get_stop(
-                            session, item.relationships.stop.data.id, tg
-                        )
-                        if stop_data[0]:  # stop_data is a tuple (Stop, Facilities)
-                            stop_info = stop_data[0]
-                            track_number = stop_info.data.attributes.platform_code
-
-                            station_id, has_track_predictions = determine_station_id(
-                                self.stop_id or item.relationships.stop.data.id
-                            )
-
-                            # For commuter rail, store historical assignment and generate prediction
-                            if (
-                                route_id.startswith("CR")
-                                and track_number
-                                and has_track_predictions
-                            ):
-                                # Store historical track assignment
-                                try:
-                                    assignment = TrackAssignment(
-                                        station_id=station_id,
-                                        route_id=route_id,
-                                        trip_id=trip_id,
-                                        headsign=headsign,
-                                        direction_id=int(
-                                            item.attributes.direction_id or 0
-                                        ),
-                                        assignment_type=TrackAssignmentType.HISTORICAL,
-                                        track_number=track_number,
-                                        scheduled_time=schedule_time,
-                                        actual_time=schedule_time,  # For predictions, use scheduled time
-                                        recorded_time=datetime.now(UTC),
-                                        day_of_week=schedule_time.weekday(),
-                                        hour=schedule_time.hour,
-                                        minute=schedule_time.minute,
-                                    )
-
-                                    tg.start_soon(
-                                        self.track_predictor.store_historical_assignment,
-                                        assignment,
-                                        tg,
-                                    )
-
-                                    # Validate previous predictions
-                                    tg.start_soon(
-                                        self.track_predictor.validate_prediction,
-                                        assignment.station_id,
-                                        route_id,
-                                        trip_id,
-                                        schedule_time,
-                                        track_number,
-                                        tg,
-                                    )
-
-                                except (ConnectionError, TimeoutError) as e:
-                                    logger.error(
-                                        f"Failed to store historical assignment due to Redis connection issue: {e}",
-                                        exc_info=True,
-                                    )
-                                except ValidationError as e:
-                                    logger.error(
-                                        f"Failed to store historical assignment due to validation error: {e}",
-                                        exc_info=True,
-                                    )
-
-                            # Generate prediction for future trips (only for commuter rail)
-                            elif (
-                                route_id.startswith("CR")
-                                and not track_number
-                                and has_track_predictions
-                            ):
-                                try:
-                                    if self.track_predictor:
-
-                                        async def _run_and_log_predict(
-                                            station_id_: str,
-                                            route_id_: str,
-                                            trip_id_: str,
-                                            headsign_: str,
-                                            direction_id_: int,
-                                            scheduled_time_: datetime,
-                                            tg_: TaskGroup,
-                                        ) -> None:
-                                            """
-                                            Wrapper around TrackPredictor.predict_track that:
-                                            - checks the existing prediction cache and skips work if already cached
-                                            - adds a small random jitter before predicting to reduce simultaneous runs
-                                            - re-checks cache and negative-cache after jitter to be conservative
-                                            - concurrent ML predictions (when no cache) are acceptable
-                                            """
-                                            # Normalize station id to canonical station for Redis keys
-                                            norm_station_id = (
-                                                self.track_predictor.normalize_station(
-                                                    station_id_
-                                                )
-                                            )
-                                            cache_key = f"track_prediction:{norm_station_id}:{route_id_}:{trip_id_}:{scheduled_time_.date()}"
-                                            negative_cache_key = f"negative_{cache_key}"
-
-                                            # Conservative pre-check: skip if a positive or negative cache exists
-                                            try:
-                                                cached = await check_cache(
-                                                    self.r_client, cache_key
-                                                )
-                                                if cached:
-                                                    logger.debug(
-                                                        "Skipping prediction because cached result exists",
-                                                        extra={
-                                                            "cache_key": cache_key,
-                                                            "station_id": norm_station_id,
-                                                            "route_id": route_id_,
-                                                            "trip_id": trip_id_,
-                                                        },
-                                                    )
-                                                    return
-                                                neg = await check_cache(
-                                                    self.r_client, negative_cache_key
-                                                )
-                                                if neg:
-                                                    logger.debug(
-                                                        "Skipping prediction because negative cache exists",
-                                                        extra={
-                                                            "negative_cache_key": negative_cache_key,
-                                                            "station_id": norm_station_id,
-                                                            "route_id": route_id_,
-                                                            "trip_id": trip_id_,
-                                                        },
-                                                    )
-                                                    return
-                                            except (
-                                                RedisError,
-                                                TimeoutError,
-                                                aiohttp.ClientError,
-                                            ) as e:
-                                                # If cache check fails with expected runtime errors,
-                                                # proceed but log at debug level so precache isn't blocked.
-                                                logger.debug(
-                                                    "Cache check failed while deciding whether to precache; proceeding",
-                                                    exc_info=e,
-                                                )
-
-                                            # Add random jitter (ms) before predicting to reduce thundering herd.
-                                            try:
-                                                max_jitter_ms = int(
-                                                    os.getenv(
-                                                        "IMT_PRED_JITTER_MS", "200"
-                                                    )
-                                                )
-                                            except (ValueError, TypeError):
-                                                max_jitter_ms = 200
-                                            try:
-                                                jitter_ms = randint(0, max_jitter_ms)
-                                                await anyio.sleep(jitter_ms / 1000.0)
-                                            except CancelledError:
-                                                # Best-effort jitter; do not block on cancellation
-                                                logger.debug(
-                                                    "Prediction jitter sleep was cancelled",
-                                                    exc_info=True,
-                                                )
-
-                                            # Re-check caches after jitter to be extra conservative
-                                            try:
-                                                cached = await check_cache(
-                                                    self.r_client, cache_key
-                                                )
-                                                if cached:
-                                                    logger.debug(
-                                                        "Skipping prediction after jitter because cached result exists",
-                                                        extra={
-                                                            "cache_key": cache_key,
-                                                            "station_id": norm_station_id,
-                                                            "route_id": route_id_,
-                                                            "trip_id": trip_id_,
-                                                        },
-                                                    )
-                                                    return
-                                                neg = await check_cache(
-                                                    self.r_client, negative_cache_key
-                                                )
-                                                if neg:
-                                                    logger.debug(
-                                                        "Skipping prediction after jitter because negative cache exists",
-                                                        extra={
-                                                            "negative_cache_key": negative_cache_key,
-                                                            "station_id": norm_station_id,
-                                                            "route_id": route_id_,
-                                                            "trip_id": trip_id_,
-                                                        },
-                                                    )
-                                                    return
-                                            except (
-                                                RedisError,
-                                                TimeoutError,
-                                                aiohttp.ClientError,
-                                            ) as e:
-                                                # Cache re-check failed with an expected I/O/runtime error;
-                                                # proceed with prediction path but emit debug context.
-                                                logger.debug(
-                                                    "Cache re-check failed; proceeding to predict",
-                                                    exc_info=e,
-                                                )
-
-                                            try:
-                                                pred = await self.track_predictor.predict_track(
-                                                    norm_station_id,
-                                                    route_id_,
-                                                    trip_id_,
-                                                    headsign_,
-                                                    int(direction_id_),
-                                                    scheduled_time_,
-                                                    tg_,
-                                                )
-                                                if pred:
-                                                    logger.info(
-                                                        f"Track prediction made: {pred.station_id} {pred.route_id} {pred.scheduled_time.strftime('%Y-%m-%d %H:%M')} -> {pred.track_number} (conf={pred.confidence_score:.2f}, method={pred.prediction_method})"
-                                                    )
-                                            except (
-                                                ValidationError,
-                                                aiohttp.ClientError,
-                                                TimeoutError,
-                                                RedisError,
-                                            ) as e:
-                                                # Predict may fail due to validation, network, timing, or Redis errors.
-                                                # Only log those expected error types; allow other unexpected
-                                                # errors to surface so they can be handled appropriately upstream.
-                                                logger.error(
-                                                    "Error running predict_track",
-                                                    exc_info=e,
-                                                )
-
-                                        tg.start_soon(
-                                            _run_and_log_predict,
-                                            station_id,
-                                            route_id,
-                                            trip_id,
-                                            headsign,
-                                            int(item.attributes.direction_id or 0),
-                                            schedule_time,
-                                            tg,
-                                        )
-                                except (ConnectionError, TimeoutError) as e:
-                                    logger.error(
-                                        f"Failed to generate track prediction due to connection issue: {e}",
-                                        exc_info=True,
-                                    )
-                                except ValidationError as e:
-                                    logger.error(
-                                        f"Failed to generate track prediction due to validation error: {e}",
-                                        exc_info=True,
-                                    )
                     if self.stop and headsign == self.stop.data.attributes.name:
                         return
                     event = ScheduleEvent(
@@ -910,8 +682,6 @@ class MBTAApi:
                         trip_id=trip_id,
                         alerting=alerting,
                         bikes_allowed=bikes_allowed,
-                        track_number=track_number,
-                        track_confidence=track_confidence,
                         show_on_display=self.show_on_display,
                     )
                     await send_stream.send(event)
@@ -983,22 +753,42 @@ class MBTAApi:
 
     @retry(
         wait=wait_exponential_jitter(initial=5, jitter=20, max=60),
-        before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
+        before_sleep=before_sleep_log(logger, logging.WARNING, exc_info=True),
         retry=retry_if_not_exception_type(CancelledError),
     )
     async def get_trip(
         self, trip_id: str, session: ClientSession, tg: TaskGroup
     ) -> Optional[Trips]:
+        tracer = get_tracer(__name__) if is_otel_enabled() else None
+        if tracer and should_trace_operation("high_volume"):
+            with tracer.start_as_current_span(
+                "mbta_client.get_trip", attributes={"trip_id": trip_id}
+            ) as span:
+                # Add transaction IDs to the span
+                add_transaction_ids_to_span(span)
+                return await self._get_trip_impl(trip_id, session, tg, span)
+        else:
+            return await self._get_trip_impl(trip_id, session, tg, None)
+
+    async def _get_trip_impl(
+        self, trip_id: str, session: ClientSession, tg: TaskGroup, span: Optional[Span]
+    ) -> Optional[Trips]:
         if session.closed:
             logger.debug("get_trip called with a closed session; skipping fetch")
+            if span:
+                span.set_attribute("session.closed", True)
             return None
         key = f"trip:{trip_id}:full"
         cached = await check_cache(self.r_client, key)
         try:
             if cached:
+                if span:
+                    span.set_attribute("cache.hit", True)
                 trip = Trips.model_validate_json(cached, strict=False)
                 return trip
             else:
+                if span:
+                    span.set_attribute("cache.hit", False)
                 async with session.get(
                     f"trips?filter[id]={trip_id}&api_key={MBTA_AUTH}"
                 ) as response:
@@ -1014,12 +804,15 @@ class MBTAApi:
                     return trip
         except ValidationError as err:
             logger.error("Unable to parse trip", exc_info=err)
+            if span:
+                span.set_attribute("error", True)
+                span.set_attribute("error.type", "validation_error")
         return None
 
     # saves a route to the dict of routes rather than redis
     @retry(
         wait=wait_exponential_jitter(initial=5, jitter=20, max=60),
-        before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
+        before_sleep=before_sleep_log(logger, logging.WARNING, exc_info=True),
         retry=retry_if_not_exception_type(CancelledError),
     )
     async def save_route(
@@ -1048,7 +841,7 @@ class MBTAApi:
 
     @retry(
         wait=wait_exponential_jitter(initial=5, jitter=20, max=60),
-        before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
+        before_sleep=before_sleep_log(logger, logging.WARNING, exc_info=True),
         retry=retry_if_not_exception_type(CancelledError),
     )
     async def get_alerts(
@@ -1056,6 +849,27 @@ class MBTAApi:
         session: ClientSession,
         trip_id: Optional[str] = None,
         route_id: Optional[str] = None,
+    ) -> Optional[list[AlertResource]]:
+        tracer = get_tracer(__name__) if is_otel_enabled() else None
+        if tracer and should_trace_operation("high_volume"):
+            attrs = {}
+            if trip_id:
+                attrs["trip_id"] = trip_id
+            if route_id:
+                attrs["route_id"] = route_id
+            with tracer.start_as_current_span(
+                "mbta_client.get_alerts", attributes=attrs
+            ) as span:
+                return await self._get_alerts_impl(session, trip_id, route_id, span)
+        else:
+            return await self._get_alerts_impl(session, trip_id, route_id, None)
+
+    async def _get_alerts_impl(
+        self,
+        session: ClientSession,
+        trip_id: Optional[str],
+        route_id: Optional[str],
+        span: Optional[Span],
     ) -> Optional[list[AlertResource]]:
         # Read alerts from Redis sets populated by SSE watchers
         key: Optional[str] = None
@@ -1065,11 +879,16 @@ class MBTAApi:
             key = f"alerts:route:{route_id}"
         else:
             logging.error("you need to specify a trip_id or route_id to fetch alerts")
+            if span:
+                span.set_attribute("error", True)
+                span.set_attribute("error.type", "missing_parameters")
             return None
 
         try:
             ids = await self.r_client.smembers(key)  # type: ignore[misc]
             if not ids:
+                if span:
+                    span.set_attribute("alerts.count", 0)
                 return []
             # Fetch alert objects in a pipeline
             pl = self.r_client.pipeline()
@@ -1085,32 +904,28 @@ class MBTAApi:
                     continue
                 try:
                     alert = AlertResource.model_validate_json(raw, strict=False)
-                    # Optionally attach cached AI summary if available
-                    if os.getenv("IMT_OLLAMA_ENABLE", "false") == "true":
-                        try:
-                            async with OllamaClientIMT(
-                                r_client=self.r_client
-                            ) as ollama:
-                                resp = await ollama.fetch_cached_summary(alert)
-                                if resp:
-                                    alert.ai_summary = resp
-                        except (ConnectionError, TimeoutError, RedisError):
-                            # Best-effort attach of cached summaries; ignore connectivity/cache issues
-                            pass
                     ret.append(alert)
                 except ValidationError:
                     continue
+            if span:
+                span.set_attribute("alerts.count", len(ret))
             return ret
         except RedisError as e:
             logger.error("Redis error while loading alerts", exc_info=e)
+            if span:
+                span.set_attribute("error", True)
+                span.set_attribute("error.type", "redis_error")
             return None
         except (ConnectionError, TimeoutError) as e:
             logger.error("Connection error while loading alerts", exc_info=e)
+            if span:
+                span.set_attribute("error", True)
+                span.set_attribute("error.type", "connection_error")
             return None
 
     @retry(
         wait=wait_exponential_jitter(initial=5, jitter=20, max=60),
-        before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
+        before_sleep=before_sleep_log(logger, logging.WARNING, exc_info=True),
         retry=retry_if_not_exception_type(CancelledError),
     )
     async def save_schedule(
@@ -1168,38 +983,69 @@ class MBTAApi:
 
     # 3 weeks of caching in redis as maybe a stop will change? idk
     @retry(
-        wait=wait_exponential_jitter(initial=5, jitter=20, max=60),
-        before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
+        wait=wait_exponential_jitter(initial=2, jitter=50, max=120),
+        before_sleep=before_sleep_log(logger, logging.WARNING, exc_info=True),
         retry=retry_if_not_exception_type(CancelledError),
     )
     async def get_stop(
         self, session: ClientSession, stop_id: str, tg: Optional[TaskGroup] = None
     ) -> tuple[Optional[Stop], Optional[Facilities]]:
+        tracer = get_tracer(__name__) if is_otel_enabled() else None
+        if tracer and should_trace_operation("high_volume"):
+            with tracer.start_as_current_span(
+                "mbta_client.get_stop", attributes={"stop_id": stop_id}
+            ) as span:
+                return await self._get_stop_impl(session, stop_id, tg, span)
+        else:
+            return await self._get_stop_impl(session, stop_id, tg, None)
+
+    async def _get_stop_impl(
+        self,
+        session: ClientSession,
+        stop_id: str,
+        tg: Optional[TaskGroup],
+        span: Optional[Span],
+    ) -> tuple[Optional[Stop], Optional[Facilities]]:
         if session.closed:
             logger.debug("get_stop called with a closed session; skipping fetch")
+            if span:
+                span.set_attribute("session.closed", True)
             return None, None
-        key = f"stop:{stop_id}:full"
+        key = stop_key(stop_id)
         stop = None
         facilities = None
         cached = await check_cache(self.r_client, key)
         if cached:
+            if span:
+                span.set_attribute("cache.hit", True)
             try:
                 s_and_f = StopAndFacilities.model_validate_json(cached)
                 return s_and_f.stop, s_and_f.facilities
             except ValidationError as err:
                 logger.error("validation err", exc_info=err)
+                if span:
+                    span.set_attribute("error", True)
+                    span.set_attribute("error.type", "validation_error")
         else:
+            if span:
+                span.set_attribute("cache.hit", False)
             async with session.get(f"/stops/{stop_id}?api_key={MBTA_AUTH}") as response:
                 try:
                     if response.status == 429:
                         raise RateLimitExceeded()
                     if response.status == 404:
+                        if span:
+                            span.set_attribute("error", True)
+                            span.set_attribute("error.type", "not_found")
                         return None, None
                     body = await response.text()
                     mbta_api_requests.labels("stops").inc()
                     stop = Stop.model_validate_json(body, strict=False)
                 except ValidationError as err:
                     logger.error("Unable to parse stop", exc_info=err)
+                    if span:
+                        span.set_attribute("error", True)
+                        span.set_attribute("error.type", "validation_error")
             # retrieve bike facility info
             async with session.get(
                 f"/facilities/?filter[stop]={self.stop_id}&filter[type]=BIKE_STORAGE"
@@ -1234,26 +1080,6 @@ class MBTAApi:
                     )
         return stop, facilities
 
-    async def _precache_track_predictions(
-        self,
-        tg: TaskGroup,
-        routes: Optional[list[str]] = None,
-        target_stations: Optional[list[str]] = None,
-    ) -> int:
-        """
-        Precache track predictions for upcoming trips using the track predictor.
 
-        Args:
-            routes: List of route IDs to precache (defaults to all CR routes)
-            target_stations: List of station IDs to precache for (defaults to supported stations)
-
-        Returns:
-            Number of predictions cached
-        """
-        if self.track_predictor:
-            return await self.track_predictor.precache(
-                routes=routes, target_stations=target_stations, tg=tg
-            )
-        else:
-            logger.warning("Track predictor not available for precaching")
-            return 0
+def stop_key(stop_id: str):
+    return f"stop:{stop_id}:full"

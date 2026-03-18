@@ -14,48 +14,6 @@ class SummaryFormat(str, Enum):
     JSON = "json"
 
 
-class TrackPredictionResponse(BaseModel):
-    success: bool
-    prediction: TrackPrediction | str
-
-
-class TrackPredictionStatsResponse(BaseModel):
-    success: bool
-    stats: TrackPredictionStats | str
-
-
-class PredictionRequest(BaseModel):
-    station_id: str
-    route_id: str
-    trip_id: str
-    headsign: str
-    direction_id: int
-    scheduled_time: datetime
-
-
-class ChainedPredictionsRequest(BaseModel):
-    predictions: List[PredictionRequest]
-
-
-class ChainedPredictionsResponse(BaseModel):
-    results: List[TrackPredictionResponse]
-
-
-class DepartureWithPrediction(BaseModel):
-    departure_info: DepartureInfo
-    prediction: Optional[TrackPrediction]
-
-
-class DatePredictionsRequest(BaseModel):
-    target_date: datetime
-
-
-class DatePredictionsResponse(BaseModel):
-    success: bool
-    departures: List[DepartureWithPrediction] | str
-    note: Optional[str] = None
-
-
 class MLDiagnosticResult(BaseModel):
     """Diagnostic information for a single ML/pattern prediction comparison."""
 

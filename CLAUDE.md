@@ -7,7 +7,6 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ### Development Commands (using Task runner)
 
 - `task run` - Start the main MBTA tracker application
-- `task prediction-api` - Start the track prediction API server
 - `task test` - Run pytest test suite
 - `task check` - Run linting (ruff) and type checking (pyright)
 - `task fix` - Auto-fix ruff linting issues
@@ -17,7 +16,6 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ### Direct Commands
 
 - `uv run inky-mbta-tracker` - Run main application directly
-- `uv run inky-mbta-tracker --prediction-api` - Run prediction API directly
 - `uv run pytest` - Run tests directly
 - `uv run ruff check inky-mbta-tracker` - Lint check
 - `uv run basedpyright` - Type check
@@ -41,38 +39,29 @@ This is a Python-based real-time transit tracking system that monitors MBTA (Mas
 - Implements Redis locking for concurrent access
 
 **MBTA Client (`mbta_client.py`)**
-- Interfaces with MBTA V3 API and streaming endpoints
-- Creates worker threads for different task types (predictions, schedules, vehicles)
-- Handles API rate limiting and connection management
-
-**Track Predictor (`track_predictor/`)**
-- NEW feature that predicts commuter rail track assignments
-- Analyzes historical patterns to predict tracks before official announcements
-- Separate FastAPI service that can run independently
-- Stores predictions and historical data in Redis with TTL
+- Creates worker threads for different task types (schedules, vehicles)
+- Handles rate limiting and connection management
 
 ### Data Flow
 
-1. Worker threads fetch data from MBTA streaming API
+1. Worker threads fetch data from MBTA
 2. Events are queued for processing
 3. Queue processors store data in Redis and publish to MQTT
-4. Track predictor analyzes patterns and generates predictions
-5. External systems (inky-display, Home Assistant) consume data from Redis/MQTT
+4. External systems (inky-display, Home Assistant) consume data from Redis/MQTT
 
 ### Configuration
 
 The application uses a `config.json` file to define stops to track, with options for:
-- Real-time predictions vs. static schedules
+- Static schedules
 - Route and direction filtering
 - Transit time calculations
 - Display preferences
-- Track prediction precaching (optional - see README.md for configuration)
 
 ### Dependencies
 
 - **Redis**: Primary data store with TTL-based cleanup
 - **MQTT**: Optional pub/sub for home automation
-- **FastAPI**: Track prediction API
+- **HTTP server**: Web service
 - **Prometheus**: Metrics collection
 - **uv**: Package management and task runner
 

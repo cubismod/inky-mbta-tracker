@@ -1,15 +1,15 @@
 services:
   tracker-redis:
-    image: docker.io/library/redis:8.4@sha256:73dad4271642c5966db88db7a7585fae7cf10b685d1e48006f31e0294c29fdd7
+    image: docker.io/library/redis:8.6@sha256:315270d166080f537bbdf1b489b603aaaa213cb55a544acfa51feb7481abb1c0
     restart: unless-stopped
     container_name: tracker-redis
     command: [ "redis-server", "--requirepass", "mbta"]
     ports:
       - "6379:6379"
     volumes:
-      - redis_data:/data
+      - "redis_data:/data"
   mosquitto:
-    image: eclipse-mosquitto:2.0.22@sha256:077fe4ff4c49df1e860c98335c77dda08360629e0e2a718147027e4db3eace9d
+    image: eclipse-mosquitto:2.0.22@sha256:6852da90a65dfff7aa3a1c8b249e92bb83c17ea8bbcce56bedff8707332a1a29
     restart: always
     ports:
       - "1883:1883"

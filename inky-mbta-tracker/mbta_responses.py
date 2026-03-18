@@ -155,7 +155,6 @@ class AlertAttributes(BaseModel):
 class AlertResource(BaseModel):
     type: str
     id: str
-    ai_summary: Optional[str] = None  # IMT enhancement
     attributes: AlertAttributes
 
 

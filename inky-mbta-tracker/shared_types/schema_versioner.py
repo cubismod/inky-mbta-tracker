@@ -27,15 +27,6 @@ class RedisSchema(BaseModel):
 
 SCHEMAS = [
     RedisSchema(
-        id="ai_summary",
-        key_prefixes=["ai_summary"],
-        hashes={
-            class_hashes.SUMMARIZATIONRESPONSE_HASH,
-            class_hashes.SUMMARYCACHEENTRY_HASH,
-            class_hashes.INDIVIDUALSUMMARYCACHEENTRY_HASH,
-        },
-    ),
-    RedisSchema(
         id="schedule_event",
         key_prefixes=["schedule", "prediction", "time"],
         hashes={class_hashes.SCHEDULEEVENT_HASH},
@@ -44,21 +35,6 @@ SCHEMAS = [
         id="vehicle_redis_schema",
         key_prefixes=["vehicle", "pos-data"],
         hashes={class_hashes.VEHICLEREDISSCHEMA_HASH},
-    ),
-    RedisSchema(
-        id="track_assignment",
-        key_prefixes=["track_history", "track_timeseries"],
-        hashes={class_hashes.TRACKASSIGNMENT_HASH},
-    ),
-    RedisSchema(
-        id="track_prediction",
-        key_prefixes=["track_prediction"],
-        hashes={class_hashes.TRACKPREDICTION_HASH},
-    ),
-    RedisSchema(
-        id="track_stats",
-        key_prefixes=["track_stats"],
-        hashes={class_hashes.TRACKPREDICTIONSTATS_HASH},
     ),
     RedisSchema(
         id="stop",

@@ -40,6 +40,9 @@ tasks:
   clear-logs:
     cmds:
       - rm *.log
+  clear-redis:
+    cmds:
+      - podman compose exec tracker-redis redis-cli -a mbta FLUSHALL
   test:
     cmds:
       - uv run pytest

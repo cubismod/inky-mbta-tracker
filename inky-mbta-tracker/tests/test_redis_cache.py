@@ -8,9 +8,12 @@ from redis_cache import check_cache, write_cache
 
 @pytest.fixture(autouse=True)
 def clear_alru_cache() -> None:
-    # Ensure per-test isolation for alru_cache
+    # Ensure per-test isolation for alru_cache, including event loop binding
     if hasattr(check_cache, "cache_clear"):
         check_cache.cache_clear()  # type: ignore[attr-defined]
+    # Reset the loop reference so the next test's event loop can bind cleanly
+    if hasattr(check_cache, "_LRUCacheWrapper__first_loop"):
+        check_cache._LRUCacheWrapper__first_loop = None  # type: ignore[attr-defined]
 
 
 @pytest.mark.anyio("asyncio")

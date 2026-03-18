@@ -16,12 +16,13 @@ from dotenv import load_dotenv
 from geojson_utils import background_refresh
 from logging_setup import setup_logging
 from mbta_client_extended import (
-    precache_track_predictions_runner,
     watch_alerts,
     watch_static_schedule,
     watch_station,
     watch_vehicles,
 )
+from otel_config import initialize_otel, is_otel_enabled, shutdown_otel
+from prometheus import watch_running_tasks
 from prometheus_client import start_http_server
 from redis.asyncio import Redis
 from redis.asyncio.connection import ConnectionPool
@@ -31,13 +32,23 @@ from schedule_tracker import (
     VehicleRedisSchema,
     process_queue_async,
 )
+from sentry_config import initialize_sentry
 from shared_types.schema_versioner import schema_versioner
 from shared_types.shared_types import TaskType
-from track_predictor.track_predictor import TrackPredictor
 from utils import get_redis
 
 load_dotenv()
 setup_logging()
+
+# Initialize Sentry for error tracking
+initialize_sentry(
+    service_name_override=os.getenv("IMT_OTEL_SERVICE_NAME", "inky-mbta-tracker-worker")
+)
+
+# Initialize OpenTelemetry for the main worker process
+initialize_otel(
+    service_name_override=os.getenv("IMT_OTEL_SERVICE_NAME", "inky-mbta-tracker-worker")
+)
 
 logger = logging.getLogger(__name__)
 
@@ -183,27 +194,28 @@ async def __main__() -> None:
         start_http_server(int(os.getenv("IMT_PROM_PORT", "8000")))
     async with aiohttp.ClientSession(base_url=MBTA_V3_ENDPOINT) as session:
         async with create_task_group() as tg:
-            for stop in config.stops:
-                if stop.schedule_only:
-                    start_task(
-                        get_redis(redis_pool),
-                        TaskType.SCHEDULES,
-                        send_stream,
-                        tg,
-                        session,
-                        config,
-                        stop,
-                    )
-                else:
-                    start_task(
-                        get_redis(redis_pool),
-                        TaskType.SCHEDULE_PREDICTIONS,
-                        send_stream,
-                        tg,
-                        session,
-                        config,
-                        stop,
-                    )
+            if config.stops:
+                for stop in config.stops:
+                    if stop.schedule_only:
+                        start_task(
+                            get_redis(redis_pool),
+                            TaskType.SCHEDULES,
+                            send_stream,
+                            tg,
+                            session,
+                            config,
+                            stop,
+                        )
+                    else:
+                        start_task(
+                            get_redis(redis_pool),
+                            TaskType.SCHEDULE_PREDICTIONS,
+                            send_stream,
+                            tg,
+                            session,
+                            config,
+                            stop,
+                        )
             if config.vehicles_by_route:
                 for route_id in config.vehicles_by_route:
                     start_task(
@@ -213,7 +225,7 @@ async def __main__() -> None:
                         tg,
                         session,
                         config,
-                        stop,
+                        None,
                         route_id,
                     )
                 # Start alerts SSE watchers for each configured route
@@ -221,31 +233,28 @@ async def __main__() -> None:
                     tg.start_soon(
                         watch_alerts, get_redis(redis_pool), route_id, session, config
                     )
-
-            # Start track prediction precaching if enabled
-            if config.enable_track_predictions:
-                tg.start_soon(
-                    precache_track_predictions_runner,
-                    get_redis(redis_pool),
-                    tg,
-                    config.track_prediction_routes,
-                    config.track_prediction_stations,
-                    config.track_prediction_interval_hours,
-                )
-
-            # Start ML worker only if enabled via env IMT_ML
-            if os.getenv("IMT_ML", "").strip().lower() in {"1", "true", "yes", "on"}:
-                track_predictor = TrackPredictor(get_redis(redis_pool))
-                await track_predictor.initialize()
-                tg.start_soon(track_predictor.ml_prediction_worker)
+            if config.frequent_bus_lines:
+                for route_id in config.frequent_bus_lines:
+                    start_task(
+                        get_redis(redis_pool),
+                        TaskType.VEHICLES,
+                        send_stream,
+                        tg,
+                        session,
+                        config,
+                        None,
+                        route_id,
+                    )
 
             # consumer
             tg.start_soon(process_queue_async, receive_stream, tg)
 
-            tg.start_soon(background_refresh, get_redis(redis_pool), tg)
+            tg.start_soon(background_refresh, get_redis(redis_pool), config, tg)
 
             # Start heartbeat task for healthcheck monitoring
             tg.start_soon(heartbeat_task, get_redis(redis_pool))
+
+            tg.start_soon(watch_running_tasks)
 
             next_backup = get_next_backup_time()
             # cron/timed tasks
@@ -264,4 +273,9 @@ async def __main__() -> None:
 
 @click.command()
 def run_main() -> None:
-    run(__main__, backend="asyncio", backend_options={"use_uvloop": True})
+    try:
+        run(__main__, backend="asyncio", backend_options={"use_uvloop": True})
+    finally:
+        # Ensure OTEL spans are flushed before exit
+        if is_otel_enabled():
+            shutdown_otel()

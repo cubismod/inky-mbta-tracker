@@ -3,7 +3,7 @@ from enum import Enum
 from typing import Dict, List, Optional, Set, Tuple, TypedDict
 
 from geojson import Feature
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ScheduleEvent(BaseModel):
@@ -18,10 +18,9 @@ class ScheduleEvent(BaseModel):
     trip_id: Optional[str] = None
     alerting: bool = False
     bikes_allowed: bool = False
-    # Track prediction fields
-    track_number: Optional[str] = None
-    track_confidence: Optional[float] = None
     show_on_display: bool = True
+    # OpenTelemetry trace context for distributed tracing
+    trace_context: Optional[str] = None
 
 
 class VehicleRedisSchema(BaseModel):
@@ -39,73 +38,8 @@ class VehicleRedisSchema(BaseModel):
     occupancy_status: Optional[str] = None
     carriages: Optional[list[str]] = None
     headsign: Optional[str] = None
-
-
-class MLPredictionRequest(BaseModel):
-    id: str
-    station_id: str
-    route_id: str
-    direction_id: int
-    scheduled_time: datetime
-    trip_id: str
-    headsign: str
-
-
-class TrackAssignmentType(Enum):
-    HISTORICAL = "historical"
-    PREDICTED = "predicted"
-
-
-class TrackAssignment(BaseModel):
-    """Historical track assignment data for analysis"""
-
-    station_id: str
-    route_id: str
-    trip_id: str
-    headsign: str
-    direction_id: int
-    assignment_type: TrackAssignmentType
-    track_number: Optional[str] = None
-    scheduled_time: datetime
-    actual_time: Optional[datetime] = None
-    recorded_time: datetime
-    day_of_week: int  # 0=Monday, 6=Sunday
-    hour: int
-    minute: int
-
-
-class TrackPrediction(BaseModel):
-    """Track prediction for a specific trip"""
-
-    station_id: str
-    route_id: str
-    trip_id: str
-    headsign: str
-    direction_id: int
-    scheduled_time: datetime
-    track_number: Optional[str] = None
-    confidence_score: float  # 0.0 to 1.0
-    accuracy: float = 0.0  # historical accuracy estimate for predicted track
-    model_confidence: float = (
-        0.0  # confidence from model/fused pre-sharpen, pre-history
-    )
-    display_confidence: float = 0.0  # post-processed confidence for UX
-    prediction_method: str  # e.g., "historical_pattern", "time_based", "headsign_based"
-    historical_matches: int  # Number of historical matches used for prediction
-    created_at: datetime
-
-
-class TrackPredictionStats(BaseModel):
-    """Statistics for track predictions to monitor accuracy"""
-
-    station_id: str
-    route_id: str
-    total_predictions: int
-    correct_predictions: int
-    accuracy_rate: float
-    last_updated: datetime
-    prediction_counts_by_track: dict[str, int]  # track -> count
-    average_confidence: float
+    # OpenTelemetry trace context for distributed tracing
+    trace_context: Optional[str] = None
 
 
 class TaskType(Enum):
@@ -130,38 +64,6 @@ class MBTAServiceType(Enum):
     COMMUTER_WEEKDAY = 5
     COMMUTER_WEEKEND = 6
     NO_SERVICE = 9
-
-
-class SummarizationResponse(BaseModel):
-    """Response model for alert summarization"""
-
-    summary: str
-    alert_count: int
-    model_used: str
-    processing_time_ms: float
-
-
-class SummaryCacheEntry(BaseModel):
-    """Cache entry for stored summaries"""
-
-    summary: str
-    alert_count: int
-    alerts_hash: str
-    generated_at: datetime
-    config: dict
-    ttl: int = 3600  # 1 hour default TTL
-
-
-class IndividualSummaryCacheEntry(BaseModel):
-    """Cache entry for individual alert summaries"""
-
-    alert_id: str
-    summary: str
-    style: str
-    sentence_limit: int
-    generated_at: datetime
-    format: str
-    ttl: int = 3600  # 1 hour default TTL
 
 
 type ShapeTuple = Tuple[float, float]
@@ -210,13 +112,12 @@ class PrometheusAPIResponse(BaseModel):
 
 
 class DiffApiResponse(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
     updated: dict[
         str, Feature
     ]  # keys are the vehicle IDs, values are the full updated vehicle object
     removed: Set[str]  # keys are vehicle ids
-
-    class Config:
-        arbitrary_types_allowed = True
 
 
 class VehicleSpeedHistory(BaseModel):

@@ -1,5 +1,5 @@
-FROM python:3.13@sha256:02865b3929f3910fc2d6ebbf745bf00504d316478dacaea7d9e230e134411bcb AS main
-COPY --from=ghcr.io/astral-sh/uv:0.9.26@sha256:9a23023be68b2ed09750ae636228e903a54a05ea56ed03a934d00fe9fbeded4b /uv /uvx /bin/
+FROM python:3.13@sha256:0dcc3be031e886a41feafca89f90195f277ad978853134e2b073d64383604aec AS main
+COPY --from=ghcr.io/astral-sh/uv:0.10.11@sha256:3472e43b4e738cf911c99d41bb34331280efad54c73b1def654a6227bb59b2b4 /uv /uvx /bin/
 
 WORKDIR /app
 ADD README.md pyproject.toml uv.lock ./
@@ -24,7 +24,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 	--mount=type=cache,target=/root/.cache/uv \
 	uv sync --link-mode=copy --no-dev && uv lock --check
 
-HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+HEALTHCHECK --interval=15s --timeout=10s --start-period=60s --retries=2 \
 	CMD uv run python inky-mbta-tracker/healthcheck.py || exit 1
 
 # replace for api server: ["uvicorn", "api_server:app", "--workers", "10", "--loop", "uvloop"]

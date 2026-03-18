@@ -14,12 +14,15 @@ from api.endpoints.vehicles import router as vehicles_router
 from api.limits import limiter
 from api.middleware.cache_middleware import create_cache_middleware
 from api.middleware.header_middleware import HeaderLoggingMiddleware
+from api.middleware.transaction_middleware import TransactionIDMiddleware
 from consts import MBTA_V3_ENDPOINT
 from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from logging_setup import setup_logging
+from otel_config import initialize_otel, is_otel_enabled, shutdown_otel
 from prometheus_fastapi_instrumentator import Instrumentator
+from sentry_config import initialize_sentry
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
@@ -28,6 +31,14 @@ def create_app() -> FastAPI:
     load_dotenv()
     setup_logging()
 
+    # Initialize Sentry for error tracking (with FastAPI integration)
+    initialize_sentry(
+        service_name_override="inky-mbta-tracker-api", include_fastapi=True
+    )
+
+    # Initialize OpenTelemetry for the API server
+    initialize_otel(service_name_override="inky-mbta-tracker-api")
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         app.state.session = aiohttp.ClientSession(base_url=MBTA_V3_ENDPOINT)
@@ -35,11 +46,14 @@ def create_app() -> FastAPI:
             yield
         finally:
             await app.state.session.close()
+            # Ensure OTEL spans are flushed before exit
+            if is_otel_enabled():
+                shutdown_otel()
 
     app = FastAPI(
         title="MBTA Transit Data API",
         description=(
-            "API for MBTA transit data including track predictions, vehicle positions, alerts, and route shapes"
+            "API for MBTA transit data including vehicle positions, alerts, and route shapes"
         ),
         version="2.1.0",
         docs_url="/",
@@ -66,6 +80,8 @@ def create_app() -> FastAPI:
         app.state.limiter = limiter
         app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)  # type: ignore
 
+    # Add transaction ID middleware early in the chain to ensure it captures all requests
+    app.add_middleware(TransactionIDMiddleware)
     app.add_middleware(HeaderLoggingMiddleware)
     app.middleware("http")(
         create_cache_middleware(
@@ -74,9 +90,6 @@ def create_app() -> FastAPI:
             include_paths={
                 "/alerts*",
                 "/alerts.json",
-                "/predictions*",
-                "/chained-predictions",
-                "/historical*",
                 "/shapes*",
                 "/vehicles*",
             },
@@ -100,9 +113,17 @@ def create_app() -> FastAPI:
 
     Instrumentator().instrument(app).expose(app)
 
+    # Apply FastAPI OTEL instrumentation if enabled
+    if is_otel_enabled():
+        try:
+            from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+
+            FastAPIInstrumentor.instrument_app(app)
+        except ImportError:
+            pass  # Instrumentation package not available
+
     # Include routers
     app.include_router(health_router)
-    app.include_router(predictions_router)
     app.include_router(vehicles_router)
     app.include_router(alerts_router)
     app.include_router(shapes_router)
