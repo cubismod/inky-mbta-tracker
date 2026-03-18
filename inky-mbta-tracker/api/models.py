@@ -4,8 +4,6 @@ from typing import Any, Dict, List, Optional
 
 from config import StopSetup
 from pydantic import BaseModel, Field
-from shared_types.shared_types import DepartureInfo, TrackPrediction
-from track_predictor.track_predictor import TrackPredictionStats
 
 
 class SummaryFormat(str, Enum):
