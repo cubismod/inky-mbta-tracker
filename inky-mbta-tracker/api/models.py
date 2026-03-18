@@ -6,12 +6,6 @@ from config import StopSetup
 from pydantic import BaseModel, Field
 
 
-class SummaryFormat(str, Enum):
-    TEXT = "text"
-    MARKDOWN = "markdown"
-    JSON = "json"
-
-
 class MLDiagnosticResult(BaseModel):
     """Diagnostic information for a single ML/pattern prediction comparison."""
 
