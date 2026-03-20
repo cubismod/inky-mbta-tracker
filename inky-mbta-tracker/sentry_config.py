@@ -93,6 +93,7 @@ def initialize_sentry(
             enable_logs=True,
             sample_rate=float(os.getenv("IMT_SENTRY_SAMPLE_RATE", "0.8")),
             attach_stacktrace=True,  # Include stack traces for all messages
+            profile_lifecycle="trace",
             # Set custom tags
             _experiments={
                 "continuous_profiling_auto_start": True,
