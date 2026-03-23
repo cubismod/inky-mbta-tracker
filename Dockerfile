@@ -1,5 +1,5 @@
 FROM python:3.13@sha256:e72b4f627448820e61a4d2d1854c0ec2df3a145a1a5d2c52306ec9f2091605b4 AS main
-COPY --from=ghcr.io/astral-sh/uv:0.10.11@sha256:3472e43b4e738cf911c99d41bb34331280efad54c73b1def654a6227bb59b2b4 /uv /uvx /bin/
+COPY --from=ghcr.io/astral-sh/uv:0.10.12@sha256:72ab0aeb448090480ccabb99fb5f52b0dc3c71923bffb5e2e26517a1c27b7fec /uv /uvx /bin/
 
 WORKDIR /app
 ADD README.md pyproject.toml uv.lock ./
