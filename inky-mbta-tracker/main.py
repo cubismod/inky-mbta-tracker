@@ -36,6 +36,7 @@ from sentry_config import initialize_sentry
 from shared_types.schema_versioner import schema_versioner
 from shared_types.shared_types import TaskType
 from utils import get_redis
+from webhook.ntfy import notify_startup
 
 load_dotenv()
 setup_logging()
@@ -192,6 +193,9 @@ async def __main__() -> None:
 
     if os.getenv("IMT_PROMETHEUS_ENABLE", "false") == "true":
         start_http_server(int(os.getenv("IMT_PROM_PORT", "8000")))
+
+    await notify_startup()
+
     async with aiohttp.ClientSession(base_url=MBTA_V3_ENDPOINT) as session:
         async with create_task_group() as tg:
             if config.stops:
