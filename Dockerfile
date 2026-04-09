@@ -1,4 +1,4 @@
-FROM python:3.13@sha256:6f40ba3065cb48d5bdf25c2ca3bee237000796a22b08c406e702a8e7d4a50594 AS main
+FROM python:3.13@sha256:184e8239e4d64518c56be0b7bc88d50bd124c90e8ac5ac2ef9316d4e1a391e62 AS main
 COPY --from=ghcr.io/astral-sh/uv:0.11.3@sha256:90bbb3c16635e9627f49eec6539f956d70746c409209041800a0280b93152823 /uv /uvx /bin/
 
 WORKDIR /app
