@@ -1,7 +1,6 @@
 import logging
-from datetime import datetime, timedelta
+from datetime import timedelta
 from typing import Optional
-from zoneinfo import ZoneInfo
 
 import aiohttp
 import humanize
@@ -362,119 +361,120 @@ async def get_vehicle_features(
     """Extract vehicle features from Redis data"""
     features = dict[str, Feature]()
 
-    # periodically clean up the set during overnight hours to avoid unnecessary redis calls
-    delete_all_pos_data = False
-    now = datetime.now().astimezone(ZoneInfo("US/Eastern"))
-    pos_data_count = await r_client.scard("pos-data")  # type: ignore[misc]
-    if pos_data_count > 500 and 4 > now.hour > 2:
-        redis_commands.labels("scard").inc()
-        delete_all_pos_data = True
-
-    vehicles = await r_client.smembers("pos-data")  # type: ignore[misc]
+    vehicle_keys_bytes: set[bytes] = await r_client.smembers("pos-data")  # type: ignore[misc]
     redis_commands.labels("smembers").inc()
+
+    if not vehicle_keys_bytes:
+        return features
+
+    vehicle_keys_list: list[bytes] = []
     pl = r_client.pipeline()
-
-    for vehicle in vehicles:
-        if delete_all_pos_data:
-            await r_client.srem("pos-data", vehicle)  # type: ignore[misc]
-            redis_commands.labels("srem").inc()
-        dec_v = vehicle.decode("utf-8")
+    for vk in vehicle_keys_bytes:
+        dec_v = vk.decode("utf-8")
         if dec_v:
-            await pl.get(vehicle)
+            await pl.get(vk)
             redis_commands.labels("get").inc()
+            vehicle_keys_list.append(vk)
 
-        results = await pl.execute()
-        redis_commands.labels("execute").inc()
-        for result in results:
-            if result:
-                vehicle_bearing = None
-                try:
-                    vehicle_info: VehicleRedisSchema = (
-                        VehicleRedisSchema.model_validate_json(
-                            strict=False, json_data=result
-                        )
-                    )
-                except ValidationError:
-                    continue
+    results: list[bytes | None] = await pl.execute()
+    redis_commands.labels("execute").inc()
 
-                if (
-                    frequent_buses
-                    and config.frequent_bus_lines
-                    and vehicle_info.route not in config.frequent_bus_lines
-                ):
-                    continue
-                elif (
-                    not frequent_buses
-                    and config.frequent_bus_lines
-                    and vehicle_info.route in config.frequent_bus_lines
-                ):
-                    continue
-                if vehicle_info.route and vehicle_info.stop:
-                    point = Point((vehicle_info.longitude, vehicle_info.latitude))
-                    stop = None
-                    stop_id = None
-                    long = None
-                    lat = None
-                    route_icon = "rail"
-                    stop_eta = None
-                    if not vehicle_info.route.startswith("Amtrak"):
-                        stop = await light_get_stop(r_client, vehicle_info.stop, tg)
-                        platform_prediction = None
-                        if stop:
-                            stop_id = stop.stop_id
-                            if stop.long and stop.lat:
-                                stop_point = Point((stop.long, stop.lat))
-                                vehicle_bearing = calculate_bearing(point, stop_point)
-                                long = stop.long
-                                lat = stop.lat
-                                if vehicle_info.speed and vehicle_info.speed >= 10:
-                                    stop_eta = calculate_stop_eta(
-                                        Feature(geometry=stop_point),
-                                        Feature(geometry=point),
-                                        vehicle_info.speed,
-                                    )
-                    else:
-                        route_icon = "rail_amtrak"
-                        stop_id = vehicle_info.stop
+    # Identify stale pos-data entries (keys that have expired in Redis)
+    stale_keys: list[bytes] = []
 
-                    if (
-                        vehicle_info.route.startswith("7")
-                        or vehicle_info.route.isdecimal()
-                    ):
-                        route_icon = "bus"
-                    if vehicle_info.route.startswith(
-                        "74"
-                    ) or vehicle_info.route.startswith("75"):
-                        vehicle_info.route = silver_line_lookup(vehicle_info.route)
-                    feature = Feature(
-                        geometry=point,
-                        id=vehicle_info.id,
-                        properties={
-                            "route": vehicle_info.route,
-                            "status": vehicle_info.current_status,
-                            "marker-size": "medium",
-                            "marker-symbol": route_icon,
-                            "marker-color": lookup_vehicle_color(vehicle_info),
-                            "speed": vehicle_info.speed,
-                            "direction": vehicle_info.direction_id,
-                            "id": vehicle_info.id,
-                            "stop": stop_id,
-                            "stop_eta": stop_eta,
-                            "stop-coordinates": (
-                                long,
-                                lat,
-                            ),
-                            "bearing": vehicle_bearing,
-                            "occupancy_status": vehicle_info.occupancy_status,
-                            "approximate_speed": vehicle_info.approximate_speed,
-                            "update_time": vehicle_info.update_time.strftime(
-                                "%Y-%m-%dT%H:%M:%S.000Z"
-                            ),
-                            "platform_prediction": platform_prediction,
-                            "headsign": vehicle_info.headsign,
-                        },
-                    )
-                    features[vehicle_info.id] = feature
+    for vk_bytes, result in zip(vehicle_keys_list, results):
+        if not result:
+            stale_keys.append(vk_bytes)
+            continue
+
+        vehicle_bearing = None
+        platform_prediction = None
+        try:
+            vehicle_info: VehicleRedisSchema = VehicleRedisSchema.model_validate_json(
+                strict=False, json_data=result
+            )
+        except ValidationError:
+            continue
+
+        if (
+            frequent_buses
+            and config.frequent_bus_lines
+            and vehicle_info.route not in config.frequent_bus_lines
+        ):
+            continue
+        elif (
+            not frequent_buses
+            and config.frequent_bus_lines
+            and vehicle_info.route in config.frequent_bus_lines
+        ):
+            continue
+        if vehicle_info.route and vehicle_info.stop:
+            point = Point((vehicle_info.longitude, vehicle_info.latitude))
+            stop = None
+            stop_id = None
+            long = None
+            lat = None
+            route_icon = "rail"
+            stop_eta = None
+            if not vehicle_info.route.startswith("Amtrak"):
+                stop = await light_get_stop(r_client, vehicle_info.stop, tg)
+                if stop:
+                    stop_id = stop.stop_id
+                    if stop.long and stop.lat:
+                        stop_point = Point((stop.long, stop.lat))
+                        vehicle_bearing = calculate_bearing(point, stop_point)
+                        long = stop.long
+                        lat = stop.lat
+                        if vehicle_info.speed and vehicle_info.speed >= 10:
+                            stop_eta = calculate_stop_eta(
+                                Feature(geometry=stop_point),
+                                Feature(geometry=point),
+                                vehicle_info.speed,
+                            )
+            else:
+                route_icon = "rail_amtrak"
+                stop_id = vehicle_info.stop
+
+            if vehicle_info.route.startswith("7") or vehicle_info.route.isdecimal():
+                route_icon = "bus"
+            if vehicle_info.route.startswith("74") or vehicle_info.route.startswith(
+                "75"
+            ):
+                vehicle_info.route = silver_line_lookup(vehicle_info.route)
+            feature = Feature(
+                geometry=point,
+                id=vehicle_info.id,
+                properties={
+                    "route": vehicle_info.route,
+                    "status": vehicle_info.current_status,
+                    "marker-size": "medium",
+                    "marker-symbol": route_icon,
+                    "marker-color": lookup_vehicle_color(vehicle_info),
+                    "speed": vehicle_info.speed,
+                    "direction": vehicle_info.direction_id,
+                    "id": vehicle_info.id,
+                    "stop": stop_id,
+                    "stop_eta": stop_eta,
+                    "stop-coordinates": (
+                        long,
+                        lat,
+                    ),
+                    "bearing": vehicle_bearing,
+                    "occupancy_status": vehicle_info.occupancy_status,
+                    "approximate_speed": vehicle_info.approximate_speed,
+                    "update_time": vehicle_info.update_time.strftime(
+                        "%Y-%m-%dT%H:%M:%S.000Z"
+                    ),
+                    "platform_prediction": platform_prediction,
+                    "headsign": vehicle_info.headsign,
+                },
+            )
+            features[vehicle_info.id] = feature
+
+    # Prune stale entries from pos-data to prevent unbounded set growth
+    if stale_keys:
+        await r_client.srem("pos-data", *stale_keys)  # type: ignore[misc]
+        redis_commands.labels("srem").inc()
 
     return features
 
