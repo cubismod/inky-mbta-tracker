@@ -511,8 +511,9 @@ class TestTracker:
 
         await tracker.rm(event, mock_pipeline)
 
-        # Should delete vehicle data
-        mock_pipeline.delete.assert_called_once_with("vehicle-vehicle-123")
+        # Should delete vehicle data and remove from pos-data set
+        mock_pipeline.delete.assert_called_once_with("vehicle:vehicle-123")
+        mock_pipeline.srem.assert_called_once_with("pos-data", "vehicle:vehicle-123")
 
     @pytest.mark.anyio("asyncio")
     async def test_process_queue_item_reset(self) -> None:

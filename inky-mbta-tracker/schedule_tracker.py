@@ -344,8 +344,11 @@ class Tracker:
                 schedule_events.labels("remove", event.route_id, event.stop).inc()
                 self.log_prediction(event)
             if isinstance(event, VehicleRedisSchema):
-                await pipeline.delete(f"vehicle-{event.id}")
+                redis_key = f"vehicle:{event.id}"
+                await pipeline.delete(redis_key)
                 redis_commands.labels("delete").inc()
+                await pipeline.srem("pos-data", redis_key)  # type: ignore[misc]
+                redis_commands.labels("srem").inc()
                 vehicle_events.labels("remove", event.route).inc()
 
                 self.log_vehicle(event)
