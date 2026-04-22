@@ -165,6 +165,45 @@ class TestMBTAApi:
         assert carriages == []
         assert status == ""
 
+    @pytest.mark.anyio("asyncio")
+    @patch("mbta_client.Stop.model_validate_json")
+    @patch("mbta_client.Facilities.model_validate_json")
+    @patch("mbta_client.check_cache")
+    async def test_get_stop_can_skip_facilities_fetch(
+        self,
+        mock_check_cache: MagicMock,
+        mock_facilities_validate: MagicMock,
+        mock_stop_validate: MagicMock,
+    ) -> None:
+        mock_check_cache.return_value = None
+        mock_stop_validate.return_value = None
+
+        response = AsyncMock()
+        response.status = 200
+        response.text.return_value = "{}"
+
+        response_cm = AsyncMock()
+        response_cm.__aenter__.return_value = response
+        response_cm.__aexit__.return_value = None
+
+        session = MagicMock()
+        session.closed = False
+        session.get.return_value = response_cm
+
+        redis = AsyncMock()
+        redis.eval.return_value = [1, 0]
+        api = MBTAApi(cast(RedisClient, redis), stop_id="place-davis")
+        stop, facilities = await api.get_stop(
+            session,
+            "place-davis",
+            include_facilities=False,
+        )
+
+        assert stop is None
+        assert facilities is None
+        assert session.get.call_count == 1
+        mock_facilities_validate.assert_not_called()
+
 
 @pytest.mark.anyio("asyncio")
 class TestLightGetStop:

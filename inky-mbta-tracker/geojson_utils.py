@@ -13,6 +13,7 @@ from mbta_client import (
     silver_line_lookup,
 )
 from mbta_client_extended import get_shapes, light_get_stop
+from mbta_rate_limiter import rate_limited_get
 from mbta_responses import AlertResource
 from opentelemetry.trace import Span
 from otel_config import get_tracer, is_otel_enabled
@@ -56,7 +57,7 @@ async def _light_get_alerts_batch_impl(
     logger.debug(f"Fetching alerts from endpoint: {endpoint}")
 
     try:
-        async with session.get(endpoint) as response:
+        async with rate_limited_get(session, r_client, endpoint) as response:
             if span:
                 span.set_attribute("http.status_code", response.status)
 
