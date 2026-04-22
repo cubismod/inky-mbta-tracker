@@ -78,7 +78,7 @@ class TestMBTAApi:
             arrival_time="2023-12-01T10:30:00-05:00",
             departure_time=None,
             direction_id=0,
-            revenue="REVENUE",
+            revenue_status="REVENUE",
         )
         result = MBTAApi.determine_time(attrs)
         assert result is not None
@@ -89,7 +89,7 @@ class TestMBTAApi:
             arrival_time=None,
             departure_time="2023-12-01T10:30:00-05:00",
             direction_id=0,
-            revenue="REVENUE",
+            revenue_status="REVENUE",
         )
         result = MBTAApi.determine_time(attrs)
         assert result is not None
@@ -97,7 +97,10 @@ class TestMBTAApi:
 
     def test_determine_time_none(self) -> None:
         attrs = PredictionAttributes(
-            arrival_time=None, departure_time=None, direction_id=0, revenue="REVENUE"
+            arrival_time=None,
+            departure_time=None,
+            direction_id=0,
+            revenue_status="REVENUE",
         )
         result = MBTAApi.determine_time(attrs)
         assert result is None

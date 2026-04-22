@@ -7,6 +7,7 @@ from api.endpoints.alerts import router as alerts_router
 
 # Routers
 from api.endpoints.health import router as health_router
+from api.endpoints.predictions import router as predictions_router
 from api.endpoints.shapes import router as shapes_router
 from api.endpoints.vehicles import router as vehicles_router
 from api.limits import limiter
@@ -125,6 +126,7 @@ def create_app() -> FastAPI:
     app.include_router(vehicles_router)
     app.include_router(alerts_router)
     app.include_router(shapes_router)
+    app.include_router(predictions_router)
 
     return app
 
