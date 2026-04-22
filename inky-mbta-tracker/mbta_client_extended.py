@@ -22,6 +22,7 @@ from consts import (
     YEAR,
 )
 from exceptions import RateLimitExceeded
+from mbta_rate_limiter import rate_limited_get
 from mbta_responses import AlertResource, Shapes
 from opentelemetry.trace import Span
 from otel_config import get_tracer, is_otel_enabled
@@ -37,6 +38,7 @@ from prometheus import (
 from pydantic import ValidationError
 from redis.asyncio.client import Redis
 from redis_cache import check_cache, write_cache
+from redis_lock.asyncio import RedisLock
 from schedule_tracker import ScheduleEvent, VehicleRedisSchema
 from shared_types.shared_types import LightStop, LineRoute, RouteShapes, TaskType
 from tenacity import (
@@ -100,8 +102,8 @@ async def get_shapes(
         if cached:
             body = cached
         else:
-            async with session.get(
-                f"/shapes?filter[route]={route}&api_key={MBTA_AUTH}"
+            async with rate_limited_get(
+                session, r_client, f"/shapes?filter[route]={route}&api_key={MBTA_AUTH}"
             ) as response:
                 if response.status == 429:
                     raise RateLimitExceeded()
@@ -191,28 +193,42 @@ async def _light_get_stop_impl(
             MBTAApi = mbta_client.MBTAApi
             ls = None
 
-            async with aiohttp.ClientSession(base_url=MBTA_V3_ENDPOINT) as session:
-                async with MBTAApi(
-                    r_client, stop_id=stop_id, watcher_type=TaskType.LIGHT_STOP
-                ) as watcher:
-                    stop = await watcher.get_stop(session, stop_id, tg)
-                    if stop and stop[0]:
-                        if stop[0].data.attributes.description:
-                            stop_id = stop[0].data.attributes.description
-                        elif stop[0].data.attributes.name:
-                            stop_id = stop[0].data.attributes.name
-                        ls = LightStop(
-                            stop_id=stop_id,
-                            long=stop[0].data.attributes.longitude,
-                            lat=stop[0].data.attributes.latitude,
+            async with RedisLock(
+                r_client,
+                f"stop_fetch:{stop_id}",
+                blocking_timeout=5,
+                expire_timeout=30,
+            ):
+                if await check_cache(r_client, key):
+                    logger.debug(
+                        f"Stop data for {stop_id} was cached while waiting on lock; skipping fetch"
+                    )
+                    return
+
+                async with aiohttp.ClientSession(base_url=MBTA_V3_ENDPOINT) as session:
+                    async with MBTAApi(
+                        r_client, stop_id=stop_id, watcher_type=TaskType.LIGHT_STOP
+                    ) as watcher:
+                        stop = await watcher.get_stop(
+                            session, stop_id, tg, include_facilities=False
                         )
-                    if ls:
-                        await write_cache(
-                            r_client,
-                            key,
-                            ls.model_dump_json(),
-                            randint(TWO_MONTHS, YEAR),
-                        )
+                        if stop and stop[0]:
+                            if stop[0].data.attributes.description:
+                                stop_id = stop[0].data.attributes.description
+                            elif stop[0].data.attributes.name:
+                                stop_id = stop[0].data.attributes.name
+                            ls = LightStop(
+                                stop_id=stop_id,
+                                long=stop[0].data.attributes.longitude,
+                                lat=stop[0].data.attributes.latitude,
+                            )
+                        if ls:
+                            await write_cache(
+                                r_client,
+                                key,
+                                ls.model_dump_json(),
+                                randint(TWO_MONTHS, YEAR),
+                            )
 
         tg.start_soon(fetch_stop, stop_id, tg)
         return None

@@ -40,6 +40,12 @@ class MockSession:
         return MockResp(self._status, self._data)
 
 
+def make_redis_client() -> AsyncMock:
+    client = AsyncMock()
+    client.eval.return_value = [1, 0]
+    return client
+
+
 def build_alert_payload(
     with_valid_data: bool = True,
 ) -> dict[str, Any] | list[Any] | str:
@@ -77,7 +83,7 @@ def build_alert_payload(
 async def test_light_get_alerts_batch_success() -> None:
     # Arrange a session that returns valid alert payload
     session = MockSession(200, build_alert_payload(True))
-    r_client = AsyncMock()
+    r_client = make_redis_client()
 
     # Act
     alerts = await light_get_alerts_batch(
@@ -93,7 +99,7 @@ async def test_light_get_alerts_batch_success() -> None:
 @pytest.mark.anyio("asyncio")
 async def test_light_get_alerts_batch_rate_limited_returns_none() -> None:
     session = MockSession(429, build_alert_payload(True))
-    r_client = AsyncMock()
+    r_client = make_redis_client()
     alerts = await light_get_alerts_batch("Red", cast(ClientSession, session), r_client)
     assert alerts is None
 
@@ -101,7 +107,7 @@ async def test_light_get_alerts_batch_rate_limited_returns_none() -> None:
 @pytest.mark.anyio("asyncio")
 async def test_light_get_alerts_batch_non_200_returns_none() -> None:
     session = MockSession(500, build_alert_payload(True))
-    r_client = AsyncMock()
+    r_client = make_redis_client()
     alerts = await light_get_alerts_batch("Red", cast(ClientSession, session), r_client)
     assert alerts is None
 
@@ -109,7 +115,7 @@ async def test_light_get_alerts_batch_non_200_returns_none() -> None:
 @pytest.mark.anyio("asyncio")
 async def test_light_get_alerts_batch_invalid_shape_returns_none() -> None:
     session = MockSession(200, build_alert_payload(False))
-    r_client = AsyncMock()
+    r_client = make_redis_client()
     alerts = await light_get_alerts_batch("Red", cast(ClientSession, session), r_client)
     assert alerts is None
 
@@ -117,7 +123,7 @@ async def test_light_get_alerts_batch_invalid_shape_returns_none() -> None:
 @pytest.mark.anyio("asyncio")
 async def test_light_get_alerts_batch_missing_data_returns_none() -> None:
     session = MockSession(200, {"foo": 1})
-    r_client = AsyncMock()
+    r_client = make_redis_client()
     alerts = await light_get_alerts_batch("Red", cast(ClientSession, session), r_client)
     assert alerts is None
 
@@ -125,7 +131,7 @@ async def test_light_get_alerts_batch_missing_data_returns_none() -> None:
 @pytest.mark.anyio("asyncio")
 async def test_light_get_alerts_batch_data_not_list_returns_none() -> None:
     session = MockSession(200, {"data": {"not": "a list"}})
-    r_client = AsyncMock()
+    r_client = make_redis_client()
     alerts = await light_get_alerts_batch("Red", cast(ClientSession, session), r_client)
     assert alerts is None
 

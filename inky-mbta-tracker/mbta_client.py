@@ -16,6 +16,7 @@ from config import Config
 from consts import DAY, HOUR, MINUTE, TWO_MONTHS, WEEK, YEAR
 from exceptions import RateLimitExceeded
 from mbta_client_extended import silver_line_lookup
+from mbta_rate_limiter import rate_limited_get
 from mbta_responses import (
     AlertResource,
     Facilities,
@@ -789,8 +790,10 @@ class MBTAApi:
             else:
                 if span:
                     span.set_attribute("cache.hit", False)
-                async with session.get(
-                    f"trips?filter[id]={trip_id}&api_key={MBTA_AUTH}"
+                async with rate_limited_get(
+                    session,
+                    self.r_client,
+                    f"trips?filter[id]={trip_id}&api_key={MBTA_AUTH}",
                 ) as response:
                     if response.status == 429:
                         raise RateLimitExceeded()
@@ -824,8 +827,10 @@ class MBTAApi:
         if prediction.relationships.route and prediction.relationships.route.data:
             route_id = prediction.relationships.route.data.id
             if route_id not in self.routes:
-                async with session.get(
-                    f"routes?filter[id]={route_id}&api_key={MBTA_AUTH}"
+                async with rate_limited_get(
+                    session,
+                    self.r_client,
+                    f"routes?filter[id]={route_id}&api_key={MBTA_AUTH}",
                 ) as response:
                     try:
                         if response.status == 429:
@@ -953,7 +958,7 @@ class MBTAApi:
                 # Additionally, min_time=00:00&max_time=02:00 will not return anything. The time format is HH:MM.
                 # https://api-v3.mbta.com/docs/swagger/index.html#/Schedule/ApiWeb_ScheduleController_index
                 endpoint += f"&filter[max_time]={diff.strftime('%H:%M')}"
-        async with session.get(endpoint) as response:
+        async with rate_limited_get(session, self.r_client, endpoint) as response:
             try:
                 if response.status == 429:
                     raise RateLimitExceeded()
@@ -988,16 +993,24 @@ class MBTAApi:
         retry=retry_if_not_exception_type(CancelledError),
     )
     async def get_stop(
-        self, session: ClientSession, stop_id: str, tg: Optional[TaskGroup] = None
+        self,
+        session: ClientSession,
+        stop_id: str,
+        tg: Optional[TaskGroup] = None,
+        include_facilities: bool = True,
     ) -> tuple[Optional[Stop], Optional[Facilities]]:
         tracer = get_tracer(__name__) if is_otel_enabled() else None
         if tracer and should_trace_operation("high_volume"):
             with tracer.start_as_current_span(
                 "mbta_client.get_stop", attributes={"stop_id": stop_id}
             ) as span:
-                return await self._get_stop_impl(session, stop_id, tg, span)
+                return await self._get_stop_impl(
+                    session, stop_id, tg, span, include_facilities
+                )
         else:
-            return await self._get_stop_impl(session, stop_id, tg, None)
+            return await self._get_stop_impl(
+                session, stop_id, tg, None, include_facilities
+            )
 
     async def _get_stop_impl(
         self,
@@ -1005,6 +1018,7 @@ class MBTAApi:
         stop_id: str,
         tg: Optional[TaskGroup],
         span: Optional[Span],
+        include_facilities: bool,
     ) -> tuple[Optional[Stop], Optional[Facilities]]:
         if session.closed:
             logger.debug("get_stop called with a closed session; skipping fetch")
@@ -1029,7 +1043,11 @@ class MBTAApi:
         else:
             if span:
                 span.set_attribute("cache.hit", False)
-            async with session.get(f"/stops/{stop_id}?api_key={MBTA_AUTH}") as response:
+            async with rate_limited_get(
+                session,
+                self.r_client,
+                f"/stops/{stop_id}?api_key={MBTA_AUTH}",
+            ) as response:
                 try:
                     if response.status == 429:
                         raise RateLimitExceeded()
@@ -1046,18 +1064,20 @@ class MBTAApi:
                     if span:
                         span.set_attribute("error", True)
                         span.set_attribute("error.type", "validation_error")
-            # retrieve bike facility info
-            async with session.get(
-                f"/facilities/?filter[stop]={self.stop_id}&filter[type]=BIKE_STORAGE"
-            ) as response:
-                try:
-                    if response.status == 429:
-                        raise RateLimitExceeded()
-                    body = await response.text()
-                    mbta_api_requests.labels("facilities").inc()
-                    facilities = Facilities.model_validate_json(body, strict=False)
-                except ValidationError as err:
-                    logger.error("Unable to parse facility", exc_info=err)
+            if include_facilities:
+                async with rate_limited_get(
+                    session,
+                    self.r_client,
+                    f"/facilities/?filter[stop]={stop_id}&filter[type]=BIKE_STORAGE",
+                ) as response:
+                    try:
+                        if response.status == 429:
+                            raise RateLimitExceeded()
+                        body = await response.text()
+                        mbta_api_requests.labels("facilities").inc()
+                        facilities = Facilities.model_validate_json(body, strict=False)
+                    except ValidationError as err:
+                        logger.error("Unable to parse facility", exc_info=err)
             if stop:
                 if tg:
                     tg.start_soon(
