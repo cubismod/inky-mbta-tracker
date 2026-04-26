@@ -19,7 +19,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 	uv sync --link-mode=copy --frozen --no-install-project --no-dev
 
 COPY inky-mbta-tracker ./inky-mbta-tracker
-COPY config*.json child_stations.json shapes.json vehicles.json ./
+COPY child_stations.json ./
 
 # Install the project (uses cached wheels from previous step) and verify lockfile
 RUN --mount=type=cache,target=/root/.cache/pip \
