@@ -24,9 +24,9 @@ tracer = trace.get_tracer(__name__)
 @router.post(
     "/predictions",
     summary="Fetch stop predictions",
-    description=("Get a maximum of 5 stop/route filtered predictions"),
+    description=("Get a maximum of 10 stop/route filtered predictions"),
 )
-@cache_ttl(3 * 60)
+@cache_ttl(4 * 60)
 @limiter.limit("10/minute")
 async def predictions_req(
     request: Request, commons: GET_DI, req: PredictionsRequest
@@ -37,9 +37,9 @@ async def predictions_req(
 
         try:
             if commons.tg:
-                if len(req.stops) > 5:
+                if len(req.stops) > 10:
                     return Response(
-                        content="Too many stops requested. Maximum is 5.",
+                        content="Too many stops requested. Maximum is 10.",
                         media_type="text/plain",
                         status_code=400,
                     )

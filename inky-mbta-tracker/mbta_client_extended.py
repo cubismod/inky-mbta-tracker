@@ -235,10 +235,15 @@ async def _light_get_stop_impl(
                                 stop_id = stop[0].data.attributes.description
                             elif stop[0].data.attributes.name:
                                 stop_id = stop[0].data.attributes.name
+
+                            parent_id: Optional[str] = None
+                            if stop[0].data.relationships and stop[0].data.relationships.parent_station and stop[0].data.relationships.parent_station.data:
+                                parent_id = stop[0].data.relationships.parent_station.data.id
                             ls = LightStop(
                                 stop_id=stop_id,
                                 long=stop[0].data.attributes.longitude,
                                 lat=stop[0].data.attributes.latitude,
+                                parent_id=parent_id
                             )
                         if ls:
                             await write_cache(
@@ -634,9 +639,9 @@ async def get_predictions(
             body = await response.text()
             mbta_api_requests.labels("predictions").inc()
             if tg:
-                tg.start_soon(write_cache, r_client, key, body, 60)
+                tg.start_soon(write_cache, r_client, key, body, 3 * 50)
             else:
-                await write_cache(r_client, key, body, 60)
+                await write_cache(r_client, key, body, 3 * 60)
             try:
                 model = PredictionResourceList.model_validate_json(body)
                 return model.data
@@ -682,17 +687,15 @@ async def filter_predictions(
                     departure_time = datetime.fromisoformat(
                         prediction.attributes.departure_time
                     ).astimezone(UTC)
-                    if departure_time < now or departure_time > now + timedelta(
-                        minutes=stop.transit_time_min
-                    ):
+                    time_to_leave = departure_time - timedelta(minutes=stop.transit_time_min)
+                    if departure_time < now or now > time_to_leave:
                         continue
                 elif prediction.attributes.arrival_time:
                     arrival_time = datetime.fromisoformat(
                         prediction.attributes.arrival_time
                     ).astimezone(UTC)
-                    if arrival_time < now or arrival_time > now + timedelta(
-                        minutes=stop.transit_time_min
-                    ):
+                    time_to_leave = arrival_time - timedelta(minutes=stop.transit_time_min)
+                    if arrival_time < now or time_to_leave < now:
                         continue
                 filtered.append(prediction)
 
