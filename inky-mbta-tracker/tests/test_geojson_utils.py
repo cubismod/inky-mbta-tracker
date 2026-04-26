@@ -177,3 +177,8 @@ async def test_calculate_stop_eta_uses_distance_and_speed(mock_dist: MagicMock) 
 def test_calculate_bearing_east_is_90() -> None:
     b = calculate_bearing(Point((0.0, 0.0)), Point((1.0, 0.0)))
     assert 85 <= b <= 95
+
+
+def test_calculate_bearing_west_is_negative_90() -> None:
+    b = calculate_bearing(Point((0.0, 0.0)), Point((-1.0, 0.0)))
+    assert -95 <= b <= -85

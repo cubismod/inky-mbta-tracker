@@ -16,6 +16,7 @@ from anyio import to_thread
 from anyio.abc import TaskGroup
 from anyio.streams.memory import MemoryObjectReceiveStream
 from consts import HOUR
+from geo_math import distance
 from geojson import Feature, Point
 from otel_config import get_tracer, is_otel_enabled
 from otel_utils import (
@@ -62,7 +63,6 @@ from tenacity import (
     retry,
     wait_random_exponential,
 )
-from turfpy import measurement
 
 logger = logging.getLogger("schedule_tracker")
 
@@ -167,11 +167,11 @@ class Tracker:
                     )
                     end = Feature(geometry=Point((event.longitude, event.latitude)))
 
-                    distance: float = measurement.distance(start, end, "m")
+                    distance_meters = distance(start, end, "m")
                     duration = event.update_time - last_event_validated.update_time
 
-                    if duration.seconds != 0 and distance != 0:
-                        meters_per_second = distance / duration.seconds
+                    if duration.seconds != 0 and distance_meters != 0:
+                        meters_per_second = distance_meters / duration.seconds
                         speed = meters_per_second * 2.2369362921
                         if last_event_validated.speed != 0 and duration.seconds < 30:
                             speed = fmean([speed, last_event_validated.speed])

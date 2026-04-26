@@ -8,6 +8,7 @@ from aiohttp import ClientSession
 from anyio import sleep
 from anyio.abc import TaskGroup
 from config import Config
+from geo_math import bearing, distance
 from geojson import Feature, LineString, Point
 from mbta_client import (
     silver_line_lookup,
@@ -30,7 +31,6 @@ from pydantic import ValidationError
 from redis.asyncio import Redis
 from schedule_tracker import VehicleRedisSchema
 from shapely.geometry import LineString as ShapelyLineString
-from turfpy.measurement import bearing, distance
 
 logger = logging.getLogger("geojson_utils")
 
@@ -167,7 +167,7 @@ def calculate_stop_eta(stop: Feature, vehicle: Feature, speed: float) -> str:
 
 
 def calculate_bearing(start: Point, end: Point) -> float:
-    return bearing(Feature(geometry=start), Feature(geometry=end))
+    return bearing(start, end)
 
 
 async def collect_alerts(
