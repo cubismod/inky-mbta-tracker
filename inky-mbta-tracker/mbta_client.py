@@ -962,7 +962,7 @@ class MBTAApi:
         if self.direction_filter != "":
             endpoint += f"&filter[direction_id]={self.direction_filter}"
         if time_limit:
-            diff = datetime.now().astimezone(ZoneInfo("US/Eastern")) + time_limit
+            diff = datetime.now().astimezone(ZoneInfo("America/New_York")) + time_limit
             if diff.hour >= 2:
                 # Time after which schedule should not be returned.
                 # To filter times after midnight use more than 24 hours.

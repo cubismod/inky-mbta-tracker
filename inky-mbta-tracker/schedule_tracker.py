@@ -108,7 +108,7 @@ class Tracker:
     @staticmethod
     def log_prediction(event: ScheduleEvent) -> None:
         logger.debug(
-            f"action={event.action} time={event.time.astimezone(ZoneInfo('US/Eastern')).strftime('%c')} route_id={event.route_id} route_type={event.route_type} headsign={event.headsign} stop={event.stop} id={event.id}, transit_time_min={event.transit_time_min}, alerting={event.alerting}, bikes_allowed={event.bikes_allowed}"
+            f"action={event.action} time={event.time.astimezone(ZoneInfo('America/New_York')).strftime('%c')} route_id={event.route_id} route_type={event.route_type} headsign={event.headsign} stop={event.stop} id={event.id}, transit_time_min={event.transit_time_min}, alerting={event.alerting}, bikes_allowed={event.bikes_allowed}"
         )
 
     @staticmethod
