@@ -1,7 +1,6 @@
 import logging
 
 from api.core import GET_DI
-from api.middleware.cache_middleware import cache_ttl
 from fastapi import APIRouter, Request, Response
 from mbta_client_extended import (
     filter_predictions,
@@ -26,7 +25,6 @@ tracer = trace.get_tracer(__name__)
     summary="Fetch stop predictions",
     description=("Get a maximum of 10 stop/route filtered predictions"),
 )
-@cache_ttl(4 * 60)
 @limiter.limit("10/minute")
 async def predictions_req(
     request: Request, commons: GET_DI, req: PredictionsRequest
@@ -56,11 +54,15 @@ async def predictions_req(
                     commons.session, stop_ids, commons.r_client, commons.tg, span
                 )
                 if predictions:
+                    stop_name_mapping = {stop.id: stop.name for stop in req.stops}
                     transformed = await transform_predictions(
-                        await filter_predictions(predictions, req, commons.r_client, commons.tg),
+                        await filter_predictions(
+                            predictions, req, commons.r_client, commons.tg
+                        ),
                         commons.tg,
                         commons.r_client,
                         commons.session,
+                        stop_name_mapping,
                     )
                     return Response(
                         content=PredictionResponse(stops=transformed).json(),

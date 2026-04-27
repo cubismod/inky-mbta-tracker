@@ -77,6 +77,7 @@ class RouteShapes(BaseModel):
 
 class LightStop(BaseModel):
     stop_id: str
+    stop_name: str
     long: Optional[float] = None
     lat: Optional[float] = None
     platform_prediction: Optional[str] = None
@@ -194,6 +195,7 @@ class StopRequest(BaseModel):
     routes: Optional[List[str]] = None
     direction: Optional[int] = None
     transit_time_min: int = 0
+    name: str
 
 
 class PredictionsRequest(BaseModel):

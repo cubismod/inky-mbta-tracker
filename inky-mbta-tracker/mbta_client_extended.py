@@ -2,6 +2,7 @@ import logging
 import os
 from asyncio import CancelledError
 from datetime import UTC, datetime, timedelta
+from itertools import product
 from random import randint
 from typing import TYPE_CHECKING, Optional
 
@@ -230,20 +231,28 @@ async def _light_get_stop_impl(
                         stop = await watcher.get_stop(
                             session, stop_id, tg, include_facilities=False
                         )
+                        stop_name = ""
                         if stop and stop[0]:
                             if stop[0].data.attributes.description:
-                                stop_id = stop[0].data.attributes.description
+                                stop_name = stop[0].data.attributes.description
                             elif stop[0].data.attributes.name:
-                                stop_id = stop[0].data.attributes.name
+                                stop_name = stop[0].data.attributes.name
 
                             parent_id: Optional[str] = None
-                            if stop[0].data.relationships and stop[0].data.relationships.parent_station and stop[0].data.relationships.parent_station.data:
-                                parent_id = stop[0].data.relationships.parent_station.data.id
+                            if (
+                                stop[0].data.relationships
+                                and stop[0].data.relationships.parent_station
+                                and stop[0].data.relationships.parent_station.data
+                            ):
+                                parent_id = stop[
+                                    0
+                                ].data.relationships.parent_station.data.id
                             ls = LightStop(
                                 stop_id=stop_id,
+                                stop_name=stop_name,
                                 long=stop[0].data.attributes.longitude,
                                 lat=stop[0].data.attributes.latitude,
-                                parent_id=parent_id
+                                parent_id=parent_id,
                             )
                         if ls:
                             await write_cache(
@@ -662,19 +671,28 @@ async def filter_predictions(
     now = datetime.now(UTC)
     for prediction in predictions:
         # need to fetch the stop to get the parent station ID
+        pred_stop_id = (
+            prediction.relationships.stop.data.id
+            if prediction.relationships.stop and prediction.relationships.stop.data
+            else ""
+        )
         pred_stop = await light_get_stop(
             r_client,
-            prediction.relationships.stop.data.id
-            if prediction.relationships.stop.data
-            else "",
+            pred_stop_id,
             tg,
             fetch_immediately=True,
         )
+        if pred_stop:
+            pred_stop_id = (
+                pred_stop.parent_id if pred_stop.parent_id else pred_stop.stop_id
+            )
+
         for stop in predictions_request.stops:
-            if pred_stop and pred_stop.parent_id and pred_stop.parent_id == stop.id:
+            if pred_stop_id == stop.id:
                 if (
                     prediction.relationships.route.data
                     and stop.routes
+                    and len(stop.routes) > 0
                     and prediction.relationships.route.data.id not in stop.routes
                 ):
                     continue
@@ -683,22 +701,46 @@ async def filter_predictions(
                     and prediction.attributes.direction_id != stop.direction
                 ):
                     continue
+                if (pred_stop and prediction.attributes.trip_headsign) and (
+                    prediction.attributes.trip_headsign in pred_stop.stop_name
+                ):
+                    # skip returning trips
+                    continue
                 if prediction.attributes.departure_time:
                     departure_time = datetime.fromisoformat(
                         prediction.attributes.departure_time
                     ).astimezone(UTC)
-                    time_to_leave = departure_time - timedelta(minutes=stop.transit_time_min)
-                    if departure_time < now or now > time_to_leave:
+                    time_to_leave = departure_time - timedelta(
+                        minutes=stop.transit_time_min
+                    )
+                    if departure_time < now or time_to_leave < now:
                         continue
                 elif prediction.attributes.arrival_time:
                     arrival_time = datetime.fromisoformat(
                         prediction.attributes.arrival_time
                     ).astimezone(UTC)
-                    time_to_leave = arrival_time - timedelta(minutes=stop.transit_time_min)
+                    time_to_leave = arrival_time - timedelta(
+                        minutes=stop.transit_time_min
+                    )
                     if arrival_time < now or time_to_leave < now:
                         continue
+                if prediction.relationships.stop.data:
+                    prediction.relationships.stop.data.id = pred_stop_id
                 filtered.append(prediction)
-
+        # perform a last pass for removing duplicate trips
+        for i, j in product(filtered, filtered):
+            if i.id == j.id:
+                continue
+            i_arrival = i.attributes.arrival_time or i.attributes.departure_time
+            j_arrival = j.attributes.arrival_time or j.attributes.departure_time
+            if (i.relationships.trip.data and j.relationships.trip.data) and (
+                i.relationships.trip.data.id == j.relationships.trip.data.id
+            ):
+                if i_arrival and j_arrival:
+                    i_ts = datetime.fromisoformat(i_arrival).astimezone(UTC)
+                    j_ts = datetime.fromisoformat(j_arrival).astimezone(UTC)
+                    if j_ts > i_ts:
+                        filtered.remove(j)
     return filtered
 
 
@@ -707,6 +749,7 @@ async def transform_predictions(
     tg: TaskGroup,
     r_client: Redis,
     session: ClientSession,
+    stop_name_mapping: dict[str, str],
 ):
     stop_responses: list[StopResponse] = []
 
@@ -724,12 +767,24 @@ async def transform_predictions(
             else None
         )
 
+        timestamp = datetime.fromisoformat(
+            prediction.attributes.departure_time
+            or prediction.attributes.arrival_time
+            or datetime.now().isoformat()
+        ).astimezone(UTC)
+
+        stop_id = (
+            prediction.relationships.stop.data.id
+            if prediction.relationships.stop and prediction.relationships.stop.data
+            else ""
+        )
+
         stop_response = StopResponse(
-            stop_id=prediction.relationships.stop.data.id
-            if prediction.relationships.stop.data
-            else "",
-            stop_name=stop_info.stop_id if stop_info else "",
-            timestamp=datetime.now(UTC).isoformat(),
+            stop_id=stop_id,
+            stop_name=stop_name_mapping.get(
+                stop_id, stop_info.stop_name if stop_info else ""
+            ),
+            timestamp=timestamp.isoformat(),
             headsign=headsign if headsign else "",
             route_id=prediction.relationships.route.data.id
             if prediction.relationships.route.data
