@@ -92,7 +92,7 @@ def create_app() -> FastAPI:
                 "/shapes*",
                 "/vehicles*",
                 "/vehicles.json",
-                "/predictions*"
+                "/predictions*",
             },
             exclude_paths={"/vehicles/stream"},
         )
