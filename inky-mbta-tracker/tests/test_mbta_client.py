@@ -79,14 +79,16 @@ class TestSilverLineLookup:
 
 class TestLightStop:
     def test_light_stop_creation(self) -> None:
-        stop = LightStop(stop_id="place-davis")
+        stop = LightStop(stop_id="place-davis", stop_name="Davis")
         assert stop.stop_id == "place-davis"
         assert stop.long is None
         assert stop.lat is None
         assert stop.platform_prediction is None
 
     def test_light_stop_with_coordinates(self) -> None:
-        stop = LightStop(stop_id="place-davis", long=-71.1218, lat=42.3967)
+        stop = LightStop(
+            stop_id="place-davis", long=-71.1218, lat=42.3967, stop_name="Davis"
+        )
         assert stop.stop_id == "place-davis"
         assert stop.long == -71.1218
         assert stop.lat == 42.3967
@@ -125,7 +127,7 @@ class TestMBTAApi:
             arrival_time="2023-12-01T10:30:00-05:00",
             departure_time=None,
             direction_id=0,
-            revenue="REVENUE",
+            revenue_status="REVENUE",
         )
         result = MBTAApi.determine_time(attrs)
         assert result is not None
@@ -136,7 +138,7 @@ class TestMBTAApi:
             arrival_time=None,
             departure_time="2023-12-01T10:30:00-05:00",
             direction_id=0,
-            revenue="REVENUE",
+            revenue_status="REVENUE",
         )
         result = MBTAApi.determine_time(attrs)
         assert result is not None
@@ -144,7 +146,10 @@ class TestMBTAApi:
 
     def test_determine_time_none(self) -> None:
         attrs = PredictionAttributes(
-            arrival_time=None, departure_time=None, direction_id=0, revenue="REVENUE"
+            arrival_time=None,
+            departure_time=None,
+            direction_id=0,
+            revenue_status="REVENUE",
         )
         result = MBTAApi.determine_time(attrs)
         assert result is None
@@ -262,7 +267,7 @@ class TestLightGetStop:
     ) -> None:
         mock_redis = AsyncMock()
 
-        cached_data = '{"stop_id": "Davis", "long": -71.1218, "lat": 42.3967}'
+        cached_data = '{"stop_id": "place-davis", "stop_name": "Davis", "long": -71.1218, "lat": 42.3967}'
         mock_check_cache.return_value = cached_data
 
         async with anyio.create_task_group() as tg:
@@ -270,7 +275,7 @@ class TestLightGetStop:
             tg.cancel_scope.cancel()
 
         assert result is not None
-        assert result.stop_id == "Davis"
+        assert result.stop_id == "place-davis"
         assert result.long == -71.1218
         assert result.lat == 42.3967
 

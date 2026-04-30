@@ -77,9 +77,11 @@ class RouteShapes(BaseModel):
 
 class LightStop(BaseModel):
     stop_id: str
+    stop_name: str
     long: Optional[float] = None
     lat: Optional[float] = None
     platform_prediction: Optional[str] = None
+    parent_id: Optional[str] = None
 
 
 class DepartureInfo(TypedDict):
@@ -186,3 +188,27 @@ class DiscordWebhook(BaseModel):
 class WebhookRedisEntry(BaseModel):
     message_id: str
     message_hash: str
+
+
+class StopRequest(BaseModel):
+    id: str
+    routes: Optional[List[str]] = None
+    direction: Optional[int] = None
+    transit_time_min: int = 0
+    name: str
+
+
+class PredictionsRequest(BaseModel):
+    stops: list[StopRequest]
+
+
+class StopResponse(BaseModel):
+    stop_id: str
+    stop_name: str
+    timestamp: str
+    route_id: str
+    headsign: str
+
+
+class PredictionResponse(BaseModel):
+    stops: list[StopResponse]

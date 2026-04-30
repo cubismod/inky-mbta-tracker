@@ -2,6 +2,7 @@ import logging
 import os
 from asyncio import CancelledError
 from datetime import UTC, datetime, timedelta
+from itertools import product
 from random import randint
 from typing import TYPE_CHECKING, Optional
 
@@ -23,7 +24,12 @@ from consts import (
 )
 from exceptions import RateLimitExceeded
 from mbta_rate_limiter import rate_limited_get
-from mbta_responses import AlertResource, Shapes
+from mbta_responses import (
+    AlertResource,
+    PredictionResource,
+    PredictionResourceList,
+    Shapes,
+)
 from opentelemetry.trace import Span
 from otel_config import get_tracer, is_otel_enabled
 from otel_utils import (
@@ -41,7 +47,14 @@ from redis.asyncio.client import Redis
 from redis_cache import check_cache, write_cache
 from redis_lock.asyncio import RedisLock
 from schedule_tracker import ScheduleEvent, VehicleRedisSchema
-from shared_types.shared_types import LightStop, LineRoute, RouteShapes, TaskType
+from shared_types.shared_types import (
+    LightStop,
+    LineRoute,
+    PredictionsRequest,
+    RouteShapes,
+    StopResponse,
+    TaskType,
+)
 from tenacity import (
     before_log,
     before_sleep_log,
@@ -143,15 +156,20 @@ async def light_get_stop(
     r_client: Redis,
     stop_id: str,
     tg: TaskGroup,
+    fetch_immediately: bool = False,
 ) -> Optional[LightStop]:
     tracer = get_tracer(__name__) if is_otel_enabled() else None
     if tracer:
         with tracer.start_as_current_span(
             "mbta_client_extended.light_get_stop", attributes={"stop_id": stop_id}
         ) as span:
-            return await _light_get_stop_impl(r_client, stop_id, tg, span)
+            return await _light_get_stop_impl(
+                r_client, stop_id, tg, span, fetch_immediately
+            )
     else:
-        return await _light_get_stop_impl(r_client, stop_id, tg, None)
+        return await _light_get_stop_impl(
+            r_client, stop_id, tg, None, fetch_immediately
+        )
 
 
 async def _light_get_stop_impl(
@@ -159,6 +177,7 @@ async def _light_get_stop_impl(
     stop_id: str,
     tg: TaskGroup,
     span: Optional[Span],
+    fetch_immediately: bool = False,
 ) -> Optional[LightStop]:
     key = f"stop:{stop_id}:light"
     import mbta_client
@@ -176,14 +195,14 @@ async def _light_get_stop_impl(
                 span.set_attribute("error", True)
                 span.set_attribute("error.type", "validation_error")
     else:
-        # if it's not cached then we fetch it in the background and return None; it will be cached for next time
         if span:
             span.set_attribute("cache.hit", False)
 
         async def fetch_stop(stop_id: str, tg: TaskGroup):
             import mbta_client
 
-            await sleep(randint(MINUTE, TEN_MIN))
+            if not fetch_immediately:
+                await sleep(randint(MINUTE, TEN_MIN))
             if await check_cache(r_client, key):
                 logger.debug(
                     f"Stop data for {stop_id} was cached while waiting; skipping fetch"
@@ -213,15 +232,28 @@ async def _light_get_stop_impl(
                         stop = await watcher.get_stop(
                             session, stop_id, tg, include_facilities=False
                         )
+                        stop_name = ""
                         if stop and stop[0]:
                             if stop[0].data.attributes.description:
-                                stop_id = stop[0].data.attributes.description
+                                stop_name = stop[0].data.attributes.description
                             elif stop[0].data.attributes.name:
-                                stop_id = stop[0].data.attributes.name
+                                stop_name = stop[0].data.attributes.name
+
+                            parent_id: Optional[str] = None
+                            if (
+                                stop[0].data.relationships
+                                and stop[0].data.relationships.parent_station
+                                and stop[0].data.relationships.parent_station.data
+                            ):
+                                parent_id = stop[
+                                    0
+                                ].data.relationships.parent_station.data.id
                             ls = LightStop(
                                 stop_id=stop_id,
+                                stop_name=stop_name,
                                 long=stop[0].data.attributes.longitude,
                                 lat=stop[0].data.attributes.latitude,
+                                parent_id=parent_id,
                             )
                         if ls:
                             await write_cache(
@@ -231,7 +263,10 @@ async def _light_get_stop_impl(
                                 randint(TWO_MONTHS, YEAR),
                             )
 
-        tg.start_soon(fetch_stop, stop_id, tg)
+        if fetch_immediately:
+            await fetch_stop(stop_id, tg)
+        else:
+            tg.start_soon(fetch_stop, stop_id, tg)
         return None
 
 
@@ -246,6 +281,16 @@ async def light_get_alerts(
         alerts = await watcher.get_alerts(session, route_id=route_id)
         if alerts:
             return alerts
+    return None
+
+
+async def light_get_headsign(
+    trip_id: str, session: ClientSession, r_client: Redis, tg: TaskGroup
+) -> Optional[str]:
+    from mbta_client import MBTAApi
+
+    async with MBTAApi(r_client, watcher_type=TaskType.VEHICLES) as watcher:
+        return await watcher.get_headsign(trip_id, session, tg)
     return None
 
 
@@ -574,3 +619,187 @@ async def watch_alerts(
                 transit_time_min=0,
                 config=config,
             )
+
+
+@retry(
+    wait=wait_exponential_jitter(initial=5, jitter=20, max=60),
+    before_sleep=before_sleep_log(logger, logging.WARNING, exc_info=True),
+    retry=retry_if_not_exception_type(CancelledError),
+)
+async def get_predictions(
+    session: ClientSession,
+    stops: list[str],
+    r_client: Redis,
+    tg: Optional[TaskGroup],
+    span: Optional[Span],
+) -> Optional[list[PredictionResource]]:
+    if session.closed:
+        logger.debug("get_predictions called with a closed session; skipping fetch")
+        if span:
+            span.set_attribute("session.closed", True)
+        return None
+    key = f"predictions:{','.join(stops)}"
+    cached = await check_cache(r_client, key)
+    if cached:
+        if span:
+            span.set_attribute("cache.hit", True)
+        try:
+            cached_model = PredictionResourceList.model_validate_json(cached)
+            return cached_model.data
+        except ValidationError as err:
+            logger.error("unable to validate json", exc_info=err)
+            if span:
+                span.set_attribute("error", True)
+                span.set_attribute("error.type", "validation_error")
+    else:
+        if span:
+            span.set_attribute("cache.hit", False)
+        endpoint = f"{MBTA_V3_ENDPOINT}/predictions?filter[stop]={','.join(stops)}&sort=time&api_key={MBTA_AUTH}"
+        async with session.get(endpoint) as response:
+            if response.status == 429:
+                raise RateLimitExceeded()
+            body = await response.text()
+            mbta_api_requests.labels("predictions").inc()
+            if tg:
+                tg.start_soon(write_cache, r_client, key, body, 3 * 50)
+            else:
+                await write_cache(r_client, key, body, 3 * 60)
+            try:
+                model = PredictionResourceList.model_validate_json(body)
+                return model.data
+            except ValidationError as err:
+                logger.error("unable to validate json", exc_info=err)
+                if span:
+                    span.set_attribute("error", True)
+                    span.set_attribute("error.type", "validation_error")
+
+
+async def filter_predictions(
+    predictions: list[PredictionResource],
+    predictions_request: PredictionsRequest,
+    r_client: Redis,
+    tg: TaskGroup,
+):
+    filtered: list[PredictionResource] = []
+    now = datetime.now(UTC)
+    for prediction in predictions:
+        # need to fetch the stop to get the parent station ID
+        pred_stop_id = (
+            prediction.relationships.stop.data.id
+            if prediction.relationships.stop and prediction.relationships.stop.data
+            else ""
+        )
+        pred_stop = await light_get_stop(
+            r_client,
+            pred_stop_id,
+            tg,
+            fetch_immediately=True,
+        )
+        if pred_stop:
+            pred_stop_id = (
+                pred_stop.parent_id if pred_stop.parent_id else pred_stop.stop_id
+            )
+
+        for stop in predictions_request.stops:
+            if pred_stop_id == stop.id:
+                if (
+                    prediction.relationships.route.data
+                    and stop.routes
+                    and len(stop.routes) > 0
+                    and prediction.relationships.route.data.id not in stop.routes
+                ):
+                    continue
+                if prediction.attributes.direction_id != stop.direction:
+                    continue
+                if (pred_stop and prediction.attributes.trip_headsign) and (
+                    prediction.attributes.trip_headsign in pred_stop.stop_name
+                ):
+                    # skip returning trips
+                    continue
+                if prediction.attributes.departure_time:
+                    departure_time = datetime.fromisoformat(
+                        prediction.attributes.departure_time
+                    ).astimezone(UTC)
+                    time_to_leave = departure_time - timedelta(
+                        minutes=stop.transit_time_min
+                    )
+                    if departure_time < now or time_to_leave < now:
+                        continue
+                elif prediction.attributes.arrival_time:
+                    arrival_time = datetime.fromisoformat(
+                        prediction.attributes.arrival_time
+                    ).astimezone(UTC)
+                    time_to_leave = arrival_time - timedelta(
+                        minutes=stop.transit_time_min
+                    )
+                    if arrival_time < now or time_to_leave < now:
+                        continue
+                if prediction.relationships.stop.data:
+                    prediction.relationships.stop.data.id = pred_stop_id
+                filtered.append(prediction)
+        # perform a last pass for removing duplicate trips
+        for i, j in product(filtered, filtered):
+            if i.id == j.id:
+                continue
+            i_arrival = i.attributes.arrival_time or i.attributes.departure_time
+            j_arrival = j.attributes.arrival_time or j.attributes.departure_time
+            if (i.relationships.trip.data and j.relationships.trip.data) and (
+                i.relationships.trip.data.id == j.relationships.trip.data.id
+            ):
+                if i_arrival and j_arrival:
+                    i_ts = datetime.fromisoformat(i_arrival).astimezone(UTC)
+                    j_ts = datetime.fromisoformat(j_arrival).astimezone(UTC)
+                    if j_ts > i_ts:
+                        filtered.remove(j)
+    return filtered
+
+
+async def transform_predictions(
+    predictions: list[PredictionResource],
+    tg: TaskGroup,
+    r_client: Redis,
+    session: ClientSession,
+    stop_name_mapping: dict[str, str],
+):
+    stop_responses: list[StopResponse] = []
+
+    for prediction in predictions:
+        stop_info = (
+            await light_get_stop(r_client, prediction.relationships.stop.data.id, tg)
+            if prediction.relationships.stop.data
+            else None
+        )
+        headsign = (
+            await light_get_headsign(
+                prediction.relationships.trip.data.id, session, r_client, tg
+            )
+            if prediction.relationships.trip.data
+            else None
+        )
+
+        timestamp = datetime.fromisoformat(
+            prediction.attributes.departure_time
+            or prediction.attributes.arrival_time
+            or datetime.now().isoformat()
+        ).astimezone(UTC)
+
+        stop_id = (
+            prediction.relationships.stop.data.id
+            if prediction.relationships.stop and prediction.relationships.stop.data
+            else ""
+        )
+
+        stop_response = StopResponse(
+            stop_id=stop_id,
+            stop_name=stop_name_mapping.get(
+                stop_id, stop_info.stop_name if stop_info else ""
+            ),
+            timestamp=timestamp.isoformat(),
+            headsign=headsign if headsign else "",
+            route_id=prediction.relationships.route.data.id
+            if prediction.relationships.route.data
+            else "",
+        )
+
+        stop_responses.append(stop_response)
+    return stop_responses
