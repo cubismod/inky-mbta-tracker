@@ -76,7 +76,7 @@ async def predictions_req(
             span.set_attribute("error", True)
             span.set_attribute("error.type", "validation")
             return Response(
-                content=f"Invalid request: {e}",
+                content="Invalid request.",
                 media_type="text/plain",
                 status_code=400,
             )
