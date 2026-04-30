@@ -8,6 +8,7 @@ from typing import Any, cast
 
 from aiohttp import ClientResponse, ClientSession
 from anyio import Lock, sleep
+from prometheus import record_mbta_api_rate_limit_hit
 from redis.asyncio.client import Redis
 from redis.exceptions import RedisError
 
@@ -155,4 +156,6 @@ async def rate_limited_get(
         await local_mbta_rate_limiter.acquire()
 
     async with session.get(url, **kwargs) as response:
+        if response.status == 429:
+            record_mbta_api_rate_limit_hit(url)
         yield response

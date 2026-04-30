@@ -1,6 +1,7 @@
 import logging
 import os
 from typing import Optional
+from urllib.parse import urlsplit
 
 import aiohttp
 from anyio import get_running_tasks, sleep
@@ -28,6 +29,24 @@ tracker_executions = Counter("imt_tracker_executions", "Tracker Executions", ["s
 mbta_api_requests = Gauge(
     "mbta_api_requests", "Requests we are making to the MBTA API", ["endpoint"]
 )
+
+mbta_api_rate_limit_hits = Counter(
+    "mbta_api_rate_limit_hits",
+    "MBTA API responses that returned HTTP 429 rate limits",
+    ["endpoint"],
+)
+
+
+def mbta_api_endpoint_label(url: str) -> str:
+    path = urlsplit(url).path.strip("/")
+    if not path:
+        return "unknown"
+    return path.split("/", maxsplit=1)[0]
+
+
+def record_mbta_api_rate_limit_hit(url: str) -> None:
+    mbta_api_rate_limit_hits.labels(mbta_api_endpoint_label(url)).inc()
+
 
 running_threads = Gauge("imt_active_threads", "Active Threads")
 

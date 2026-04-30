@@ -1,11 +1,17 @@
+from asyncio import CancelledError
 from datetime import UTC
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import anyio
 import pytest
+from aiohttp import ClientResponseError
 from mbta_client import MBTAApi, silver_line_lookup
-from mbta_client_extended import light_get_alerts, light_get_stop
+from mbta_client_extended import (
+    light_get_alerts,
+    light_get_stop,
+    watch_mbta_server_side_events,
+)
 from mbta_responses import (
     CarriageStatus,
     PredictionAttributes,
@@ -14,6 +20,47 @@ from mbta_responses import (
 )
 from redis.asyncio.client import Redis as RedisClient
 from shared_types.shared_types import LightStop, TaskType
+
+
+@pytest.mark.anyio("asyncio")
+async def test_watch_mbta_server_side_events_records_rate_limit_hit() -> None:
+    endpoint = "https://api-v3.mbta.com/vehicles?api_key=secret"
+    aiosseclient_kwargs = {}
+
+    async def monitor_health(_tg) -> None:  # type: ignore[no-untyped-def]
+        return None
+
+    async def fake_aiosseclient(*_args, **kwargs):  # type: ignore[no-untyped-def]
+        aiosseclient_kwargs.update(kwargs)
+        raise ClientResponseError(
+            request_info=MagicMock(),
+            history=(),
+            status=429,
+            message="Too Many Requests",
+        )
+        yield
+
+    watcher = MagicMock()
+    watcher._monitor_health = monitor_health
+
+    with (
+        patch("mbta_client_extended.aiosseclient", new=fake_aiosseclient),
+        patch("mbta_client_extended.record_mbta_api_rate_limit_hit") as record,
+        patch("mbta_client_extended.sleep", new=AsyncMock(side_effect=CancelledError)),
+    ):
+        with pytest.raises(CancelledError):
+            await watch_mbta_server_side_events(
+                watcher,
+                endpoint,
+                {},
+                None,
+                MagicMock(),
+                0,
+                MagicMock(),
+            )
+
+    record.assert_called_once_with(endpoint)
+    assert aiosseclient_kwargs["raise_for_status"] is True
 
 
 class TestSilverLineLookup:

@@ -7,6 +7,7 @@ from mbta_rate_limiter import (
     TokenBucketRateLimiter,
     rate_limited_get,
 )
+from prometheus import mbta_api_endpoint_label, record_mbta_api_rate_limit_hit
 from redis.exceptions import RedisError
 
 
@@ -68,3 +69,41 @@ async def test_rate_limited_get_falls_back_to_local_limiter() -> None:
 
     acquire.assert_awaited_once()
     session.get.assert_called_once_with("/stops/test")
+
+
+def test_mbta_api_endpoint_label_uses_resource_without_query_params() -> None:
+    assert (
+        mbta_api_endpoint_label("/stops/place-davis?api_key=secret&filter[route]=Red")
+        == "stops"
+    )
+
+
+def test_record_mbta_api_rate_limit_hit_uses_sanitized_label() -> None:
+    with patch("prometheus.mbta_api_rate_limit_hits") as rate_limit_hits:
+        record_mbta_api_rate_limit_hit("/stops/place-davis?api_key=secret")
+
+    rate_limit_hits.labels.assert_called_once_with("stops")
+    rate_limit_hits.labels.return_value.inc.assert_called_once_with()
+
+
+@pytest.mark.anyio("asyncio")
+async def test_rate_limited_get_records_rate_limit_hit() -> None:
+    redis = AsyncMock()
+    redis.eval.return_value = [1, 0]
+
+    response = AsyncMock()
+    response.status = 429
+    response_cm = AsyncMock()
+    response_cm.__aenter__.return_value = response
+    response_cm.__aexit__.return_value = None
+
+    session = MagicMock()
+    session.get.return_value = response_cm
+
+    with patch("mbta_rate_limiter.record_mbta_api_rate_limit_hit") as record_rate_limit:
+        async with rate_limited_get(
+            session, redis, "/stops/place-davis?api_key=secret"
+        ):
+            pass
+
+    record_rate_limit.assert_called_once_with("/stops/place-davis?api_key=secret")

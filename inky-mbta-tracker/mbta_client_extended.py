@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Optional
 
 import aiohttp
 from aiohttp import ClientSession
-from aiohttp.client_exceptions import ClientPayloadError
+from aiohttp.client_exceptions import ClientPayloadError, ClientResponseError
 from aiosseclient import aiosseclient
 from anyio import create_task_group, sleep
 from anyio.abc import TaskGroup
@@ -38,6 +38,7 @@ from otel_utils import (
 from polyline import decode
 from prometheus import (
     mbta_api_requests,
+    record_mbta_api_rate_limit_hit,
     server_side_events,
     tracker_executions,
 )
@@ -314,7 +315,9 @@ async def watch_mbta_server_side_events(
                 async with create_task_group() as tg:
                     tg.start_soon(watcher._monitor_health, tg)
                     try:
-                        async for event in aiosseclient(endpoint, headers=headers):
+                        async for event in aiosseclient(
+                            endpoint, headers=headers, raise_for_status=True
+                        ):
                             server_side_events.labels(watcher.gen_unique_id()).inc()
                             tg.start_soon(
                                 watcher.parse_live_api_response,
@@ -329,6 +332,16 @@ async def watch_mbta_server_side_events(
                     except ClientPayloadError as err:
                         logger.warning("SSE client payload error", exc_info=err)
                         continue
+                    except ClientResponseError as err:
+                        if err.status == 429:
+                            record_mbta_api_rate_limit_hit(endpoint)
+                            logger.warning(
+                                "Rate limit hit while opening MBTA SSE stream",
+                                exc_info=err,
+                            )
+                        else:
+                            logger.warning("SSE client HTTP error", exc_info=err)
+                        tg.cancel_scope.cancel()
             except CancelledError:
                 logger.info("SSE watcher cancelled; stopping stream loop")
                 return
