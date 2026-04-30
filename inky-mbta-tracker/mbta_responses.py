@@ -412,7 +412,7 @@ class PredictionAttributes(BaseModel):
     arrival_time: Optional[str] = None
     revenue_status: Optional[RevenueStatus] = None
     departure_time: Optional[str] = None
-    direction_id: Optional[DirectionId] = None
+    direction_id: Optional[int] = None
     last_trip: Optional[bool] = None
     stop_sequence: Optional[int] = None
     trip_headsign: Optional[str] = None

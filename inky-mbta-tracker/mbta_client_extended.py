@@ -696,10 +696,7 @@ async def filter_predictions(
                     and prediction.relationships.route.data.id not in stop.routes
                 ):
                     continue
-                if (
-                    stop.direction
-                    and prediction.attributes.direction_id != stop.direction
-                ):
+                if prediction.attributes.direction_id != stop.direction:
                     continue
                 if (pred_stop and prediction.attributes.trip_headsign) and (
                     prediction.attributes.trip_headsign in pred_stop.stop_name
