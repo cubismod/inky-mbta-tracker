@@ -67,6 +67,8 @@ import os
 from typing import Awaitable, Callable, Optional, ParamSpec, Set, TypeVar
 
 from fastapi import Request, Response
+from opentelemetry import trace
+from otel_utils import add_cache_key_attributes, add_span_attributes
 from redis.asyncio import Redis
 
 # Use the project's cache helpers (they operate on redis.asyncio.Redis)
@@ -136,6 +138,33 @@ def _ttl_for_request(request: Request, response: Response, default_ttl: int) -> 
     return int(default_ttl)
 
 
+def _ttl_with_source(
+    request: Request, response: Response, default_ttl: int
+) -> tuple[int, str]:
+    """Determine TTL and identify which policy supplied it."""
+    hdr = response.headers.get("X-Cache-TTL", None)
+    if hdr:
+        try:
+            val = int(hdr)
+            if val >= 0:
+                return val, "response_header"
+        except Exception:
+            pass
+
+    endpoint = request.scope.get("endpoint")
+    if endpoint is not None:
+        ttl_attr = getattr(endpoint, "_cache_ttl", None)
+        if ttl_attr is not None:
+            try:
+                val = int(ttl_attr)
+                if val >= 0:
+                    return val, "endpoint_decorator"
+            except Exception:
+                pass
+
+    return int(default_ttl), "default"
+
+
 def create_cache_middleware(
     cache_methods: Optional[Set[str]] = None,
     default_ttl: int = 5,
@@ -170,6 +199,7 @@ def create_cache_middleware(
         request: Request, call_next: Callable[[Request], Awaitable[Response]]
     ) -> Response:
         method = request.method.upper()
+        span = trace.get_current_span()
 
         # Path-based include/exclude handling for per-endpoint caching with glob support
         path = request.url.path
@@ -177,14 +207,35 @@ def create_cache_middleware(
             # include_patterns are glob patterns; only cache if any pattern matches
             matched = any(fnmatch.fnmatch(path, pat) for pat in include_patterns)
             if not matched:
+                add_span_attributes(
+                    span,
+                    {
+                        "api.cache.eligible": False,
+                        "api.cache.skip_reason": "include_path_miss",
+                    },
+                )
                 # No include pattern matched; pass through
                 return await call_next(request)
         if exclude_patterns is not None:
             # If any exclude pattern matches, skip caching
             if any(fnmatch.fnmatch(path, pat) for pat in exclude_patterns):
+                add_span_attributes(
+                    span,
+                    {
+                        "api.cache.eligible": False,
+                        "api.cache.skip_reason": "exclude_path_match",
+                    },
+                )
                 return await call_next(request)
 
         if method not in cache_methods:
+            add_span_attributes(
+                span,
+                {
+                    "api.cache.eligible": False,
+                    "api.cache.skip_reason": "method_not_cacheable",
+                },
+            )
             return await call_next(request)
 
         # Read request body to include in key when present. For GET this is cheap/empty.
@@ -194,12 +245,29 @@ def create_cache_middleware(
             body = b""
 
         key = _make_key(method, path, request.url.query, body if body else None)
+        add_span_attributes(
+            span,
+            {
+                "api.cache.eligible": True,
+                "api.cache.method": method,
+                "api.cache.query.present": bool(request.url.query),
+                "api.cache.request_body.bytes": len(body),
+            },
+        )
+        add_cache_key_attributes(span, key, attr_prefix="api.cache.key")
 
         # Try cache read
         try:
             cached = await check_cache(r_client, key)
         except Exception:
             logger.debug("Cache middleware: error reading cache", exc_info=True)
+            add_span_attributes(
+                span,
+                {
+                    "api.cache.read_error": True,
+                    "api.cache.hit": False,
+                },
+            )
             cached = None
 
         if cached is not None:
@@ -207,6 +275,13 @@ def create_cache_middleware(
                 cached_bytes = cached.encode("utf-8")
             except Exception:
                 cached_bytes = str(cached).encode("utf-8")
+            add_span_attributes(
+                span,
+                {
+                    "api.cache.hit": True,
+                    "api.cache.response_body.bytes": len(cached_bytes),
+                },
+            )
             headers = {"content-length": str(len(cached_bytes))}
             headers.pop("transfer-encoding", None)
             headers.pop("Transfer-Encoding", None)
@@ -215,20 +290,45 @@ def create_cache_middleware(
             )
 
         # No cached response; call downstream and capture response body.
+        add_span_attributes(span, {"api.cache.hit": False})
         response = await call_next(request)
 
         chunks = []
         async for chunk in response.body_iterator:  # type: ignore
             chunks.append(chunk)
         response_body = b"".join(chunks)
+        add_span_attributes(
+            span,
+            {
+                "api.cache.downstream_status_code": response.status_code,
+                "api.cache.response_body.bytes": len(response_body),
+            },
+        )
         # Cache only successful responses with non-empty body
         if response.status_code == 200 and response_body:
             try:
                 # TTL precedence: response header > endpoint decorator > default_ttl
-                ttl = _ttl_for_request(request, response, default_ttl)
+                ttl, ttl_source = _ttl_with_source(request, response, default_ttl)
+                add_span_attributes(
+                    span,
+                    {
+                        "api.cache.write_attempted": True,
+                        "api.cache.ttl_seconds": ttl,
+                        "api.cache.ttl_source": ttl_source,
+                    },
+                )
                 await write_cache(r_client, key, response_body.decode("utf-8"), ttl)
             except Exception:
                 logger.debug("Cache middleware: failed to write cache", exc_info=True)
+                add_span_attributes(span, {"api.cache.write_error": True})
+        else:
+            add_span_attributes(
+                span,
+                {
+                    "api.cache.write_attempted": False,
+                    "api.cache.skip_reason": "non_200_or_empty_body",
+                },
+            )
 
         # Recreate and return a Response since .body_iterator may have been consumed
         headers = dict(response.headers)

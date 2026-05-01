@@ -7,7 +7,7 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from geojson import FeatureCollection, dumps
 from geojson_utils import get_shapes_features
 from opentelemetry import trace
-from otel_utils import add_transaction_ids_to_span
+from otel_utils import add_span_attributes, add_transaction_ids_to_span, set_span_error
 from pydantic import ValidationError
 
 from ..core import GET_DI
@@ -32,6 +32,14 @@ async def get_shapes(
     with tracer.start_as_current_span("api.shapes.get_shapes") as span:
         # Add transaction IDs to the span
         add_transaction_ids_to_span(span)
+        add_span_attributes(
+            span,
+            {
+                "request.frequent_buses": frequent_buses,
+                "api.endpoint": "shapes",
+                "response.format": "geojson",
+            },
+        )
 
         try:
             features = await get_shapes_features(
@@ -43,16 +51,23 @@ async def get_shapes(
             )
             span.set_attribute("shapes.count", len(features))
             result = {"type": "FeatureCollection", "features": features}
+            add_span_attributes(
+                span,
+                {
+                    "api.response.success": True,
+                    "response.feature_count": len(features),
+                },
+            )
             return Response(content=json.dumps(result), media_type="application/json")
-        except (ConnectionError, TimeoutError):
+        except (ConnectionError, TimeoutError) as exc:
             logger.error("Error getting shapes due to connection issue", exc_info=True)
-            span.set_attribute("error", True)
-            span.set_attribute("error.type", "connection")
+            set_span_error(span, exc)
+            add_span_attributes(span, {"error.type": "connection"})
             raise HTTPException(status_code=500, detail="Internal server error")
-        except ValidationError:
+        except ValidationError as exc:
             logger.error("Error getting shapes due to validation error", exc_info=True)
-            span.set_attribute("error", True)
-            span.set_attribute("error.type", "validation")
+            set_span_error(span, exc)
+            add_span_attributes(span, {"error.type": "validation"})
             raise HTTPException(status_code=500, detail="Internal server error")
 
 
@@ -70,6 +85,14 @@ async def get_shapes_json(
     with tracer.start_as_current_span("api.shapes.get_shapes_json") as span:
         # Add transaction IDs to the span
         add_transaction_ids_to_span(span)
+        add_span_attributes(
+            span,
+            {
+                "request.frequent_buses": frequent_buses,
+                "api.endpoint": "shapes_json",
+                "response.format": "geojson_file",
+            },
+        )
 
         try:
             features = await get_shapes_features(
@@ -82,23 +105,30 @@ async def get_shapes_json(
             span.set_attribute("shapes.count", len(features))
             feature_collection = FeatureCollection(features)
             geojson_str = dumps(feature_collection, sort_keys=True)
+            add_span_attributes(
+                span,
+                {
+                    "api.response.success": True,
+                    "response.body.bytes": len(geojson_str.encode("utf-8")),
+                },
+            )
 
             return Response(
                 content=geojson_str,
                 media_type="application/json",
                 headers={"Content-Disposition": "attachment; filename=shapes.json"},
             )
-        except (ConnectionError, TimeoutError):
+        except (ConnectionError, TimeoutError) as exc:
             logger.error(
                 "Error getting shapes JSON due to connection issue", exc_info=True
             )
-            span.set_attribute("error", True)
-            span.set_attribute("error.type", "connection")
+            set_span_error(span, exc)
+            add_span_attributes(span, {"error.type": "connection"})
             raise HTTPException(status_code=500, detail="Internal server error")
-        except ValidationError:
+        except ValidationError as exc:
             logger.error(
                 "Error getting shapes JSON due to validation error", exc_info=True
             )
-            span.set_attribute("error", True)
-            span.set_attribute("error.type", "validation")
+            set_span_error(span, exc)
+            add_span_attributes(span, {"error.type": "validation"})
             raise HTTPException(status_code=500, detail="Internal server error")

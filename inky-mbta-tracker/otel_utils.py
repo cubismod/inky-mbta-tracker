@@ -7,6 +7,7 @@ for common tracing patterns, and business transaction ID management.
 """
 
 import functools
+import hashlib
 import json
 import logging
 import time
@@ -38,6 +39,70 @@ user_query_txn_context: ContextVar[Optional[str]] = ContextVar(
 ROUTE_MONITOR_TXN_ATTR = "transaction.business.route_monitor"
 VEHICLE_TRACK_TXN_ATTR = "transaction.business.vehicle_track"
 USER_QUERY_TXN_ATTR = "transaction.business.user_query"
+
+
+def _stable_hash(value: str) -> str:
+    """Return a compact stable hash for high-cardinality values."""
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
+
+
+def sanitize_attribute_value(value: str, max_length: int = 80) -> str:
+    """Sanitize a string attribute value while preserving useful debugging context."""
+    sanitized = value.replace("\n", " ").replace("\r", " ").strip()
+    if len(sanitized) > max_length:
+        return f"{sanitized[:max_length]}..."
+    return sanitized
+
+
+def add_current_span_attributes(attributes: dict[str, Any]) -> None:
+    """Add attributes to the current span if one is recording."""
+    add_span_attributes(trace.get_current_span(), attributes)
+
+
+def set_current_span_error(exception: Exception) -> None:
+    """Mark the current span as errored if one is recording."""
+    set_span_error(trace.get_current_span(), exception)
+
+
+def add_cache_key_attributes(
+    span: Optional[Span],
+    key: str,
+    *,
+    attr_prefix: str = "cache.key",
+) -> None:
+    """Add low-cardinality cache key metadata to a span."""
+    if span is None or not span.is_recording():
+        return
+
+    namespace = key.split(":", 1)[0] if key else "unknown"
+    add_span_attributes(
+        span,
+        {
+            f"{attr_prefix}.namespace": sanitize_attribute_value(namespace, 40),
+            f"{attr_prefix}.hash": _stable_hash(key),
+            f"{attr_prefix}.length": len(key),
+        },
+    )
+
+
+def add_entity_id_attribute(
+    span: Optional[Span],
+    attr_name: str,
+    value: Optional[str],
+    *,
+    entity_type: str,
+) -> None:
+    """Add an entity ID according to configured high-cardinality policy."""
+    if span is None or not span.is_recording() or not value:
+        return
+
+    include_flags = get_high_cardinality_attributes()
+    include_raw = include_flags.get(f"{entity_type}_ids", False)
+    if include_raw:
+        span.set_attribute(attr_name, sanitize_attribute_value(value, 120))
+        return
+
+    span.set_attribute(f"{attr_name}.hash", _stable_hash(value))
 
 
 def serialize_trace_context() -> Optional[str]:
@@ -409,7 +474,17 @@ def add_event_to_span(
         return
 
     try:
-        span.add_event(name, attributes=attributes or {})
+        safe_attributes: dict[str, Any] = {}
+        for key, value in (attributes or {}).items():
+            if value is None:
+                continue
+            if isinstance(value, (str, bool, int, float)):
+                safe_attributes[key] = value
+            elif isinstance(value, (list, tuple)):
+                safe_attributes[key] = [str(v) for v in value]
+            else:
+                safe_attributes[key] = str(value)
+        span.add_event(name, attributes=safe_attributes)
     except Exception as e:
         logger.debug(f"Failed to add event {name}: {e}")
 
@@ -605,8 +680,14 @@ def get_high_cardinality_attributes(
     config = get_otel_config()
 
     return {
-        "vehicle_ids": config["include_vehicle_ids"].lower() in {"true", "1", "yes"},
-        "trip_ids": config["include_trip_ids"].lower() in {"true", "1", "yes"},
+        "vehicle_ids": include_vehicle_ids
+        or config["include_vehicle_ids"].lower() in {"true", "1", "yes"},
+        "trip_ids": include_trip_ids
+        and config["include_trip_ids"].lower() in {"true", "1", "yes"},
+        "stop_ids": config.get("include_stop_ids", "false").lower()
+        in {"true", "1", "yes"},
+        "cache_keys": config.get("include_cache_keys", "false").lower()
+        in {"true", "1", "yes"},
     }
 
 

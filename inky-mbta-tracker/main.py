@@ -21,7 +21,9 @@ from mbta_client_extended import (
     watch_station,
     watch_vehicles,
 )
+from opentelemetry import trace
 from otel_config import initialize_otel, is_otel_enabled, shutdown_otel
+from otel_utils import add_span_attributes, set_span_error
 from prometheus import watch_running_tasks
 from prometheus_client import start_http_server
 from redis.asyncio import Redis
@@ -52,6 +54,7 @@ initialize_otel(
 )
 
 logger = logging.getLogger(__name__)
+tracer = trace.get_tracer(__name__)
 
 MIN_TASK_RESTART_MINS = 45
 MAX_TASK_RESTART_MINS = 120
@@ -166,14 +169,31 @@ async def heartbeat_task(redis: Redis) -> None:
     logger.info("Starting heartbeat task")
 
     while True:
-        try:
-            now = datetime.now(UTC)
-            await write_cache(
-                redis, HEARTBEAT_KEY, now.isoformat(), HEARTBEAT_TTL_SECONDS
+        with tracer.start_as_current_span("main.heartbeat.write") as span:
+            add_span_attributes(
+                span,
+                {
+                    "heartbeat.key": HEARTBEAT_KEY,
+                    "heartbeat.interval_seconds": HEARTBEAT_INTERVAL_SECONDS,
+                    "heartbeat.ttl_seconds": HEARTBEAT_TTL_SECONDS,
+                },
             )
-            logger.debug(f"Heartbeat written at {now.isoformat()}")
-        except Exception as e:
-            logger.error(f"Failed to write heartbeat: {e}", exc_info=True)
+            try:
+                now = datetime.now(UTC)
+                await write_cache(
+                    redis, HEARTBEAT_KEY, now.isoformat(), HEARTBEAT_TTL_SECONDS
+                )
+                add_span_attributes(
+                    span,
+                    {
+                        "heartbeat.status": "success",
+                        "heartbeat.timestamp": now.isoformat(),
+                    },
+                )
+                logger.debug(f"Heartbeat written at {now.isoformat()}")
+            except Exception as e:
+                set_span_error(span, e)
+                logger.error(f"Failed to write heartbeat: {e}", exc_info=True)
 
         await sleep(HEARTBEAT_INTERVAL_SECONDS)
 
@@ -265,11 +285,34 @@ async def __main__() -> None:
             while True:
                 now = datetime.now(ZoneInfo("America/New_York"))
                 if now >= next_backup:
-                    redis_backup = RedisBackup(r_client=get_redis(redis_pool))
-                    filename = await redis_backup.create_backup()
-                    logger.info(f"Redis backup created at {filename}")
-                    # schedule next run for the next day at the configured time
-                    next_backup = get_next_backup_time(now)
+                    with tracer.start_as_current_span("main.redis_backup") as span:
+                        add_span_attributes(
+                            span,
+                            {
+                                "backup.scheduled_time": next_backup.isoformat(),
+                                "task.type": "redis_backup",
+                            },
+                        )
+                        try:
+                            redis_backup = RedisBackup(r_client=get_redis(redis_pool))
+                            filename = await redis_backup.create_backup()
+                            add_span_attributes(
+                                span,
+                                {
+                                    "backup.status": "success",
+                                    "backup.filename": filename,
+                                },
+                            )
+                            logger.info(f"Redis backup created at {filename}")
+                            # schedule next run for the next day at the configured time
+                            next_backup = get_next_backup_time(now)
+                            span.set_attribute(
+                                "backup.next_scheduled_time",
+                                next_backup.isoformat(),
+                            )
+                        except Exception as exc:
+                            set_span_error(span, exc)
+                            raise
                 # sleep until next check; if far away, sleep the whole duration
                 sleep_seconds = max(1, int((next_backup - now).total_seconds()))
                 await sleep(min(sleep_seconds, 60))

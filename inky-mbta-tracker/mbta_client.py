@@ -37,7 +37,10 @@ from mbta_responses import (
 from opentelemetry.trace import Span
 from otel_config import get_tracer, is_otel_enabled
 from otel_utils import (
+    add_entity_id_attribute,
+    add_span_attributes,
     add_transaction_ids_to_span,
+    set_span_error,
     should_trace_operation,
 )
 from prometheus import mbta_api_requests
@@ -762,11 +765,10 @@ class MBTAApi:
     ) -> Optional[Trips]:
         tracer = get_tracer(__name__) if is_otel_enabled() else None
         if tracer and should_trace_operation("high_volume"):
-            with tracer.start_as_current_span(
-                "mbta_client.get_trip", attributes={"trip_id": trip_id}
-            ) as span:
+            with tracer.start_as_current_span("mbta_client.get_trip") as span:
                 # Add transaction IDs to the span
                 add_transaction_ids_to_span(span)
+                add_entity_id_attribute(span, "trip.id", trip_id, entity_type="trip")
                 return await self._get_trip_impl(trip_id, session, tg, span)
         else:
             return await self._get_trip_impl(trip_id, session, tg, None)
@@ -784,17 +786,25 @@ class MBTAApi:
         try:
             if cached:
                 if span:
-                    span.set_attribute("cache.hit", True)
+                    add_span_attributes(span, {"cache.hit": True})
                 trip = Trips.model_validate_json(cached, strict=False)
+                add_span_attributes(span, {"trip.result": "cache_hit"})
                 return trip
             else:
                 if span:
-                    span.set_attribute("cache.hit", False)
+                    add_span_attributes(span, {"cache.hit": False})
                 async with rate_limited_get(
                     session,
                     self.r_client,
                     f"trips?filter[id]={trip_id}&api_key={MBTA_AUTH}",
                 ) as response:
+                    add_span_attributes(
+                        span,
+                        {
+                            "http.status_code": response.status,
+                            "mbta.endpoint": "trips",
+                        },
+                    )
                     if response.status == 429:
                         raise RateLimitExceeded()
                     body = await response.text()
@@ -804,12 +814,12 @@ class MBTAApi:
                     tg.start_soon(
                         write_cache, self.r_client, key, trip.model_dump_json(), DAY
                     )
+                    add_span_attributes(span, {"trip.result": "fetched"})
                     return trip
         except ValidationError as err:
             logger.error("Unable to parse trip", exc_info=err)
-            if span:
-                span.set_attribute("error", True)
-                span.set_attribute("error.type", "validation_error")
+            set_span_error(span, err)
+            add_span_attributes(span, {"error.type": "validation_error"})
         return None
 
     # saves a route to the dict of routes rather than redis
@@ -857,14 +867,14 @@ class MBTAApi:
     ) -> Optional[list[AlertResource]]:
         tracer = get_tracer(__name__) if is_otel_enabled() else None
         if tracer and should_trace_operation("high_volume"):
-            attrs = {}
-            if trip_id:
-                attrs["trip_id"] = trip_id
-            if route_id:
-                attrs["route_id"] = route_id
             with tracer.start_as_current_span(
-                "mbta_client.get_alerts", attributes=attrs
+                "mbta_client.get_alerts",
+                attributes={"lookup.type": "trip" if trip_id else "route"},
             ) as span:
+                add_transaction_ids_to_span(span)
+                add_entity_id_attribute(span, "trip.id", trip_id, entity_type="trip")
+                if route_id:
+                    add_span_attributes(span, {"route.id": route_id})
                 return await self._get_alerts_impl(session, trip_id, route_id, span)
         else:
             return await self._get_alerts_impl(session, trip_id, route_id, None)
@@ -884,16 +894,21 @@ class MBTAApi:
             key = f"alerts:route:{route_id}"
         else:
             logging.error("you need to specify a trip_id or route_id to fetch alerts")
-            if span:
-                span.set_attribute("error", True)
-                span.set_attribute("error.type", "missing_parameters")
+            add_span_attributes(
+                span,
+                {
+                    "error": True,
+                    "error.type": "missing_parameters",
+                    "alerts.count": 0,
+                },
+            )
             return None
 
         try:
             ids = await self.r_client.smembers(key)  # type: ignore[misc]
+            add_span_attributes(span, {"alerts.ids.count": len(ids)})
             if not ids:
-                if span:
-                    span.set_attribute("alerts.count", 0)
+                add_span_attributes(span, {"alerts.count": 0})
                 return []
             # Fetch alert objects in a pipeline
             pl = self.r_client.pipeline()
@@ -912,20 +927,17 @@ class MBTAApi:
                     ret.append(alert)
                 except ValidationError:
                     continue
-            if span:
-                span.set_attribute("alerts.count", len(ret))
+            add_span_attributes(span, {"alerts.count": len(ret)})
             return ret
         except RedisError as e:
             logger.error("Redis error while loading alerts", exc_info=e)
-            if span:
-                span.set_attribute("error", True)
-                span.set_attribute("error.type", "redis_error")
+            set_span_error(span, e)
+            add_span_attributes(span, {"error.type": "redis_error"})
             return None
         except (ConnectionError, TimeoutError) as e:
             logger.error("Connection error while loading alerts", exc_info=e)
-            if span:
-                span.set_attribute("error", True)
-                span.set_attribute("error.type", "connection_error")
+            set_span_error(span, e)
+            add_span_attributes(span, {"error.type": "connection_error"})
             return None
 
     @retry(
@@ -1001,9 +1013,9 @@ class MBTAApi:
     ) -> tuple[Optional[Stop], Optional[Facilities]]:
         tracer = get_tracer(__name__) if is_otel_enabled() else None
         if tracer and should_trace_operation("high_volume"):
-            with tracer.start_as_current_span(
-                "mbta_client.get_stop", attributes={"stop_id": stop_id}
-            ) as span:
+            with tracer.start_as_current_span("mbta_client.get_stop") as span:
+                add_transaction_ids_to_span(span)
+                add_entity_id_attribute(span, "stop.id", stop_id, entity_type="stop")
                 return await self._get_stop_impl(
                     session, stop_id, tg, span, include_facilities
                 )

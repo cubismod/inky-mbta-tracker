@@ -69,6 +69,8 @@ def get_otel_config() -> dict[str, str]:
         "instrument_fastapi": os.getenv("IMT_OTEL_INSTRUMENT_FASTAPI", "true"),
         "include_vehicle_ids": os.getenv("IMT_OTEL_INCLUDE_VEHICLE_IDS", "false"),
         "include_trip_ids": os.getenv("IMT_OTEL_INCLUDE_TRIP_IDS", "true"),
+        "include_stop_ids": os.getenv("IMT_OTEL_INCLUDE_STOP_IDS", "false"),
+        "include_cache_keys": os.getenv("IMT_OTEL_INCLUDE_CACHE_KEYS", "false"),
         "redis_sanitize_queries": os.getenv("IMT_OTEL_REDIS_SANITIZE_QUERIES", "false"),
     }
 
