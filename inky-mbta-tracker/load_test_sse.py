@@ -1,12 +1,12 @@
-#!/usr/bin/env python3
 """Load test the vehicle SSE endpoint with many concurrent clients."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from urllib.parse import urljoin
 
 import aiohttp
 import anyio
 import click
+from anyio import Lock
 
 DEFAULT_SSE_URL = "http://localhost:8000/vehicles/stream"
 
@@ -25,7 +25,7 @@ class LoadTestConfig:
 
 
 @dataclass
-class LoadStats:
+class LoadStatsSnapshot:
     clients_started: int = 0
     clients_completed: int = 0
     connected: int = 0
@@ -36,21 +36,78 @@ class LoadStats:
     comment_events: int = 0
     bytes_received: int = 0
     errors: int = 0
-    first_event_latencies_ms: list[float] | None = None
+    first_event_latencies_ms: list[float] = field(default_factory=list)
 
-    def __post_init__(self) -> None:
-        self.first_event_latencies_ms = []
 
-    def mark_connected(self) -> None:
-        self.connected += 1
-        self.peak_connected = max(self.peak_connected, self.connected)
+@dataclass
+class LoadStats:
+    lock: Lock = field(default_factory=Lock)
+    snapshot_data: LoadStatsSnapshot = field(default_factory=LoadStatsSnapshot)
 
-    def mark_disconnected(self) -> None:
-        self.connected = max(0, self.connected - 1)
+    async def mark_client_started(self) -> None:
+        async with self.lock:
+            self.snapshot_data.clients_started += 1
 
-    def mark_first_event(self, latency_ms: float) -> None:
-        if self.first_event_latencies_ms is not None:
-            self.first_event_latencies_ms.append(latency_ms)
+    async def mark_client_completed(self) -> None:
+        async with self.lock:
+            self.snapshot_data.clients_completed += 1
+
+    async def mark_connected(self) -> None:
+        async with self.lock:
+            self.snapshot_data.connected += 1
+            self.snapshot_data.peak_connected = max(
+                self.snapshot_data.peak_connected,
+                self.snapshot_data.connected,
+            )
+
+    async def mark_disconnected(self) -> None:
+        async with self.lock:
+            self.snapshot_data.connected = max(0, self.snapshot_data.connected - 1)
+
+    async def mark_successful_connection(self, *, reconnect: bool) -> None:
+        async with self.lock:
+            self.snapshot_data.successful_connections += 1
+            if reconnect:
+                self.snapshot_data.reconnects += 1
+
+    async def mark_error(self) -> None:
+        async with self.lock:
+            self.snapshot_data.errors += 1
+
+    async def record_chunk(
+        self,
+        *,
+        bytes_received: int,
+        data_events: int,
+        comment_events: int,
+        first_event_latency_ms: float | None,
+    ) -> None:
+        async with self.lock:
+            self.snapshot_data.bytes_received += bytes_received
+            self.snapshot_data.data_events += data_events
+            self.snapshot_data.comment_events += comment_events
+            if first_event_latency_ms is not None:
+                self.snapshot_data.first_event_latencies_ms.append(
+                    first_event_latency_ms
+                )
+
+    async def snapshot(self) -> LoadStatsSnapshot:
+        async with self.lock:
+            return LoadStatsSnapshot(
+                clients_started=self.snapshot_data.clients_started,
+                clients_completed=self.snapshot_data.clients_completed,
+                connected=self.snapshot_data.connected,
+                peak_connected=self.snapshot_data.peak_connected,
+                reconnects=self.snapshot_data.reconnects,
+                successful_connections=self.snapshot_data.successful_connections,
+                data_events=self.snapshot_data.data_events,
+                comment_events=self.snapshot_data.comment_events,
+                bytes_received=self.snapshot_data.bytes_received,
+                errors=self.snapshot_data.errors,
+                first_event_latencies_ms=list(
+                    self.snapshot_data.first_event_latencies_ms
+                ),
+            )
 
 
 async def sse_client(
@@ -62,7 +119,7 @@ async def sse_client(
     reconnect_delay: float,
     stats: LoadStats,
 ) -> None:
-    stats.clients_started += 1
+    await stats.mark_client_started()
     first_event_seen = False
 
     while anyio.current_time() < deadline:
@@ -74,62 +131,78 @@ async def sse_client(
                 headers={"Accept": "text/event-stream"},
             ) as response:
                 if response.status != 200:
-                    stats.errors += 1
+                    await stats.mark_error()
                     await response.read()
-                    await anyio.sleep(reconnect_delay)
+                    await sleep_until_retry_or_deadline(reconnect_delay, deadline)
                     continue
 
-                stats.mark_connected()
-                stats.successful_connections += 1
-                if first_event_seen:
-                    stats.reconnects += 1
+                await stats.mark_connected()
+                await stats.mark_successful_connection(reconnect=first_event_seen)
                 buffer = ""
                 try:
                     async for chunk in response.content.iter_chunked(4096):
                         if anyio.current_time() >= deadline:
                             break
 
-                        stats.bytes_received += len(chunk)
                         buffer += chunk.decode("utf-8", errors="replace")
-                        buffer, first_event_seen = handle_sse_buffer(
-                            buffer, connected_at, first_event_seen, stats
+                        (
+                            buffer,
+                            first_event_seen,
+                            data_events,
+                            comment_events,
+                            first_event_latency_ms,
+                        ) = handle_sse_buffer(
+                            buffer,
+                            connected_at,
+                            first_event_seen,
+                        )
+                        await stats.record_chunk(
+                            bytes_received=len(chunk),
+                            data_events=data_events,
+                            comment_events=comment_events,
+                            first_event_latency_ms=first_event_latency_ms,
                         )
                 finally:
-                    stats.mark_disconnected()
+                    await stats.mark_disconnected()
         except (aiohttp.ClientError, TimeoutError):
-            stats.errors += 1
+            await stats.mark_error()
 
         if anyio.current_time() < deadline:
-            sleep_for = min(reconnect_delay, max(0, deadline - anyio.current_time()))
-            await anyio.sleep(sleep_for)
+            await sleep_until_retry_or_deadline(reconnect_delay, deadline)
 
-    stats.clients_completed += 1
+    await stats.mark_client_completed()
     _ = client_id
+
+
+async def sleep_until_retry_or_deadline(delay: float, deadline: float) -> None:
+    sleep_for = min(delay, max(0, deadline - anyio.current_time()))
+    await anyio.sleep(sleep_for)
 
 
 def handle_sse_buffer(
     buffer: str,
     connected_at: float,
     first_event_seen: bool,
-    stats: LoadStats,
-) -> tuple[str, bool]:
+) -> tuple[str, bool, int, int, float | None]:
+    data_events = 0
+    comment_events = 0
+    first_event_latency_ms: float | None = None
     while "\n\n" in buffer:
         frame, buffer = buffer.split("\n\n", 1)
         if not frame:
             continue
 
         if frame.startswith(":"):
-            stats.comment_events += 1
+            comment_events += 1
             continue
 
         if any(line.startswith("data:") for line in frame.splitlines()):
-            stats.data_events += 1
+            data_events += 1
             if not first_event_seen:
-                latency_ms = (anyio.current_time() - connected_at) * 1000
-                stats.mark_first_event(latency_ms)
+                first_event_latency_ms = (anyio.current_time() - connected_at) * 1000
                 first_event_seen = True
 
-    return buffer, first_event_seen
+    return buffer, first_event_seen, data_events, comment_events, first_event_latency_ms
 
 
 async def reporter(
@@ -140,22 +213,23 @@ async def reporter(
         await anyio.sleep(sleep_for)
         if anyio.current_time() >= deadline:
             break
-        print_report(stats, started_at, final=False)
+        await print_report(stats, started_at, final=False)
 
 
-def print_report(stats: LoadStats, started_at: float, *, final: bool) -> None:
+async def print_report(stats: LoadStats, started_at: float, *, final: bool) -> None:
+    snapshot = await stats.snapshot()
     elapsed = max(0.001, anyio.current_time() - started_at)
-    first_event_p95 = percentile(stats.first_event_latencies_ms or [], 95)
+    first_event_p95 = percentile(snapshot.first_event_latencies_ms, 95)
     prefix = "final" if final else "progress"
     print(
         f"{prefix}: elapsed={elapsed:.1f}s "
-        f"connected={stats.connected} peak={stats.peak_connected} "
-        f"started={stats.clients_started} completed={stats.clients_completed} "
-        f"events={stats.data_events} comments={stats.comment_events} "
-        f"bytes={stats.bytes_received} "
-        f"events/s={stats.data_events / elapsed:.2f} "
-        f"MiB/s={stats.bytes_received / elapsed / 1024 / 1024:.2f} "
-        f"errors={stats.errors} reconnects={stats.reconnects} "
+        f"connected={snapshot.connected} peak={snapshot.peak_connected} "
+        f"started={snapshot.clients_started} completed={snapshot.clients_completed} "
+        f"events={snapshot.data_events} comments={snapshot.comment_events} "
+        f"bytes={snapshot.bytes_received} "
+        f"events/s={snapshot.data_events / elapsed:.2f} "
+        f"MiB/s={snapshot.bytes_received / elapsed / 1024 / 1024:.2f} "
+        f"errors={snapshot.errors} reconnects={snapshot.reconnects} "
         f"first_event_p95_ms={first_event_p95:.1f}"
     )
 
@@ -175,7 +249,11 @@ async def async_main(config: LoadTestConfig) -> None:
     if config.frequent_buses:
         params["frequent_buses"] = "true"
 
-    timeout = aiohttp.ClientTimeout(total=None, sock_connect=config.request_timeout)
+    timeout = aiohttp.ClientTimeout(
+        total=None,
+        sock_connect=config.request_timeout,
+        sock_read=config.request_timeout,
+    )
     connector = aiohttp.TCPConnector(limit=0, force_close=False)
     stats = LoadStats()
     started_at = anyio.current_time()
@@ -208,18 +286,19 @@ async def async_main(config: LoadTestConfig) -> None:
                 if ramp_delay:
                     await anyio.sleep(ramp_delay)
 
-    print_final_report(config, stats, started_at)
+    await print_final_report(config, stats, started_at)
 
 
-def print_final_report(
+async def print_final_report(
     config: LoadTestConfig, stats: LoadStats, started_at: float
 ) -> None:
+    snapshot = await stats.snapshot()
     elapsed = max(0.001, anyio.current_time() - started_at)
-    first_event_latencies = stats.first_event_latencies_ms or []
-    total_events = stats.data_events + stats.comment_events
+    first_event_latencies = snapshot.first_event_latencies_ms
+    total_events = snapshot.data_events + snapshot.comment_events
     success_rate = (
-        stats.successful_connections / stats.clients_started * 100
-        if stats.clients_started
+        snapshot.successful_connections / snapshot.clients_started * 100
+        if snapshot.clients_started
         else 0
     )
 
@@ -228,21 +307,21 @@ def print_final_report(
         ("Mode", "delta" if config.delta else "full"),
         ("Frequent buses", str(config.frequent_buses)),
         ("Requested clients", str(config.clients)),
-        ("Started clients", str(stats.clients_started)),
-        ("Completed clients", str(stats.clients_completed)),
-        ("Successful connections", str(stats.successful_connections)),
+        ("Started clients", str(snapshot.clients_started)),
+        ("Completed clients", str(snapshot.clients_completed)),
+        ("Successful connections", str(snapshot.successful_connections)),
         ("Connection success rate", f"{success_rate:.1f}%"),
-        ("Reconnects", str(stats.reconnects)),
-        ("Errors", str(stats.errors)),
-        ("Peak connected", str(stats.peak_connected)),
+        ("Reconnects", str(snapshot.reconnects)),
+        ("Errors", str(snapshot.errors)),
+        ("Peak connected", str(snapshot.peak_connected)),
         ("Elapsed", f"{elapsed:.1f}s"),
-        ("Data events", str(stats.data_events)),
-        ("Comment events", str(stats.comment_events)),
+        ("Data events", str(snapshot.data_events)),
+        ("Comment events", str(snapshot.comment_events)),
         ("Total SSE frames", str(total_events)),
-        ("Data events/sec", f"{stats.data_events / elapsed:.2f}"),
+        ("Data events/sec", f"{snapshot.data_events / elapsed:.2f}"),
         ("Frames/sec", f"{total_events / elapsed:.2f}"),
-        ("Bytes received", format_bytes(stats.bytes_received)),
-        ("Throughput", f"{format_bytes(stats.bytes_received / elapsed)}/s"),
+        ("Bytes received", format_bytes(snapshot.bytes_received)),
+        ("Throughput", f"{format_bytes(snapshot.bytes_received / elapsed)}/s"),
         ("First event p50", format_ms(percentile(first_event_latencies, 50))),
         ("First event p95", format_ms(percentile(first_event_latencies, 95))),
         ("First event p99", format_ms(percentile(first_event_latencies, 99))),
@@ -324,7 +403,7 @@ def format_ms(value: float) -> str:
     "--request-timeout",
     type=click.FloatRange(min=0, min_open=True),
     default=30.0,
-    help="HTTP connect/read timeout in seconds.",
+    help="HTTP socket connect/read timeout in seconds.",
 )
 def main(
     url: str,

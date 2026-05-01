@@ -32,9 +32,7 @@ class _VehicleProducerState:
     frequent_buses: bool
     lock: Lock = field(default_factory=Lock)
     started: bool = False
-    subscribers: dict[
-        VehicleStreamMode, set[MemoryObjectSendStream[str]]
-    ] = field(
+    subscribers: dict[VehicleStreamMode, set[MemoryObjectSendStream[str]]] = field(
         default_factory=lambda: {
             "full": set(),
             "delta": set(),
@@ -76,6 +74,7 @@ class VehicleStreamManager:
         send_stream, receive_stream = create_memory_object_stream[str](
             self._subscriber_buffer_size
         )
+        replay_failed = False
 
         async with state.lock:
             state.subscribers[mode].add(send_stream)
@@ -85,10 +84,19 @@ class VehicleStreamManager:
                 else state.latest_full_event
             )
             if replay is not None:
-                send_stream.send_nowait(replay)
-            if not state.started:
+                try:
+                    send_stream.send_nowait(replay)
+                except (WouldBlock, BrokenResourceError, ClosedResourceError):
+                    state.subscribers[mode].discard(send_stream)
+                    replay_failed = True
+            if not replay_failed and not state.started:
                 state.started = True
                 self._task_group.start_soon(self._run_producer, state)
+
+        if replay_failed:
+            await send_stream.aclose()
+            await receive_stream.aclose()
+            raise RuntimeError("Unable to queue initial vehicle stream replay")
 
         try:
             async with receive_stream:
@@ -123,59 +131,65 @@ class VehicleStreamManager:
             return self._states[frequent_buses]
 
     async def _run_producer(self, state: _VehicleProducerState) -> None:
-        async with DIParams(self._session) as commons:
-            while not self._closed:
-                async with state.lock:
-                    if state.subscriber_count() == 0:
-                        state.started = False
-                        return
-
-                if not commons.tg:
-                    await self._broadcast(state, "full", ": tg-unavailable\n\n")
-                    await self._broadcast(state, "delta", ": tg-unavailable\n\n")
-                    await sleep(self._interval_seconds)
-                    continue
-
-                try:
-                    raw_data = await get_vehicles_data(
-                        commons.r_client,
-                        commons.config,
-                        commons.tg,
-                        state.frequent_buses,
-                    )
-                    full_event = self._build_full_event(raw_data)
-                    delta_response = calculate_diff(state.last_raw_data, raw_data)
-                    delta_event = f"data: {delta_response.model_dump_json()}\n\n"
-                    snapshot_response = DiffApiResponse(
-                        updated=raw_data,
-                        removed=set(),
-                    )
-                    snapshot_event = (
-                        f"data: {snapshot_response.model_dump_json()}\n\n"
-                    )
-
+        try:
+            async with DIParams(self._session) as commons:
+                while not self._closed:
                     async with state.lock:
-                        state.last_raw_data = raw_data
-                        state.latest_full_event = full_event
-                        state.latest_delta_snapshot_event = snapshot_event
+                        if state.subscriber_count() == 0:
+                            return
 
-                    await self._broadcast(state, "full", full_event)
-                    await self._broadcast(state, "delta", delta_event)
-                except (
-                    ConnectionError,
-                    TimeoutError,
-                    ValueError,
-                    RuntimeError,
-                    OSError,
-                ) as exc:
-                    logger.error("Error producing SSE vehicles data", exc_info=exc)
-                    await self._broadcast(state, "full", ": error fetching data\n\n")
-                    await self._broadcast(state, "delta", ": error fetching data\n\n")
+                    if not commons.tg:
+                        await self._broadcast(state, "full", ": tg-unavailable\n\n")
+                        await self._broadcast(state, "delta", ": tg-unavailable\n\n")
+                        await sleep(self._interval_seconds)
+                        continue
 
-                await sleep(self._interval_seconds)
+                    try:
+                        raw_data = await get_vehicles_data(
+                            commons.r_client,
+                            commons.config,
+                            commons.tg,
+                            state.frequent_buses,
+                        )
+                        full_event = self._build_full_event(raw_data)
+                        delta_response = calculate_diff(state.last_raw_data, raw_data)
+                        delta_event = f"data: {delta_response.model_dump_json()}\n\n"
+                        snapshot_response = DiffApiResponse(
+                            updated=raw_data,
+                            removed=set(),
+                        )
+                        snapshot_event = (
+                            f"data: {snapshot_response.model_dump_json()}\n\n"
+                        )
 
-        async with state.lock:
-            state.started = False
+                        async with state.lock:
+                            state.last_raw_data = raw_data
+                            state.latest_full_event = full_event
+                            state.latest_delta_snapshot_event = snapshot_event
+
+                        await self._broadcast(state, "full", full_event)
+                        await self._broadcast(state, "delta", delta_event)
+                    except (
+                        ConnectionError,
+                        TimeoutError,
+                        ValueError,
+                        RuntimeError,
+                        OSError,
+                    ) as exc:
+                        logger.error("Error producing SSE vehicles data", exc_info=exc)
+                        await self._broadcast(
+                            state, "full", ": error fetching data\n\n"
+                        )
+                        await self._broadcast(
+                            state, "delta", ": error fetching data\n\n"
+                        )
+
+                    await sleep(self._interval_seconds)
+        except Exception:
+            logger.exception("Vehicle SSE producer exited unexpectedly")
+        finally:
+            async with state.lock:
+                state.started = False
 
     async def _broadcast(
         self, state: _VehicleProducerState, mode: VehicleStreamMode, event: str
