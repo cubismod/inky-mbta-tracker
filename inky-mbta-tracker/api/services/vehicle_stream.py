@@ -16,6 +16,15 @@ from anyio import (
 from anyio.abc import TaskGroup
 from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
 from geojson import Feature, dumps
+from opentelemetry import trace
+from otel_utils import add_span_attributes, add_transaction_ids_to_span, set_span_error
+from prometheus import (
+    vehicle_stream_active_producers,
+    vehicle_stream_connected_clients,
+    vehicle_stream_payload_vehicles,
+    vehicle_stream_producer_iterations,
+    vehicle_stream_stale_clients,
+)
 from shared_types.shared_types import DiffApiResponse
 from utils import get_vehicles_data
 
@@ -23,6 +32,7 @@ from ..core import DIParams
 from .vehicle_delta import calculate_diff
 
 logger = logging.getLogger(__name__)
+tracer = trace.get_tracer(__name__)
 
 VehicleStreamMode = Literal["full", "delta"]
 
@@ -67,6 +77,7 @@ class VehicleStreamManager:
     async def subscribe(
         self, mode: VehicleStreamMode, frequent_buses: bool
     ) -> AsyncGenerator[MemoryObjectReceiveStream[str], None]:
+        label = _bool_label(frequent_buses)
         if self._closed:
             raise RuntimeError("Vehicle stream manager is closed")
 
@@ -88,15 +99,30 @@ class VehicleStreamManager:
                     send_stream.send_nowait(replay)
                 except (WouldBlock, BrokenResourceError, ClosedResourceError):
                     state.subscribers[mode].discard(send_stream)
+                    self._set_connected_client_metrics(state)
                     replay_failed = True
             if not replay_failed and not state.started:
                 state.started = True
                 self._task_group.start_soon(self._run_producer, state)
+            if not replay_failed:
+                self._set_connected_client_metrics(state)
 
         if replay_failed:
+            vehicle_stream_stale_clients.labels(mode, label, "initial_replay").inc()
             await send_stream.aclose()
             await receive_stream.aclose()
             raise RuntimeError("Unable to queue initial vehicle stream replay")
+
+        with tracer.start_as_current_span("api.vehicle_stream.subscribe") as span:
+            add_transaction_ids_to_span(span)
+            add_span_attributes(
+                span,
+                {
+                    "vehicle_stream.mode": mode,
+                    "vehicle_stream.frequent_buses": frequent_buses,
+                    "vehicle_stream.clients": state.subscriber_count(),
+                },
+            )
 
         try:
             async with receive_stream:
@@ -104,6 +130,7 @@ class VehicleStreamManager:
         finally:
             async with state.lock:
                 state.subscribers[mode].discard(send_stream)
+                self._set_connected_client_metrics(state)
             await send_stream.aclose()
 
     async def aclose(self) -> None:
@@ -119,6 +146,7 @@ class VehicleStreamManager:
                 ]
                 for mode_subscribers in state.subscribers.values():
                     mode_subscribers.clear()
+                self._set_connected_client_metrics(state)
             for subscriber in subscribers:
                 await subscriber.aclose()
 
@@ -131,85 +159,136 @@ class VehicleStreamManager:
             return self._states[frequent_buses]
 
     async def _run_producer(self, state: _VehicleProducerState) -> None:
+        label = _bool_label(state.frequent_buses)
+        vehicle_stream_active_producers.labels(label).set(1)
         try:
             async with DIParams(self._session) as commons:
                 while not self._closed:
                     async with state.lock:
                         if state.subscriber_count() == 0:
+                            vehicle_stream_producer_iterations.labels(
+                                label, "no_subscribers"
+                            ).inc()
                             return
 
                     if not commons.tg:
                         await self._broadcast(state, "full", ": tg-unavailable\n\n")
                         await self._broadcast(state, "delta", ": tg-unavailable\n\n")
+                        vehicle_stream_producer_iterations.labels(
+                            label, "task_group_unavailable"
+                        ).inc()
                         await sleep(self._interval_seconds)
                         continue
 
-                    try:
-                        raw_data = await get_vehicles_data(
-                            commons.r_client,
-                            commons.config,
-                            commons.tg,
-                            state.frequent_buses,
-                        )
-                        full_event = self._build_full_event(raw_data)
-                        delta_response = calculate_diff(state.last_raw_data, raw_data)
-                        delta_event = f"data: {delta_response.model_dump_json()}\n\n"
-                        snapshot_response = DiffApiResponse(
-                            updated=raw_data,
-                            removed=set(),
-                        )
-                        snapshot_event = (
-                            f"data: {snapshot_response.model_dump_json()}\n\n"
-                        )
+                    with tracer.start_as_current_span(
+                        "api.vehicle_stream.produce"
+                    ) as span:
+                        try:
+                            add_transaction_ids_to_span(span)
+                            add_span_attributes(
+                                span,
+                                {
+                                    "vehicle_stream.frequent_buses": (
+                                        state.frequent_buses
+                                    ),
+                                    "vehicle_stream.clients": (
+                                        state.subscriber_count()
+                                    ),
+                                },
+                            )
+                            raw_data = await get_vehicles_data(
+                                commons.r_client,
+                                commons.config,
+                                commons.tg,
+                                state.frequent_buses,
+                            )
+                            full_event = self._build_full_event(raw_data)
+                            delta_response = calculate_diff(
+                                state.last_raw_data, raw_data
+                            )
+                            delta_event = (
+                                f"data: {delta_response.model_dump_json()}\n\n"
+                            )
+                            snapshot_response = DiffApiResponse(
+                                updated=raw_data,
+                                removed=set(),
+                            )
+                            snapshot_event = (
+                                f"data: {snapshot_response.model_dump_json()}\n\n"
+                            )
 
-                        async with state.lock:
-                            state.last_raw_data = raw_data
-                            state.latest_full_event = full_event
-                            state.latest_delta_snapshot_event = snapshot_event
+                            async with state.lock:
+                                state.last_raw_data = raw_data
+                                state.latest_full_event = full_event
+                                state.latest_delta_snapshot_event = snapshot_event
 
-                        await self._broadcast(state, "full", full_event)
-                        await self._broadcast(state, "delta", delta_event)
-                    except (
-                        ConnectionError,
-                        TimeoutError,
-                        ValueError,
-                        RuntimeError,
-                        OSError,
-                    ) as exc:
-                        logger.error("Error producing SSE vehicles data", exc_info=exc)
-                        await self._broadcast(
-                            state, "full", ": error fetching data\n\n"
-                        )
-                        await self._broadcast(
-                            state, "delta", ": error fetching data\n\n"
-                        )
+                            vehicle_stream_payload_vehicles.labels(label).set(
+                                len(raw_data)
+                            )
+                            span.set_attribute("vehicles.count", len(raw_data))
+
+                            await self._broadcast(state, "full", full_event)
+                            await self._broadcast(state, "delta", delta_event)
+                            vehicle_stream_producer_iterations.labels(
+                                label, "success"
+                            ).inc()
+                        except (
+                            ConnectionError,
+                            TimeoutError,
+                            ValueError,
+                            RuntimeError,
+                            OSError,
+                        ) as exc:
+                            logger.error(
+                                "Error producing SSE vehicles data", exc_info=exc
+                            )
+                            set_span_error(span, exc)
+                            await self._broadcast(
+                                state, "full", ": error fetching data\n\n"
+                            )
+                            await self._broadcast(
+                                state, "delta", ": error fetching data\n\n"
+                            )
+                            vehicle_stream_producer_iterations.labels(
+                                label, "error"
+                            ).inc()
 
                     await sleep(self._interval_seconds)
-        except Exception:
+        except Exception as exc:
+            set_span_error(trace.get_current_span(), exc)
             logger.exception("Vehicle SSE producer exited unexpectedly")
         finally:
             async with state.lock:
                 state.started = False
+            vehicle_stream_active_producers.labels(label).set(0)
 
     async def _broadcast(
         self, state: _VehicleProducerState, mode: VehicleStreamMode, event: str
     ) -> None:
-        stale_subscribers: list[MemoryObjectSendStream[str]] = []
+        stale_subscribers: list[tuple[MemoryObjectSendStream[str], str]] = []
+        label = _bool_label(state.frequent_buses)
         async with state.lock:
             subscribers = list(state.subscribers[mode])
             for subscriber in subscribers:
                 try:
                     subscriber.send_nowait(event)
                 except WouldBlock:
-                    stale_subscribers.append(subscriber)
+                    stale_subscribers.append((subscriber, "backpressure"))
                 except (BrokenResourceError, ClosedResourceError):
-                    stale_subscribers.append(subscriber)
+                    stale_subscribers.append((subscriber, "closed"))
 
-            for subscriber in stale_subscribers:
+            for subscriber, reason in stale_subscribers:
                 state.subscribers[mode].discard(subscriber)
+                vehicle_stream_stale_clients.labels(mode, label, reason).inc()
+            self._set_connected_client_metrics(state)
 
-        for subscriber in stale_subscribers:
+        for subscriber, _reason in stale_subscribers:
             await subscriber.aclose()
+
+    def _set_connected_client_metrics(self, state: _VehicleProducerState) -> None:
+        label = _bool_label(state.frequent_buses)
+        for mode, subscribers in state.subscribers.items():
+            vehicle_stream_connected_clients.labels(mode, label).set(len(subscribers))
 
     def _build_full_event(self, raw_data: dict[str, Feature]) -> str:
         norm_data = self._normalize_features(raw_data)
@@ -235,3 +314,7 @@ class VehicleStreamManager:
             except Exception:
                 out[key] = value if isinstance(value, dict) else {"_repr": str(value)}
         return out
+
+
+def _bool_label(value: bool) -> str:
+    return "true" if value else "false"
