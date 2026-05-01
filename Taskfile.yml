@@ -23,10 +23,10 @@ tasks:
       - uv run inky-mbta-tracker
   api-server:
     cmds:
-      - uv run uvicorn api_server:app --workers 5 --loop uvloop
+      - uv run uvicorn api_server:app --workers 4 --loop uvloop
   gunicorn:
       cmds:
-      - uv run gunicorn -w 10 -k uvicorn.workers.UvicornWorker api_server:app
+      - uv run gunicorn -w 4 -k uvicorn.workers.UvicornWorker api_server:app
   logs:
     cmds:
       - uvx tail -f imt.log
@@ -46,6 +46,9 @@ tasks:
   test:
     cmds:
       - uv run pytest
+  load-test-sse:
+    cmds:
+      - uv run python inky-mbta-tracker/load_test_sse.py --url http://localhost:8000/vehicles/stream {{.CLI_ARGS}}
   check-all:
     cmds:
       - task: format

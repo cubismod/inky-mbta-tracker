@@ -2,6 +2,7 @@ import os
 from contextlib import asynccontextmanager
 
 import aiohttp
+from anyio import create_task_group
 from api.core import RATE_LIMITING_ENABLED
 from api.endpoints.alerts import router as alerts_router
 
@@ -13,6 +14,7 @@ from api.limits import limiter
 from api.middleware.cache_middleware import create_cache_middleware
 from api.middleware.header_middleware import HeaderLoggingMiddleware
 from api.middleware.transaction_middleware import TransactionIDMiddleware
+from api.services.vehicle_stream import VehicleStreamManager
 from consts import MBTA_V3_ENDPOINT
 from dotenv import load_dotenv
 from fastapi import FastAPI
@@ -40,13 +42,19 @@ def create_app() -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         app.state.session = aiohttp.ClientSession(base_url=MBTA_V3_ENDPOINT)
-        try:
-            yield
-        finally:
-            await app.state.session.close()
-            # Ensure OTEL spans are flushed before exit
-            if is_otel_enabled():
-                shutdown_otel()
+        async with create_task_group() as tg:
+            app.state.vehicle_stream_manager = VehicleStreamManager(
+                app.state.session, tg
+            )
+            try:
+                yield
+            finally:
+                await app.state.vehicle_stream_manager.aclose()
+                tg.cancel_scope.cancel()
+                await app.state.session.close()
+                # Ensure OTEL spans are flushed before exit
+                if is_otel_enabled():
+                    shutdown_otel()
 
     app = FastAPI(
         title="MBTA Transit Data API",
