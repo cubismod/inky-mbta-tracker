@@ -1,19 +1,18 @@
 import json
 import logging
 from datetime import datetime
-from typing import Any, AsyncGenerator, Optional
+from typing import AsyncGenerator, Optional
 
 from api.middleware.cache_middleware import cache_ttl
-from api.services.vehicle_delta import calculate_diff
 from fastapi import APIRouter, HTTPException, Request, Response
-from geojson import Feature, FeatureCollection, dumps
+from geojson import FeatureCollection, dumps
 from geojson_utils import get_vehicle_features
 from opentelemetry import trace
 from otel_utils import add_transaction_ids_to_span
 from starlette.responses import StreamingResponse
 from utils import get_vehicles_data
 
-from ..core import GET_DI, SSE_ENABLED, DIParams
+from ..core import GET_DI, SSE_ENABLED
 from ..limits import limiter
 from ..models import VehiclesCountResponse
 
@@ -73,70 +72,15 @@ async def get_vehicles_sse(
         raise HTTPException(status_code=503, detail="SSE streaming disabled")
 
     async def event_generator() -> AsyncGenerator[str, None]:
-        from anyio import sleep
-
         # send an initial comment to establish the stream quickly
         yield ": stream-start\n\n"
-        last_data: dict[str, Any] = {}
-
-        def _normalize_features(features: dict[str, Any]) -> dict[str, Any]:
-            out: dict[str, Any] = {}
-            if not isinstance(features, dict):
-                return out
-            for k, v in features.items():
-                try:
-                    if isinstance(v, Feature):
-                        out[k] = json.loads(dumps(v, sort_keys=True))
-                    else:
-                        out[k] = v
-                except Exception:
-                    out[k] = v if isinstance(v, dict) else {"_repr": str(v)}
-            return out
-
-        # Keep the dependency context open for the duration of the stream
-        async with DIParams(request.app.state.session) as commons:
-            while True:
+        manager = request.app.state.vehicle_stream_manager
+        mode = "delta" if delta else "full"
+        async with manager.subscribe(mode, frequent_buses) as events:
+            async for event in events:
                 if await request.is_disconnected():
                     break
-                if commons.tg:
-                    try:
-                        raw_data = await get_vehicles_data(
-                            commons.r_client, commons.config, commons.tg, frequent_buses
-                        )
-                        norm_data = _normalize_features(
-                            raw_data if isinstance(raw_data, dict) else {}
-                        )
-                        if delta:
-                            resp = calculate_diff(last_data, raw_data)
-                            last_data = raw_data
-                        if delta and resp:
-                            yield f"data: {resp.model_dump_json()}\n\n"
-                        else:
-                            try:
-                                features_list = [v for v in norm_data.values()]
-                                payload = {
-                                    "type": "FeatureCollection",
-                                    "features": features_list,
-                                }
-                                yield f"data: {json.dumps(payload)}\n\n"
-                            except Exception:
-                                yield f"data: {json.dumps(raw_data)}\n\n"
-                    except (
-                        ConnectionError,
-                        TimeoutError,
-                        ValueError,
-                        RuntimeError,
-                        OSError,
-                    ) as e:
-                        logger.error("Error producing SSE vehicles data", exc_info=e)
-                        # comment as heartbeat so client keeps connection
-                        yield ": error fetching data\n\n"
-                else:
-                    # no task group available; emit heartbeat so clients keep connection
-                    yield ": tg-unavailable\n\n"
-
-                # throttle update frequency
-                await sleep(4)
+                yield event
 
     headers = {
         "Cache-Control": "no-cache",
