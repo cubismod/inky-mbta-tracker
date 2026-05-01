@@ -46,6 +46,9 @@ tasks:
   test:
     cmds:
       - uv run pytest
+  load-test-sse:
+    cmds:
+      - uv run python inky-mbta-tracker/load_test_sse.py --url http://localhost:8000/vehicles/stream {{.CLI_ARGS}}
   check-all:
     cmds:
       - task: format
