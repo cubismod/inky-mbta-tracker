@@ -284,9 +284,8 @@ def _auto_instrument(config: dict[str, str]) -> None:
 
             def aiohttp_request_hook(
                 span: Span,
-                url: str,
-                method: str,
-                headers: dict[str, str],
+                params: Any,
+                *args: Any,
                 **kwargs: Any,
             ) -> None:
                 """
@@ -310,6 +309,7 @@ def _auto_instrument(config: dict[str, str]) -> None:
                 try:
                     from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
+                    url = str(getattr(params, "url", params))
                     parsed = urlparse(url)
                     if not parsed.query:
                         return
