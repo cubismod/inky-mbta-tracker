@@ -20,6 +20,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 
 COPY inky-mbta-tracker ./inky-mbta-tracker
 COPY child_stations.json ./
+COPY uvicorn_logging_config.json ./
 
 # Install the project (uses cached wheels from previous step) and verify lockfile
 RUN --mount=type=cache,target=/root/.cache/pip \
@@ -41,6 +42,7 @@ RUN mkdir hf
 COPY --from=build /app/.venv /app/.venv
 COPY --from=build /app/inky-mbta-tracker /app/inky-mbta-tracker
 COPY --from=build /app/child_stations.json /app/
+COPY --from=build /app/uvicorn_logging_config.json /app/
 
 HEALTHCHECK --interval=15s --timeout=10s --start-period=60s --retries=2 \
 	CMD python inky-mbta-tracker/healthcheck.py || exit 1
