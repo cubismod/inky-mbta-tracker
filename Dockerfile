@@ -27,5 +27,6 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 HEALTHCHECK --interval=15s --timeout=10s --start-period=60s --retries=2 \
 	CMD uv run python inky-mbta-tracker/healthcheck.py || exit 1
 
-# replace for api server: ["uvicorn", "api_server:app", "--workers", "10", "--loop", "uvloop"]
+# API server command:
+# CMD ["uv", "run", "uvicorn", "api_server:app", "--workers", "10", "--loop", "uvloop", "--proxy-headers", "--forwarded-allow-ips", "*", "--log-config", "uvicorn_logging_config.json"]
 CMD ["uv", "run", "inky-mbta-tracker"]
