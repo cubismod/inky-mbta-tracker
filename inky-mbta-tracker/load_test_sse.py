@@ -36,6 +36,7 @@ class LoadStatsSnapshot:
     comment_events: int = 0
     bytes_received: int = 0
     errors: int = 0
+    errors_by_reason: dict[str, int] = field(default_factory=dict)
     first_event_latencies_ms: list[float] = field(default_factory=list)
 
 
@@ -70,9 +71,12 @@ class LoadStats:
             if reconnect:
                 self.snapshot_data.reconnects += 1
 
-    async def mark_error(self) -> None:
+    async def mark_error(self, reason: str) -> None:
         async with self.lock:
             self.snapshot_data.errors += 1
+            self.snapshot_data.errors_by_reason[reason] = (
+                self.snapshot_data.errors_by_reason.get(reason, 0) + 1
+            )
 
     async def record_chunk(
         self,
@@ -104,6 +108,7 @@ class LoadStats:
                 comment_events=self.snapshot_data.comment_events,
                 bytes_received=self.snapshot_data.bytes_received,
                 errors=self.snapshot_data.errors,
+                errors_by_reason=dict(self.snapshot_data.errors_by_reason),
                 first_event_latencies_ms=list(
                     self.snapshot_data.first_event_latencies_ms
                 ),
@@ -131,7 +136,7 @@ async def sse_client(
                 headers={"Accept": "text/event-stream"},
             ) as response:
                 if response.status != 200:
-                    await stats.mark_error()
+                    await stats.mark_error(f"http_{response.status}")
                     await response.read()
                     await sleep_until_retry_or_deadline(reconnect_delay, deadline)
                     continue
@@ -164,8 +169,12 @@ async def sse_client(
                         )
                 finally:
                     await stats.mark_disconnected()
-        except (aiohttp.ClientError, TimeoutError):
-            await stats.mark_error()
+        except TimeoutError:
+            await stats.mark_error("timeout")
+        except aiohttp.ClientConnectorError as exc:
+            await stats.mark_error(format_exception_reason(exc.os_error))
+        except aiohttp.ClientError as exc:
+            await stats.mark_error(format_exception_reason(exc))
 
         if anyio.current_time() < deadline:
             await sleep_until_retry_or_deadline(reconnect_delay, deadline)
@@ -221,6 +230,7 @@ async def print_report(stats: LoadStats, started_at: float, *, final: bool) -> N
     elapsed = max(0.001, anyio.current_time() - started_at)
     first_event_p95 = percentile(snapshot.first_event_latencies_ms, 95)
     prefix = "final" if final else "progress"
+    top_errors = format_top_errors(snapshot.errors_by_reason)
     print(
         f"{prefix}: elapsed={elapsed:.1f}s "
         f"connected={snapshot.connected} peak={snapshot.peak_connected} "
@@ -230,7 +240,8 @@ async def print_report(stats: LoadStats, started_at: float, *, final: bool) -> N
         f"events/s={snapshot.data_events / elapsed:.2f} "
         f"MiB/s={snapshot.bytes_received / elapsed / 1024 / 1024:.2f} "
         f"errors={snapshot.errors} reconnects={snapshot.reconnects} "
-        f"first_event_p95_ms={first_event_p95:.1f}"
+        f"first_event_p95_ms={first_event_p95:.1f} "
+        f"top_errors={top_errors}"
     )
 
 
@@ -313,6 +324,7 @@ async def print_final_report(
         ("Connection success rate", f"{success_rate:.1f}%"),
         ("Reconnects", str(snapshot.reconnects)),
         ("Errors", str(snapshot.errors)),
+        ("Top errors", format_top_errors(snapshot.errors_by_reason)),
         ("Peak connected", str(snapshot.peak_connected)),
         ("Elapsed", f"{elapsed:.1f}s"),
         ("Data events", str(snapshot.data_events)),
@@ -351,6 +363,28 @@ def format_bytes(value: float) -> str:
 
 def format_ms(value: float) -> str:
     return f"{value:.1f} ms"
+
+
+def format_top_errors(errors_by_reason: dict[str, int]) -> str:
+    if not errors_by_reason:
+        return "none"
+    top_errors = sorted(
+        errors_by_reason.items(), key=lambda item: item[1], reverse=True
+    )[:5]
+    return ", ".join(f"{reason}:{count}" for reason, count in top_errors)
+
+
+def format_exception_reason(exc: BaseException) -> str:
+    if isinstance(exc, OSError):
+        errno = exc.errno
+        strerror = exc.strerror
+        if errno is not None and strerror:
+            return f"{type(exc).__name__}[{errno}:{strerror}]"
+        if errno is not None:
+            return f"{type(exc).__name__}[{errno}]"
+        if strerror:
+            return f"{type(exc).__name__}[{strerror}]"
+    return type(exc).__name__
 
 
 @click.command(context_settings={"show_default": True})
