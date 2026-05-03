@@ -17,7 +17,14 @@ from mbta_rate_limiter import rate_limited_get
 from mbta_responses import AlertResource
 from opentelemetry.trace import Span
 from otel_config import get_tracer, is_otel_enabled
-from otel_utils import should_trace_operation
+from otel_utils import (
+    add_current_span_attributes,
+    add_span_attributes,
+    add_transaction_ids_to_span,
+    set_current_span_error,
+    should_trace_operation,
+    traced_function,
+)
 from prometheus import redis_commands
 from pydantic import ValidationError
 from redis.asyncio import Redis
@@ -37,8 +44,11 @@ async def light_get_alerts_batch(
     if tracer and should_trace_operation("medium_volume"):
         with tracer.start_as_current_span(
             "geojson_utils.light_get_alerts_batch",
-            attributes={"routes": routes_str},
+            attributes={
+                "routes.count": len([route for route in routes_str.split(",") if route])
+            },
         ) as span:
+            add_transaction_ids_to_span(span)
             return await _light_get_alerts_batch_impl(
                 routes_str, session, r_client, span
             )
@@ -174,6 +184,7 @@ async def collect_alerts(
                 else 0
             },
         ) as span:
+            add_transaction_ids_to_span(span)
             logger.debug(f"Collecting alerts for routes: {config.vehicles_by_route}")
 
             alerts = dict[str, AlertResource]()
@@ -193,12 +204,27 @@ async def collect_alerts(
 
                 for batch_num, route_batch in enumerate(route_batches, 1):
                     routes_str = ",".join(route_batch)
+                    add_span_attributes(
+                        span,
+                        {
+                            "alerts.current_batch": batch_num,
+                            "alerts.current_batch.route_count": len(route_batch),
+                        },
+                    )
                     logger.debug(
                         f"Fetching alerts for batch {batch_num}/{len(route_batches)}: {routes_str}"
                     )
 
                     al = await light_get_alerts_batch(routes_str, session, r_client)
                     if al:
+                        span.add_event(
+                            "alerts_batch_received",
+                            {
+                                "batch.number": batch_num,
+                                "alerts.count": len(al),
+                                "routes.count": len(route_batch),
+                            },
+                        )
                         logger.debug(
                             f"Batch {batch_num}: Received {len(al)} alerts from MBTA API"
                         )
@@ -246,6 +272,13 @@ async def collect_alerts(
                                 )
                                 continue
                     else:
+                        span.add_event(
+                            "alerts_batch_empty",
+                            {
+                                "batch.number": batch_num,
+                                "routes.count": len(route_batch),
+                            },
+                        )
                         logger.debug(
                             f"Batch {batch_num}: No alerts received from MBTA API"
                         )
@@ -356,16 +389,36 @@ async def collect_alerts(
         return collected_alerts
 
 
+@traced_function("geojson_utils.get_vehicle_features")
 async def get_vehicle_features(
     r_client: Redis, config: Config, tg: TaskGroup, frequent_buses: bool = False
 ) -> dict[str, Feature]:
     """Extract vehicle features from Redis data"""
+    add_current_span_attributes(
+        {
+            "vehicles.frequent_buses": frequent_buses,
+            "task.type": "geojson_vehicle_features",
+        }
+    )
     features = dict[str, Feature]()
 
     vehicle_keys_bytes: set[bytes] = await r_client.smembers("pos-data")  # type: ignore[misc]
     redis_commands.labels("smembers").inc()
+    add_current_span_attributes(
+        {
+            "redis.pos_data.keys": len(vehicle_keys_bytes),
+            "redis.operation": "smembers",
+        }
+    )
 
     if not vehicle_keys_bytes:
+        add_current_span_attributes(
+            {
+                "vehicles.count": 0,
+                "vehicles.filtered_count": 0,
+                "redis.stale_keys": 0,
+            }
+        )
         return features
 
     vehicle_keys_list: list[bytes] = []
@@ -379,9 +432,17 @@ async def get_vehicle_features(
 
     results: list[bytes | None] = await pl.execute()
     redis_commands.labels("execute").inc()
+    add_current_span_attributes(
+        {
+            "redis.pipeline.commands": len(vehicle_keys_list),
+            "redis.pipeline.results": len(results),
+        }
+    )
 
     # Identify stale pos-data entries (keys that have expired in Redis)
     stale_keys: list[bytes] = []
+    validation_errors = 0
+    filtered_count = 0
 
     for vk_bytes, result in zip(vehicle_keys_list, results):
         if not result:
@@ -395,6 +456,7 @@ async def get_vehicle_features(
                 strict=False, json_data=result
             )
         except ValidationError:
+            validation_errors += 1
             continue
 
         if (
@@ -402,12 +464,14 @@ async def get_vehicle_features(
             and config.frequent_bus_lines
             and vehicle_info.route not in config.frequent_bus_lines
         ):
+            filtered_count += 1
             continue
         elif (
             not frequent_buses
             and config.frequent_bus_lines
             and vehicle_info.route in config.frequent_bus_lines
         ):
+            filtered_count += 1
             continue
         if vehicle_info.route and vehicle_info.stop:
             point = Point((vehicle_info.longitude, vehicle_info.latitude))
@@ -477,6 +541,14 @@ async def get_vehicle_features(
         await r_client.srem("pos-data", *stale_keys)  # type: ignore[misc]
         redis_commands.labels("srem").inc()
 
+    add_current_span_attributes(
+        {
+            "vehicles.count": len(features),
+            "vehicles.filtered_count": filtered_count,
+            "vehicles.validation_errors": validation_errors,
+            "redis.stale_keys": len(stale_keys),
+        }
+    )
     return features
 
 
@@ -503,6 +575,7 @@ def _optimize_line_geometry(
         return coordinates
 
 
+@traced_function("geojson_utils.get_shapes_features")
 async def get_shapes_features(
     config: Config,
     redis_client: Redis,
@@ -511,6 +584,18 @@ async def get_shapes_features(
     frequent_buses: bool = False,
 ) -> list[Feature]:
     """Get route shapes as GeoJSON features with geometric optimization"""
+    requested_routes = (
+        config.frequent_bus_lines
+        if frequent_buses and config.frequent_bus_lines
+        else config.vehicles_by_route
+    )
+    add_current_span_attributes(
+        {
+            "shapes.frequent_buses": frequent_buses,
+            "routes.count": len(requested_routes) if requested_routes else 0,
+            "task.type": "geojson_shape_features",
+        }
+    )
     lines = list()
     shapes = None
     if frequent_buses and config.frequent_bus_lines:
@@ -544,6 +629,12 @@ async def get_shapes_features(
                         properties={"route": k},
                     )
                 )
+    add_current_span_attributes(
+        {
+            "shapes.count": len(lines),
+            "shapes.has_source_data": shapes is not None,
+        }
+    )
     return lines
 
 
@@ -554,8 +645,21 @@ async def background_refresh(r_client: Redis, config: Config, tg: TaskGroup):
     if tracer and should_trace_operation("background"):
         with tracer.start_as_current_span("geojson_utils.background_refresh"):
             while True:
-                await get_vehicle_features(r_client, config, tg)
-                await get_vehicle_features(r_client, config, tg, frequent_buses=True)
+                with tracer.start_as_current_span(
+                    "geojson_utils.background_refresh.iteration"
+                ) as span:
+                    add_transaction_ids_to_span(span)
+                    try:
+                        await get_vehicle_features(r_client, config, tg)
+                        await get_vehicle_features(
+                            r_client, config, tg, frequent_buses=True
+                        )
+                        span.set_attribute("background_refresh.status", "success")
+                    except Exception as exc:
+                        set_current_span_error(exc)
+                        raise
+                    finally:
+                        span.set_attribute("background_refresh.interval_seconds", 30)
                 await sleep(30)
     else:
         while True:

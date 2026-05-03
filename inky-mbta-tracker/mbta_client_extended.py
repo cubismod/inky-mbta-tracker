@@ -1,6 +1,7 @@
 import logging
 import os
 from asyncio import CancelledError
+from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
 from random import randint
 from typing import TYPE_CHECKING, Optional
@@ -27,7 +28,10 @@ from mbta_responses import AlertResource, Shapes
 from opentelemetry.trace import Span
 from otel_config import get_tracer, is_otel_enabled
 from otel_utils import (
+    add_entity_id_attribute,
     add_span_attributes,
+    add_transaction_ids_to_span,
+    set_span_error,
 )
 from polyline import decode
 from prometheus import (
@@ -91,21 +95,55 @@ async def get_shapes(
     session: ClientSession,
     tg: Optional[TaskGroup] = None,
 ) -> RouteShapes:
+    tracer = get_tracer(__name__) if is_otel_enabled() else None
+    if tracer:
+        with tracer.start_as_current_span("mbta_client_extended.get_shapes") as span:
+            add_transaction_ids_to_span(span)
+            add_span_attributes(
+                span,
+                {
+                    "routes.count": len(routes),
+                    "session.closed": session.closed,
+                },
+            )
+            return await _get_shapes_impl(r_client, routes, session, tg, span)
+    return await _get_shapes_impl(r_client, routes, session, tg, None)
+
+
+async def _get_shapes_impl(
+    r_client: Redis,
+    routes: list[str],
+    session: ClientSession,
+    tg: Optional[TaskGroup],
+    span: Optional[Span],
+) -> RouteShapes:
     # Avoid retries using a closed session; return empty result
     if session.closed:
         logger.debug("get_shapes called with a closed session; skipping fetch")
+        add_span_attributes(span, {"session.closed": True, "shapes.count": 0})
         return RouteShapes(lines={})
     ret = RouteShapes(lines={})
+    cache_hits = 0
+    cache_misses = 0
     for route in routes:
         key = f"shape:{route}"
         cached = await check_cache(r_client, key)
         body = ""
         if cached:
+            cache_hits += 1
             body = cached
         else:
+            cache_misses += 1
             async with rate_limited_get(
                 session, r_client, f"/shapes?filter[route]={route}&api_key={MBTA_AUTH}"
             ) as response:
+                add_span_attributes(
+                    span,
+                    {
+                        "http.status_code": response.status,
+                        "mbta.endpoint": "shapes",
+                    },
+                )
                 if response.status == 429:
                     raise RateLimitExceeded()
                 body = await response.text()
@@ -117,6 +155,14 @@ async def get_shapes(
                     await write_cache(r_client, key, body, 2419200)
         shapes = Shapes.model_validate_json(body, strict=False)
         ret.lines[route] = parse_shape_data(shapes)
+    add_span_attributes(
+        span,
+        {
+            "cache.hits": cache_hits,
+            "cache.misses": cache_misses,
+            "shapes.count": sum(len(lines) for lines in ret.lines.values()),
+        },
+    )
     return ret
 
 
@@ -147,8 +193,10 @@ async def light_get_stop(
     tracer = get_tracer(__name__) if is_otel_enabled() else None
     if tracer:
         with tracer.start_as_current_span(
-            "mbta_client_extended.light_get_stop", attributes={"stop_id": stop_id}
+            "mbta_client_extended.light_get_stop"
         ) as span:
+            add_transaction_ids_to_span(span)
+            add_entity_id_attribute(span, "stop.id", stop_id, entity_type="stop")
             return await _light_get_stop_impl(r_client, stop_id, tg, span)
     else:
         return await _light_get_stop_impl(r_client, stop_id, tg, None)
@@ -179,57 +227,82 @@ async def _light_get_stop_impl(
         # if it's not cached then we fetch it in the background and return None; it will be cached for next time
         if span:
             span.set_attribute("cache.hit", False)
+            span.set_attribute("stop.fetch.scheduled", True)
 
         async def fetch_stop(stop_id: str, tg: TaskGroup):
             import mbta_client
 
-            await sleep(randint(MINUTE, TEN_MIN))
-            if await check_cache(r_client, key):
-                logger.debug(
-                    f"Stop data for {stop_id} was cached while waiting; skipping fetch"
-                )
-                return
-
-            logger.debug(f"Fetching stop data for {stop_id} from MBTA API")
-            MBTAApi = mbta_client.MBTAApi
-            ls = None
-
-            async with RedisLock(
-                r_client,
-                f"stop_fetch:{stop_id}",
-                blocking_timeout=5,
-                expire_timeout=30,
+            tracer = get_tracer(__name__) if is_otel_enabled() else None
+            with (
+                tracer.start_as_current_span("mbta_client_extended.fetch_light_stop")
+                if tracer
+                else nullcontext() as fetch_span
             ):
+                add_transaction_ids_to_span(fetch_span)
+                add_entity_id_attribute(
+                    fetch_span, "stop.id", stop_id, entity_type="stop"
+                )
+                await sleep(randint(MINUTE, TEN_MIN))
                 if await check_cache(r_client, key):
                     logger.debug(
-                        f"Stop data for {stop_id} was cached while waiting on lock; skipping fetch"
+                        f"Stop data for {stop_id} was cached while waiting; skipping fetch"
                     )
+                    add_span_attributes(fetch_span, {"cache.hit": True})
                     return
 
-                async with aiohttp.ClientSession(base_url=MBTA_V3_ENDPOINT) as session:
-                    async with MBTAApi(
-                        r_client, stop_id=stop_id, watcher_type=TaskType.LIGHT_STOP
-                    ) as watcher:
-                        stop = await watcher.get_stop(
-                            session, stop_id, tg, include_facilities=False
+                logger.debug(f"Fetching stop data for {stop_id} from MBTA API")
+                MBTAApi = mbta_client.MBTAApi
+                ls = None
+
+                async with RedisLock(
+                    r_client,
+                    f"stop_fetch:{stop_id}",
+                    blocking_timeout=5,
+                    expire_timeout=30,
+                ):
+                    if await check_cache(r_client, key):
+                        logger.debug(
+                            f"Stop data for {stop_id} was cached while waiting on lock; skipping fetch"
                         )
-                        if stop and stop[0]:
-                            if stop[0].data.attributes.description:
-                                stop_id = stop[0].data.attributes.description
-                            elif stop[0].data.attributes.name:
-                                stop_id = stop[0].data.attributes.name
-                            ls = LightStop(
-                                stop_id=stop_id,
-                                long=stop[0].data.attributes.longitude,
-                                lat=stop[0].data.attributes.latitude,
+                        add_span_attributes(fetch_span, {"cache.hit": True})
+                        return
+
+                    add_span_attributes(fetch_span, {"cache.hit": False})
+                    async with aiohttp.ClientSession(
+                        base_url=MBTA_V3_ENDPOINT
+                    ) as session:
+                        async with MBTAApi(
+                            r_client,
+                            stop_id=stop_id,
+                            watcher_type=TaskType.LIGHT_STOP,
+                        ) as watcher:
+                            stop = await watcher.get_stop(
+                                session, stop_id, tg, include_facilities=False
                             )
-                        if ls:
-                            await write_cache(
-                                r_client,
-                                key,
-                                ls.model_dump_json(),
-                                randint(TWO_MONTHS, YEAR),
-                            )
+                            if stop and stop[0]:
+                                if stop[0].data.attributes.description:
+                                    stop_id = stop[0].data.attributes.description
+                                elif stop[0].data.attributes.name:
+                                    stop_id = stop[0].data.attributes.name
+                                ls = LightStop(
+                                    stop_id=stop_id,
+                                    long=stop[0].data.attributes.longitude,
+                                    lat=stop[0].data.attributes.latitude,
+                                )
+                            if ls:
+                                await write_cache(
+                                    r_client,
+                                    key,
+                                    ls.model_dump_json(),
+                                    randint(TWO_MONTHS, YEAR),
+                                )
+                                add_span_attributes(
+                                    fetch_span, {"stop.fetch.result": "cached"}
+                                )
+                            else:
+                                add_span_attributes(
+                                    fetch_span, {"stop.fetch.result": "not_found"}
+                                )
 
         tg.start_soon(fetch_stop, stop_id, tg)
         return None
@@ -265,49 +338,91 @@ async def watch_mbta_server_side_events(
     config: Config,
 ) -> None:
     while True:
-        try:
+        tracer = get_tracer(__name__) if is_otel_enabled() else None
+        stream_span_cm = (
+            tracer.start_as_current_span("mbta_sse.stream_connection")
+            if tracer
+            else nullcontext()
+        )
+        with stream_span_cm as span:
+            add_transaction_ids_to_span(span)
+            add_span_attributes(
+                span,
+                {
+                    "mbta.sse.watcher": watcher.gen_unique_id(),
+                    "mbta.sse.has_send_stream": send_stream is not None,
+                    "mbta.sse.transit_time_min": transit_time_min,
+                },
+            )
+            event_count = 0
+            reconnect_reason = "sleep_retry"
             try:
-                async with create_task_group() as tg:
-                    tg.start_soon(watcher._monitor_health, tg)
-                    try:
-                        async for event in aiosseclient(
-                            endpoint, headers=headers, raise_for_status=True
-                        ):
-                            server_side_events.labels(watcher.gen_unique_id()).inc()
-                            tg.start_soon(
-                                watcher.parse_live_api_response,
-                                event.data,
-                                event.event,
-                                send_stream,
-                                transit_time_min,
-                                session,
-                                tg,
-                                config,
-                            )
-                    except ClientPayloadError as err:
-                        logger.warning("SSE client payload error", exc_info=err)
-                        continue
-                    except ClientResponseError as err:
-                        if err.status == 429:
-                            record_mbta_api_rate_limit_hit(endpoint)
-                            logger.warning(
-                                "Rate limit hit while opening MBTA SSE stream",
-                                exc_info=err,
-                            )
-                        else:
-                            logger.warning("SSE client HTTP error", exc_info=err)
-                        tg.cancel_scope.cancel()
-            except CancelledError:
-                logger.info("SSE watcher cancelled; stopping stream loop")
-                return
-            except GeneratorExit as e:
-                logger.error(
-                    "GeneratorExit in watch_mbta_server_side_events", exc_info=e
+                try:
+                    async with create_task_group() as tg:
+                        tg.start_soon(watcher._monitor_health, tg)
+                        try:
+                            async for event in aiosseclient(
+                                endpoint, headers=headers, raise_for_status=True
+                            ):
+                                event_count += 1
+                                server_side_events.labels(watcher.gen_unique_id()).inc()
+                                tg.start_soon(
+                                    watcher.parse_live_api_response,
+                                    event.data,
+                                    event.event,
+                                    send_stream,
+                                    transit_time_min,
+                                    session,
+                                    tg,
+                                    config,
+                                )
+                        except ClientPayloadError as err:
+                            reconnect_reason = "payload_error"
+                            set_span_error(span, err)
+                            logger.warning("SSE client payload error", exc_info=err)
+                            continue
+                        except ClientResponseError as err:
+                            reconnect_reason = f"http_{err.status}"
+                            set_span_error(span, err)
+                            if err.status == 429:
+                                record_mbta_api_rate_limit_hit(endpoint)
+                                logger.warning(
+                                    "Rate limit hit while opening MBTA SSE stream",
+                                    exc_info=err,
+                                )
+                            else:
+                                logger.warning("SSE client HTTP error", exc_info=err)
+                            tg.cancel_scope.cancel()
+                except CancelledError:
+                    reconnect_reason = "cancelled"
+                    logger.info("SSE watcher cancelled; stopping stream loop")
+                    return
+                except GeneratorExit as e:
+                    reconnect_reason = "generator_exit"
+                    add_span_attributes(
+                        span,
+                        {
+                            "error": True,
+                            "error.type": "GeneratorExit",
+                        },
+                    )
+                    logger.error(
+                        "GeneratorExit in watch_mbta_server_side_events", exc_info=e
+                    )
+                    return
+            except* ClientPayloadError as eg:
+                reconnect_reason = "payload_error_group"
+                for err in eg.exceptions:
+                    set_span_error(span, err)
+                    logger.warning("SSE client payload error", exc_info=err)
+            finally:
+                add_span_attributes(
+                    span,
+                    {
+                        "mbta.sse.events": event_count,
+                        "mbta.sse.reconnect_reason": reconnect_reason,
+                    },
                 )
-                return
-        except* ClientPayloadError as eg:
-            for err in eg.exceptions:
-                logger.warning("SSE client payload error", exc_info=err)
         await sleep(
             randint(5, 15)
         )  # in case we invoke a 429 which is just logged but not thrown from aiosseclient
@@ -343,21 +458,54 @@ async def watch_static_schedule(
         if datetime.now().astimezone(UTC) > refresh_time:
             from mbta_client import MBTAApi
 
-            async with MBTAApi(
-                r_client,
-                stop_id=stop_id,
-                route=route,
-                direction_filter=direction,
-                schedule_only=True,
-                watcher_type=TaskType.SCHEDULES,
-                show_on_display=show_on_display,
-                route_substring_filter=route_substring_filter,
-            ) as watcher:
-                await watcher.save_own_stop(session, tg)
-                await watcher.save_schedule(transit_time_min, send_stream, session, tg)
-                refresh_time = datetime.now().astimezone(UTC) + timedelta(
-                    hours=randint(2, 6)
+            tracer = get_tracer(__name__) if is_otel_enabled() else None
+            span_cm = (
+                tracer.start_as_current_span("mbta_sse.watch_static_schedule.refresh")
+                if tracer
+                else nullcontext()
+            )
+            with span_cm as span:
+                add_transaction_ids_to_span(span)
+                add_entity_id_attribute(span, "stop.id", stop_id, entity_type="stop")
+                add_span_attributes(
+                    span,
+                    {
+                        "route.id": route or "all",
+                        "direction.filter": direction
+                        if direction is not None
+                        else "all",
+                        "task.type": "static_schedule_refresh",
+                        "transit_time_min": transit_time_min,
+                    },
                 )
+                try:
+                    async with MBTAApi(
+                        r_client,
+                        stop_id=stop_id,
+                        route=route,
+                        direction_filter=direction,
+                        schedule_only=True,
+                        watcher_type=TaskType.SCHEDULES,
+                        show_on_display=show_on_display,
+                        route_substring_filter=route_substring_filter,
+                    ) as watcher:
+                        await watcher.save_own_stop(session, tg)
+                        await watcher.save_schedule(
+                            transit_time_min, send_stream, session, tg
+                        )
+                        refresh_time = datetime.now().astimezone(UTC) + timedelta(
+                            hours=randint(2, 6)
+                        )
+                        add_span_attributes(
+                            span,
+                            {
+                                "schedule.refresh.status": "success",
+                                "schedule.next_refresh": refresh_time.isoformat(),
+                            },
+                        )
+                except Exception as exc:
+                    set_span_error(span, exc)
+                    raise
         await sleep(10)
 
 
@@ -392,22 +540,44 @@ async def watch_vehicles(
     assert session is not None, "ClientSession must be provided to watch_vehicles"
     from mbta_client import MBTAApi
 
-    async with MBTAApi(
-        r_client,
-        route=route_id,
-        watcher_type=TaskType.VEHICLES,
-        expiration_time=expiration_time,
-    ) as watcher:
-        tracker_executions.labels("vehicles").inc()
-        await watch_mbta_server_side_events(
-            watcher,
-            endpoint,
-            headers,
-            send_stream,
-            session=session,
-            transit_time_min=0,
-            config=config,
+    tracer = get_tracer(__name__) if is_otel_enabled() else None
+    span_cm = (
+        tracer.start_as_current_span("mbta_sse.watch_vehicles")
+        if tracer
+        else nullcontext()
+    )
+    with span_cm as span:
+        add_transaction_ids_to_span(span)
+        add_span_attributes(
+            span,
+            {
+                "route.id": route_id,
+                "task.type": "vehicle_sse_watcher",
+                "watcher.expiration_time": expiration_time.isoformat()
+                if expiration_time
+                else None,
+            },
         )
+        try:
+            async with MBTAApi(
+                r_client,
+                route=route_id,
+                watcher_type=TaskType.VEHICLES,
+                expiration_time=expiration_time,
+            ) as watcher:
+                tracker_executions.labels("vehicles").inc()
+                await watch_mbta_server_side_events(
+                    watcher,
+                    endpoint,
+                    headers,
+                    send_stream,
+                    session=session,
+                    transit_time_min=0,
+                    config=config,
+                )
+        except Exception as exc:
+            set_span_error(span, exc)
+            raise
 
 
 async def watch_station(
@@ -428,10 +598,11 @@ async def watch_station(
 
     if tracer:
         with tracer.start_as_current_span("mbta_sse.watch_station") as span:
+            add_transaction_ids_to_span(span)
+            add_entity_id_attribute(span, "stop.id", stop_id, entity_type="stop")
             add_span_attributes(
                 span,
                 {
-                    "stop.id": stop_id,
                     "route.id": route or "all",
                     "direction.filter": direction_filter
                     if direction_filter is not None
@@ -542,35 +713,55 @@ async def watch_alerts(
 
     from mbta_client import MBTAApi
 
-    async with MBTAApi(
-        r_client,
-        route=route_id,
-        watcher_type=TaskType.ALERTS,
-    ) as watcher:
-        tracker_executions.labels("alerts").inc()
-        await sleep(randint(1, 15))
+    tracer = get_tracer(__name__) if is_otel_enabled() else None
+    span_cm = (
+        tracer.start_as_current_span("mbta_sse.watch_alerts")
+        if tracer
+        else nullcontext()
+    )
+    with span_cm as span:
+        add_transaction_ids_to_span(span)
+        add_span_attributes(
+            span,
+            {
+                "route.id": route_id or "all",
+                "task.type": "alerts_sse_watcher",
+            },
+        )
+        async with MBTAApi(
+            r_client,
+            route=route_id,
+            watcher_type=TaskType.ALERTS,
+        ) as watcher:
+            tracker_executions.labels("alerts").inc()
+            await sleep(randint(1, 15))
 
-        async def write_alerts_heartbeat() -> None:
-            heartbeat_key = "heartbeat:events:alerts"
-            if route_id:
-                heartbeat_key = f"heartbeat:events:alerts:{route_id}"
-            while True:
-                try:
-                    await r_client.set(
-                        heartbeat_key, datetime.now(UTC).isoformat(), ex=2 * HOUR
+            async def write_alerts_heartbeat() -> None:
+                heartbeat_key = "heartbeat:events:alerts"
+                if route_id:
+                    heartbeat_key = f"heartbeat:events:alerts:{route_id}"
+                while True:
+                    try:
+                        await r_client.set(
+                            heartbeat_key, datetime.now(UTC).isoformat(), ex=2 * HOUR
+                        )
+                    except Exception as e:
+                        set_span_error(span, e)
+                        logger.error("Failed to write alerts heartbeat", exc_info=e)
+                    await sleep(30)
+
+            try:
+                async with create_task_group() as tg:
+                    tg.start_soon(write_alerts_heartbeat)
+                    await watch_mbta_server_side_events(
+                        watcher,
+                        endpoint,
+                        headers,
+                        None,
+                        session=session,
+                        transit_time_min=0,
+                        config=config,
                     )
-                except Exception as e:
-                    logger.error("Failed to write alerts heartbeat", exc_info=e)
-                await sleep(30)
-
-        async with create_task_group() as tg:
-            tg.start_soon(write_alerts_heartbeat)
-            await watch_mbta_server_side_events(
-                watcher,
-                endpoint,
-                headers,
-                None,
-                session=session,
-                transit_time_min=0,
-                config=config,
-            )
+            except Exception as exc:
+                set_span_error(span, exc)
+                raise

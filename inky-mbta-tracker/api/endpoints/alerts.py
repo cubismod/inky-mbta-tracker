@@ -6,7 +6,7 @@ from consts import ALERTS_CACHE_TTL
 from fastapi import APIRouter, HTTPException, Request, Response
 from mbta_responses import Alerts
 from opentelemetry import trace
-from otel_utils import add_transaction_ids_to_span
+from otel_utils import add_span_attributes, add_transaction_ids_to_span, set_span_error
 from pydantic import ValidationError
 from redis.exceptions import RedisError
 
@@ -31,6 +31,13 @@ async def get_alerts(request: Request, commons: GET_DI) -> Response:
     with tracer.start_as_current_span("api.alerts.get_alerts") as span:
         # Add transaction IDs to the span
         add_transaction_ids_to_span(span)
+        add_span_attributes(
+            span,
+            {
+                "api.endpoint": "alerts",
+                "response.format": "json",
+            },
+        )
 
         try:
             alerts = await fetch_alerts_with_retry(
@@ -40,21 +47,28 @@ async def get_alerts(request: Request, commons: GET_DI) -> Response:
             span.set_attribute("alerts.count", len(alerts))
             alerts_data = Alerts(data=alerts)
             alerts_json = alerts_data.model_dump_json(exclude_unset=True)
+            add_span_attributes(
+                span,
+                {
+                    "api.response.success": True,
+                    "response.body.bytes": len(alerts_json.encode("utf-8")),
+                },
+            )
             return Response(content=alerts_json, media_type="application/json")
-        except (ConnectionError, TimeoutError):
+        except (ConnectionError, TimeoutError) as exc:
             logger.error("Error getting alerts due to connection issue", exc_info=True)
-            span.set_attribute("error", True)
-            span.set_attribute("error.type", "connection")
+            set_span_error(span, exc)
+            add_span_attributes(span, {"error.type": "connection"})
             raise HTTPException(status_code=500, detail="Internal server error")
-        except RedisError:
+        except RedisError as exc:
             logger.error("Error getting alerts due to Redis error", exc_info=True)
-            span.set_attribute("error", True)
-            span.set_attribute("error.type", "redis")
+            set_span_error(span, exc)
+            add_span_attributes(span, {"error.type": "redis"})
             raise HTTPException(status_code=500, detail="Internal server error")
-        except ValidationError:
+        except ValidationError as exc:
             logger.error("Error getting alerts due to validation error", exc_info=True)
-            span.set_attribute("error", True)
-            span.set_attribute("error.type", "validation")
+            set_span_error(span, exc)
+            add_span_attributes(span, {"error.type": "validation"})
             raise HTTPException(status_code=500, detail="Internal server error")
 
 
@@ -69,12 +83,26 @@ async def get_alerts_json(request: Request, commons: GET_DI) -> Response:
     with tracer.start_as_current_span("api.alerts.get_alerts_json") as span:
         # Add transaction IDs to the span
         add_transaction_ids_to_span(span)
+        add_span_attributes(
+            span,
+            {
+                "api.endpoint": "alerts_json",
+                "response.format": "json_file",
+            },
+        )
 
         try:
             cache_key = "api:alerts:json"
             cached_data = await commons.r_client.get(cache_key)
             if cached_data:
                 span.set_attribute("cache.hit", True)
+                add_span_attributes(
+                    span,
+                    {
+                        "api.response.success": True,
+                        "response.body.bytes": len(cached_data),
+                    },
+                )
                 return Response(
                     content=cached_data,
                     media_type="application/json",
@@ -89,27 +117,35 @@ async def get_alerts_json(request: Request, commons: GET_DI) -> Response:
             alerts_data = Alerts(data=alerts)
             alerts_json = alerts_data.model_dump_json(exclude_unset=True)
             await commons.r_client.setex(cache_key, ALERTS_CACHE_TTL, alerts_json)
+            add_span_attributes(
+                span,
+                {
+                    "api.response.success": True,
+                    "cache.ttl_seconds": ALERTS_CACHE_TTL,
+                    "response.body.bytes": len(alerts_json.encode("utf-8")),
+                },
+            )
             return Response(
                 content=alerts_json,
                 media_type="application/json",
                 headers={"Content-Disposition": "attachment; filename=alerts.json"},
             )
-        except (ConnectionError, TimeoutError):
+        except (ConnectionError, TimeoutError) as exc:
             logger.error(
                 "Error getting alerts JSON due to connection issue", exc_info=True
             )
-            span.set_attribute("error", True)
-            span.set_attribute("error.type", "connection")
+            set_span_error(span, exc)
+            add_span_attributes(span, {"error.type": "connection"})
             raise HTTPException(status_code=500, detail="Internal server error")
-        except RedisError:
+        except RedisError as exc:
             logger.error("Error getting alerts JSON due to Redis error", exc_info=True)
-            span.set_attribute("error", True)
-            span.set_attribute("error.type", "redis")
+            set_span_error(span, exc)
+            add_span_attributes(span, {"error.type": "redis"})
             raise HTTPException(status_code=500, detail="Internal server error")
-        except ValidationError:
+        except ValidationError as exc:
             logger.error(
                 "Error getting alerts JSON due to validation error", exc_info=True
             )
-            span.set_attribute("error", True)
-            span.set_attribute("error.type", "validation")
+            set_span_error(span, exc)
+            add_span_attributes(span, {"error.type": "validation"})
             raise HTTPException(status_code=500, detail="Internal server error")

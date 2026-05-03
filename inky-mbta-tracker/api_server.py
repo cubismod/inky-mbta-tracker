@@ -32,12 +32,10 @@ def create_app() -> FastAPI:
     setup_logging()
 
     # Initialize Sentry for error tracking (with FastAPI integration)
-    initialize_sentry(
-        service_name_override="inky-mbta-tracker-api", include_fastapi=True
-    )
+    initialize_sentry(include_fastapi=True)
 
     # Initialize OpenTelemetry for the API server
-    initialize_otel(service_name_override="inky-mbta-tracker-api")
+    initialize_otel()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):

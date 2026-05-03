@@ -8,7 +8,7 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from geojson import FeatureCollection, dumps
 from geojson_utils import get_vehicle_features
 from opentelemetry import trace
-from otel_utils import add_transaction_ids_to_span
+from otel_utils import add_span_attributes, add_transaction_ids_to_span, set_span_error
 from starlette.responses import StreamingResponse
 from utils import get_vehicles_data
 
@@ -37,6 +37,14 @@ async def get_vehicles(
     with tracer.start_as_current_span("api.vehicles.get_vehicles") as span:
         # Add transaction IDs to the span
         add_transaction_ids_to_span(span)
+        add_span_attributes(
+            span,
+            {
+                "request.frequent_buses": frequent_buses,
+                "api.endpoint": "vehicles",
+                "response.format": "geojson",
+            },
+        )
 
         try:
             if commons.tg:
@@ -45,17 +53,26 @@ async def get_vehicles(
                     commons.r_client, commons.config, commons.tg, frequent_buses
                 )
                 span.set_attribute("vehicles.count", len(features))
+                span.set_attribute("api.response.success", True)
                 result = {"type": "FeatureCollection", "features": features}
                 return Response(
                     content=json.dumps(result), media_type="application/json"
                 )
+            add_span_attributes(
+                span,
+                {
+                    "api.response.success": False,
+                    "error": True,
+                    "error.type": "no_task_group",
+                },
+            )
             return Response(status_code=500)
-        except (ConnectionError, TimeoutError):
+        except (ConnectionError, TimeoutError) as exc:
             logger.error(
                 "Error getting vehicles due to connection issue", exc_info=True
             )
-            span.set_attribute("error", True)
-            span.set_attribute("error.type", "connection")
+            set_span_error(span, exc)
+            add_span_attributes(span, {"error.type": "connection"})
             raise HTTPException(status_code=500, detail="Internal server error")
 
 
@@ -88,6 +105,17 @@ async def get_vehicles_sse(
         "Connection": "keep-alive",
         "X-Accel-Buffering": "no",
     }
+    span = trace.get_current_span()
+    add_span_attributes(
+        span,
+        {
+            "api.endpoint": "vehicles_stream",
+            "vehicle_stream.mode": "delta" if delta else "full",
+            "vehicle_stream.frequent_buses": frequent_buses,
+            "vehicle_stream.enabled": True,
+        },
+    )
+    add_transaction_ids_to_span(span)
     return StreamingResponse(
         event_generator(), media_type="text/event-stream", headers=headers
     )
@@ -109,6 +137,14 @@ async def get_vehicles_json(
     with tracer.start_as_current_span("api.vehicles.get_vehicles_json") as span:
         # Add transaction IDs to the span
         add_transaction_ids_to_span(span)
+        add_span_attributes(
+            span,
+            {
+                "request.frequent_buses": frequent_buses,
+                "api.endpoint": "vehicles_json",
+                "response.format": "geojson_file",
+            },
+        )
 
         try:
             if commons.tg:
@@ -118,6 +154,13 @@ async def get_vehicles_json(
                 span.set_attribute("vehicles.count", len(features))
                 feature_collection = FeatureCollection(features)
                 geojson_str = dumps(feature_collection, sort_keys=True)
+                add_span_attributes(
+                    span,
+                    {
+                        "api.response.success": True,
+                        "response.body.bytes": len(geojson_str.encode("utf-8")),
+                    },
+                )
 
                 return Response(
                     content=geojson_str,
@@ -127,15 +170,21 @@ async def get_vehicles_json(
                     },
                 )
             else:
-                span.set_attribute("error", True)
-                span.set_attribute("error.type", "no_task_group")
+                add_span_attributes(
+                    span,
+                    {
+                        "api.response.success": False,
+                        "error": True,
+                        "error.type": "no_task_group",
+                    },
+                )
                 return Response(status_code=500)
-        except (ConnectionError, TimeoutError):
+        except (ConnectionError, TimeoutError) as exc:
             logger.error(
                 "Error getting vehicles JSON due to connection issue", exc_info=True
             )
-            span.set_attribute("error", True)
-            span.set_attribute("error.type", "connection")
+            set_span_error(span, exc)
+            add_span_attributes(span, {"error.type": "connection"})
             raise HTTPException(status_code=500, detail="Internal server error")
 
 
@@ -153,6 +202,13 @@ async def get_vehicles_counts(
     with tracer.start_as_current_span("api.vehicles.get_vehicles_counts") as span:
         # Add transaction IDs to the span
         add_transaction_ids_to_span(span)
+        add_span_attributes(
+            span,
+            {
+                "api.endpoint": "vehicles_counts",
+                "response.format": "json",
+            },
+        )
 
         try:
             if commons.tg:
@@ -325,6 +381,18 @@ async def get_vehicles_counts(
                     totals_by_line["total"] += row["total"]
 
                 span.set_attribute("vehicles.total", totals_by_line["total"])
+                add_span_attributes(
+                    span,
+                    {
+                        "vehicles.light_rail.total": counts["light_rail"]["total"],
+                        "vehicles.heavy_rail.total": counts["heavy_rail"]["total"],
+                        "vehicles.regional_rail.total": counts["regional_rail"][
+                            "total"
+                        ],
+                        "vehicles.bus.total": counts["bus"]["total"],
+                        "api.response.success": True,
+                    },
+                )
 
                 # Construct response payload (pydantic will validate/serialize)
                 response_payload = {
@@ -342,10 +410,19 @@ async def get_vehicles_counts(
                 resp_model = VehiclesCountResponse(**response_payload)
 
                 return resp_model
-        except (ConnectionError, TimeoutError):
+            add_span_attributes(
+                span,
+                {
+                    "api.response.success": False,
+                    "error": True,
+                    "error.type": "no_task_group",
+                },
+            )
+            return None
+        except (ConnectionError, TimeoutError) as exc:
             logger.error(
                 "Error getting vehicle counts due to connection issue", exc_info=True
             )
-            span.set_attribute("error", True)
-            span.set_attribute("error.type", "connection")
+            set_span_error(span, exc)
+            add_span_attributes(span, {"error.type": "connection"})
             raise HTTPException(status_code=500, detail="Internal server error")

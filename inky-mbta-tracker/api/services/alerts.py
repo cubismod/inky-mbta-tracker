@@ -7,7 +7,7 @@ from config import Config
 from geojson_utils import collect_alerts
 from mbta_responses import AlertResource
 from opentelemetry import trace
-from otel_utils import add_transaction_ids_to_span
+from otel_utils import add_span_attributes, add_transaction_ids_to_span, set_span_error
 from redis.asyncio import Redis
 from tenacity import (
     before_log,
@@ -39,9 +39,15 @@ async def fetch_alerts_with_retry(
 
         try:
             result = await collect_alerts(config, session, r_client)
-            span.set_attribute("alerts.fetched", len(result))
+            add_span_attributes(
+                span,
+                {
+                    "alerts.fetched": len(result),
+                    "alerts.fetch.status": "success",
+                },
+            )
             return result
         except Exception as e:
-            span.set_attribute("error", True)
-            span.set_attribute("error.type", type(e).__name__)
+            set_span_error(span, e)
+            add_span_attributes(span, {"error.type": type(e).__name__})
             raise

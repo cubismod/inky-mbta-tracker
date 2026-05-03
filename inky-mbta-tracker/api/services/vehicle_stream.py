@@ -120,18 +120,32 @@ class VehicleStreamManager:
                 {
                     "vehicle_stream.mode": mode,
                     "vehicle_stream.frequent_buses": frequent_buses,
-                    "vehicle_stream.clients": state.subscriber_count(),
+                    "vehicle_stream.clients.start": state.subscriber_count(),
+                    "vehicle_stream.initial_replay": replay is not None,
                 },
             )
 
-        try:
-            async with receive_stream:
-                yield receive_stream
-        finally:
-            async with state.lock:
-                state.subscribers[mode].discard(send_stream)
-                self._set_connected_client_metrics(state)
-            await send_stream.aclose()
+            try:
+                async with receive_stream:
+                    yield receive_stream
+                add_span_attributes(span, {"vehicle_stream.disconnect": "normal"})
+            except Exception as exc:
+                set_span_error(span, exc)
+                add_span_attributes(span, {"vehicle_stream.disconnect": "error"})
+                raise
+            finally:
+                async with state.lock:
+                    state.subscribers[mode].discard(send_stream)
+                    final_clients = state.subscriber_count()
+                    self._set_connected_client_metrics(state)
+                add_span_attributes(
+                    span,
+                    {
+                        "vehicle_stream.clients.end": final_clients,
+                        "vehicle_stream.closed": self._closed,
+                    },
+                )
+                await send_stream.aclose()
 
     async def aclose(self) -> None:
         self._closed = True
@@ -172,8 +186,24 @@ class VehicleStreamManager:
                             return
 
                     if not commons.tg:
-                        await self._broadcast(state, "full", ": tg-unavailable\n\n")
-                        await self._broadcast(state, "delta", ": tg-unavailable\n\n")
+                        full_sent, full_stale = await self._broadcast(
+                            state, "full", ": tg-unavailable\n\n"
+                        )
+                        delta_sent, delta_stale = await self._broadcast(
+                            state, "delta", ": tg-unavailable\n\n"
+                        )
+                        current_span = trace.get_current_span()
+                        add_span_attributes(
+                            current_span,
+                            {
+                                "vehicle_stream.broadcast.full.sent": full_sent,
+                                "vehicle_stream.broadcast.delta.sent": delta_sent,
+                                "vehicle_stream.broadcast.stale": full_stale
+                                + delta_stale,
+                                "error": True,
+                                "error.type": "task_group_unavailable",
+                            },
+                        )
                         vehicle_stream_producer_iterations.labels(
                             label, "task_group_unavailable"
                         ).inc()
@@ -225,10 +255,37 @@ class VehicleStreamManager:
                             vehicle_stream_payload_vehicles.labels(label).set(
                                 len(raw_data)
                             )
-                            span.set_attribute("vehicles.count", len(raw_data))
+                            add_span_attributes(
+                                span,
+                                {
+                                    "vehicles.count": len(raw_data),
+                                    "diff.updated_count": len(delta_response.updated),
+                                    "diff.removed_count": len(delta_response.removed),
+                                    "vehicle_stream.payload.full.bytes": len(
+                                        full_event.encode("utf-8")
+                                    ),
+                                    "vehicle_stream.payload.delta.bytes": len(
+                                        delta_event.encode("utf-8")
+                                    ),
+                                },
+                            )
 
-                            await self._broadcast(state, "full", full_event)
-                            await self._broadcast(state, "delta", delta_event)
+                            full_sent, full_stale = await self._broadcast(
+                                state, "full", full_event
+                            )
+                            delta_sent, delta_stale = await self._broadcast(
+                                state, "delta", delta_event
+                            )
+                            add_span_attributes(
+                                span,
+                                {
+                                    "vehicle_stream.broadcast.full.sent": full_sent,
+                                    "vehicle_stream.broadcast.delta.sent": delta_sent,
+                                    "vehicle_stream.broadcast.stale": full_stale
+                                    + delta_stale,
+                                    "vehicle_stream.iteration.status": "success",
+                                },
+                            )
                             vehicle_stream_producer_iterations.labels(
                                 label, "success"
                             ).inc()
@@ -243,11 +300,21 @@ class VehicleStreamManager:
                                 "Error producing SSE vehicles data", exc_info=exc
                             )
                             set_span_error(span, exc)
-                            await self._broadcast(
+                            full_sent, full_stale = await self._broadcast(
                                 state, "full", ": error fetching data\n\n"
                             )
-                            await self._broadcast(
+                            delta_sent, delta_stale = await self._broadcast(
                                 state, "delta", ": error fetching data\n\n"
+                            )
+                            add_span_attributes(
+                                span,
+                                {
+                                    "vehicle_stream.broadcast.full.sent": full_sent,
+                                    "vehicle_stream.broadcast.delta.sent": delta_sent,
+                                    "vehicle_stream.broadcast.stale": full_stale
+                                    + delta_stale,
+                                    "vehicle_stream.iteration.status": "error",
+                                },
                             )
                             vehicle_stream_producer_iterations.labels(
                                 label, "error"
@@ -264,7 +331,7 @@ class VehicleStreamManager:
 
     async def _broadcast(
         self, state: _VehicleProducerState, mode: VehicleStreamMode, event: str
-    ) -> None:
+    ) -> tuple[int, int]:
         stale_subscribers: list[tuple[MemoryObjectSendStream[str], str]] = []
         label = _bool_label(state.frequent_buses)
         async with state.lock:
@@ -284,6 +351,7 @@ class VehicleStreamManager:
 
         for subscriber, _reason in stale_subscribers:
             await subscriber.aclose()
+        return len(subscribers) - len(stale_subscribers), len(stale_subscribers)
 
     def _set_connected_client_metrics(self, state: _VehicleProducerState) -> None:
         label = _bool_label(state.frequent_buses)

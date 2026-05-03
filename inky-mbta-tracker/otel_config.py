@@ -69,7 +69,10 @@ def get_otel_config() -> dict[str, str]:
         "instrument_fastapi": os.getenv("IMT_OTEL_INSTRUMENT_FASTAPI", "true"),
         "include_vehicle_ids": os.getenv("IMT_OTEL_INCLUDE_VEHICLE_IDS", "false"),
         "include_trip_ids": os.getenv("IMT_OTEL_INCLUDE_TRIP_IDS", "true"),
+        "include_stop_ids": os.getenv("IMT_OTEL_INCLUDE_STOP_IDS", "false"),
+        "include_cache_keys": os.getenv("IMT_OTEL_INCLUDE_CACHE_KEYS", "false"),
         "redis_sanitize_queries": os.getenv("IMT_OTEL_REDIS_SANITIZE_QUERIES", "false"),
+        "http_sanitize_urls": os.getenv("IMT_OTEL_HTTP_SANITIZE_URLS", "true"),
     }
 
 
@@ -279,8 +282,81 @@ def _auto_instrument(config: dict[str, str]) -> None:
                 AioHttpClientInstrumentor,
             )
 
-            AioHttpClientInstrumentor().instrument()
-            logger.info("aiohttp client auto-instrumentation enabled")
+            def aiohttp_request_hook(
+                span: Span,
+                params: Any,
+                *args: Any,
+                **kwargs: Any,
+            ) -> None:
+                """
+                Sanitize URLs in aiohttp spans to remove API keys and sensitive params.
+
+                By default, strips query parameters like 'api_key', 'key', 'token',
+                'password', 'secret' from the http.url attribute.
+                """
+                if not span or not span.is_recording():
+                    return
+
+                sanitize = config.get("http_sanitize_urls", "true").lower() in {
+                    "true",
+                    "1",
+                    "yes",
+                }
+
+                if not sanitize:
+                    return
+
+                try:
+                    from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
+
+                    url = str(getattr(params, "url", params))
+                    parsed = urlparse(url)
+                    if not parsed.query:
+                        return
+
+                    params = parse_qs(parsed.query, keep_blank_values=True)
+                    sensitive_params = {
+                        "api_key",
+                        "key",
+                        "token",
+                        "password",
+                        "secret",
+                        "auth",
+                    }
+
+                    sanitized = False
+                    for param in sensitive_params:
+                        if param in params:
+                            params[param] = ["[REDACTED]"]
+                            sanitized = True
+
+                    if sanitized:
+                        new_query = urlencode(params, doseq=True)
+                        sanitized_url = urlunparse(
+                            (
+                                parsed.scheme,
+                                parsed.netloc,
+                                parsed.path,
+                                parsed.params,
+                                new_query,
+                                parsed.fragment,
+                            )
+                        )
+                        span.set_attribute("http.url", sanitized_url)
+                        span.set_attribute("http.url_sanitized", True)
+
+                except Exception as e:
+                    logger.debug(f"Failed to sanitize URL in span: {e}")
+
+            AioHttpClientInstrumentor().instrument(request_hook=aiohttp_request_hook)
+            sanitize_enabled = config.get("http_sanitize_urls", "true").lower() in {
+                "true",
+                "1",
+                "yes",
+            }
+            logger.info(
+                f"aiohttp client auto-instrumentation enabled (sanitize_urls={sanitize_enabled})"
+            )
         except ImportError:
             logger.warning(
                 "aiohttp instrumentation not available (package not installed)"

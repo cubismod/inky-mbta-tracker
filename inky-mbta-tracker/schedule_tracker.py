@@ -19,6 +19,7 @@ from consts import HOUR
 from geojson import Feature, Point
 from otel_config import get_tracer, is_otel_enabled
 from otel_utils import (
+    add_entity_id_attribute,
     add_event_to_span,
     add_span_attributes,
     add_transaction_ids_to_span,
@@ -625,20 +626,40 @@ async def process_queue_async(
                     for it in items:
                         # Create individual spans for vehicle events to enable transaction visibility
                         if isinstance(it, VehicleRedisSchema):
-                            vehicle_span_name = (
-                                f"schedule_tracker.process_vehicle_{it.id}"
-                            )
                             with tracer.start_as_current_span(
-                                vehicle_span_name
+                                "schedule_tracker.process_vehicle"
                             ) as vehicle_span:
                                 # Set vehicle-specific transaction ID for this span
                                 set_vehicle_track_transaction_id(it.id)
                                 add_transaction_ids_to_span(vehicle_span)
-                                vehicle_span.set_attribute("vehicle.id", it.id)
-                                vehicle_span.set_attribute("vehicle.route", it.route)
+                                add_entity_id_attribute(
+                                    vehicle_span,
+                                    "vehicle.id",
+                                    it.id,
+                                    entity_type="vehicle",
+                                )
+                                add_span_attributes(
+                                    vehicle_span,
+                                    {
+                                        "vehicle.route": it.route,
+                                        "vehicle.action": it.action,
+                                        "vehicle.has_stop": bool(it.stop),
+                                        "vehicle.has_occupancy": bool(
+                                            it.occupancy_status
+                                        ),
+                                    },
+                                )
                                 await tracker.process_queue_item(it, pipeline)
                         else:
                             # Process non-vehicle events normally
+                            add_event_to_span(
+                                span,
+                                "schedule_event_processed",
+                                {
+                                    "route.id": it.route_id,
+                                    "event.action": it.action,
+                                },
+                            )
                             await tracker.process_queue_item(it, pipeline)
 
                     # Housekeeping: prune expired entries in the same round trip
@@ -652,10 +673,10 @@ async def process_queue_async(
                     batch_flushes.labels("tracker", "ok").inc()
                     last_batch_flush_ts.labels("tracker").set(time.time())
                     try:
-                        pos_data_count.labels("tracker").set(
-                            await tracker.redis.scard("pos-data")  # type: ignore[misc]
-                        )
+                        pos_data_size = await tracker.redis.scard("pos-data")  # type: ignore[misc]
+                        pos_data_count.labels("tracker").set(pos_data_size)
                         redis_commands.labels("scard").inc()
+                        span.set_attribute("redis.pos_data.size", pos_data_size)
                     except ResponseError as err:
                         logger.error("Unable to read pos-data size", exc_info=err)
 
