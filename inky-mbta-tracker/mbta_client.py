@@ -228,6 +228,13 @@ class MBTAApi:
         hc_fail_threshold = 5 * MINUTE
         ny_tz = ZoneInfo("America/New_York")
         failtime: Optional[datetime] = None
+        max_runtime_expiration = None
+        if self.watcher_type == TaskType.VEHICLES:
+            max_runtime_expiration = datetime.now(UTC) + timedelta(hours=1)
+            if self.expiration_time:
+                max_runtime_expiration = min(
+                    max_runtime_expiration, self.expiration_time
+                )
         if self.watcher_type == TaskType.ALERTS:
             hc_fail_threshold = 30 * MINUTE
             if self.route:
@@ -282,6 +289,16 @@ class MBTAApi:
         while True:
             await sleep(randint(20, 90))
             now = datetime.now(ny_tz)
+            if (
+                self.watcher_type == TaskType.VEHICLES
+                and max_runtime_expiration
+                and datetime.now(UTC) >= max_runtime_expiration
+            ):
+                logger.info(
+                    f"Refreshing vehicle watcher (route={self.route}) due to scheduled hourly restart."
+                )
+                tg.cancel_scope.cancel()
+                return
             if failtime and now >= failtime:
                 logger.info(
                     f"Refreshing {self.watcher_type} watcher (route={self.route}, stop={self.stop_id}) due to health check failure/scheduled restart."

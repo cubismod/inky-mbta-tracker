@@ -67,8 +67,8 @@ def bearing(start: Point, end: Point) -> float:
     delta_longitude = radians(end_longitude - start_longitude)
 
     y = sin(delta_longitude) * cos(end_latitude_rad)
-    x = cos(start_latitude_rad) * sin(end_latitude_rad) - sin(
-        start_latitude_rad
-    ) * cos(end_latitude_rad) * cos(delta_longitude)
+    x = cos(start_latitude_rad) * sin(end_latitude_rad) - sin(start_latitude_rad) * cos(
+        end_latitude_rad
+    ) * cos(delta_longitude)
 
     return degrees(atan2(y, x))
