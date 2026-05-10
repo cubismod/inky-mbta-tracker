@@ -230,7 +230,13 @@ class MBTAApi:
         failtime: Optional[datetime] = None
         max_runtime_expiration = None
         if self.watcher_type == TaskType.VEHICLES:
-            max_runtime_expiration = datetime.now(UTC) + timedelta(hours=1)
+            # i do not trust the MBTA SSE API so they will regularly restart to ensure vehicle events stay consistent
+            # includes a random offset to prevent an API thundering herd
+            max_runtime_expiration = (
+                datetime.now(UTC)
+                + timedelta(hours=1)
+                + timedelta(minutes=randint(0, 45))
+            )
             if self.expiration_time:
                 max_runtime_expiration = min(
                     max_runtime_expiration, self.expiration_time
@@ -295,7 +301,7 @@ class MBTAApi:
                 and datetime.now(UTC) >= max_runtime_expiration
             ):
                 logger.info(
-                    f"Refreshing vehicle watcher (route={self.route}) due to scheduled hourly restart."
+                    f"Refreshing vehicle watcher (route={self.route}) due to scheduled restart."
                 )
                 tg.cancel_scope.cancel()
                 return
