@@ -51,6 +51,7 @@ class _VehicleProducerState:
     last_raw_data: dict[str, Feature] = field(default_factory=dict)
     latest_full_event: str | None = None
     latest_delta_snapshot_event: str | None = None
+    empty_snapshot_skips: int = 0
 
     def subscriber_count(self) -> int:
         return sum(len(subscribers) for subscribers in self.subscribers.values())
@@ -232,6 +233,39 @@ class VehicleStreamManager:
                                 commons.tg,
                                 state.frequent_buses,
                             )
+                            should_ignore_empty_snapshot = False
+                            async with state.lock:
+                                previous_count = len(state.last_raw_data)
+                                if (
+                                    not raw_data
+                                    and previous_count > 0
+                                    and state.empty_snapshot_skips < 3
+                                ):
+                                    state.empty_snapshot_skips += 1
+                                    should_ignore_empty_snapshot = True
+                                elif raw_data:
+                                    state.empty_snapshot_skips = 0
+
+                            if should_ignore_empty_snapshot:
+                                add_span_attributes(
+                                    span,
+                                    {
+                                        "vehicles.count": 0,
+                                        "vehicles.previous_count": previous_count,
+                                        "vehicles.empty_snapshot_skips": (
+                                            state.empty_snapshot_skips
+                                        ),
+                                        "vehicle_stream.iteration.status": (
+                                            "empty_snapshot_ignored"
+                                        ),
+                                    },
+                                )
+                                vehicle_stream_producer_iterations.labels(
+                                    label, "empty_snapshot_ignored"
+                                ).inc()
+                                await sleep(self._interval_seconds)
+                                continue
+
                             full_event = self._build_full_event(raw_data)
                             delta_response = calculate_diff(
                                 state.last_raw_data, raw_data
@@ -251,6 +285,7 @@ class VehicleStreamManager:
                                 state.last_raw_data = raw_data
                                 state.latest_full_event = full_event
                                 state.latest_delta_snapshot_event = snapshot_event
+                                state.empty_snapshot_skips = 0
 
                             vehicle_stream_payload_vehicles.labels(label).set(
                                 len(raw_data)

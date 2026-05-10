@@ -473,7 +473,7 @@ async def get_vehicle_features(
         ):
             filtered_count += 1
             continue
-        if vehicle_info.route and vehicle_info.stop:
+        if vehicle_info.route:
             point = Point((vehicle_info.longitude, vehicle_info.latitude))
             stop = None
             stop_id = None
@@ -481,7 +481,7 @@ async def get_vehicle_features(
             lat = None
             route_icon = "rail"
             stop_eta = None
-            if not vehicle_info.route.startswith("Amtrak"):
+            if vehicle_info.stop and not vehicle_info.route.startswith("Amtrak"):
                 stop = await light_get_stop(r_client, vehicle_info.stop, tg)
                 if stop:
                     stop_id = stop.stop_id
@@ -496,7 +496,7 @@ async def get_vehicle_features(
                                 Feature(geometry=point),
                                 vehicle_info.speed,
                             )
-            else:
+            elif vehicle_info.stop:
                 route_icon = "rail_amtrak"
                 stop_id = vehicle_info.stop
 
