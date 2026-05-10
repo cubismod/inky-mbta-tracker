@@ -32,7 +32,7 @@ from mbta_responses import (
     TripResource,
     Trips,
     TypeAndID,
-    Vehicle,
+    VehicleResource,
 )
 from opentelemetry.trace import Span
 from otel_config import get_tracer, is_otel_enabled
@@ -478,7 +478,7 @@ class MBTAApi:
                                 )
                     else:
                         if send_stream is not None:
-                            ta = TypeAdapter(list[Vehicle])
+                            ta = TypeAdapter(list[VehicleResource])
                             vehicles = ta.validate_json(data, strict=False)
                             for v in vehicles:
                                 tg.start_soon(
@@ -509,7 +509,9 @@ class MBTAApi:
                             )
                     else:
                         if send_stream is not None:
-                            vehicle = Vehicle.model_validate_json(data, strict=False)
+                            vehicle = VehicleResource.model_validate_json(
+                                data, strict=False
+                            )
                             tg.start_soon(
                                 self.queue_event,
                                 vehicle,
@@ -537,7 +539,9 @@ class MBTAApi:
                             )
                     else:
                         if send_stream is not None:
-                            vehicle = Vehicle.model_validate_json(data, strict=False)
+                            vehicle = VehicleResource.model_validate_json(
+                                data, strict=False
+                            )
                             tg.start_soon(
                                 self.queue_event,
                                 vehicle,
@@ -567,6 +571,7 @@ class MBTAApi:
                                     action="remove",
                                     route=self.route,
                                     update_time=datetime.now().astimezone(UTC),
+                                    bearing=0,
                                 )
                             )
 
@@ -615,7 +620,7 @@ class MBTAApi:
         return occupancy.replace("_", " ").capitalize()
 
     @staticmethod
-    def get_carriages(vehicle: Vehicle) -> tuple[list[str], str]:
+    def get_carriages(vehicle: VehicleResource) -> tuple[list[str], str]:
         carriages = list[str]()
         if vehicle.attributes.carriages:
             statuses = list[str]()
@@ -646,7 +651,7 @@ class MBTAApi:
 
     async def queue_event(
         self,
-        item: PredictionResource | ScheduleResource | Vehicle,
+        item: PredictionResource | ScheduleResource | VehicleResource,
         event_type: str,
         send_stream: MemoryObjectSendStream[ScheduleEvent | VehicleRedisSchema],
         session: ClientSession,
@@ -755,6 +760,7 @@ class MBTAApi:
                 latitude=item.attributes.latitude,
                 longitude=item.attributes.longitude,
                 speed=self.meters_per_second_to_mph(item.attributes.speed),
+                bearing=item.attributes.bearing,
                 route=route,
                 update_time=datetime.now().astimezone(UTC),
                 occupancy_status=occupancy,

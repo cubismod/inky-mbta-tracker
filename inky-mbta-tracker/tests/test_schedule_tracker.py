@@ -453,6 +453,7 @@ class TestTracker:
         event = VehicleRedisSchema(
             longitude=-71.0589,
             latitude=42.3601,
+            bearing=0,
             direction_id=0,
             current_status="IN_TRANSIT_TO",
             id="vehicle-123",
@@ -501,6 +502,7 @@ class TestTracker:
         event = VehicleRedisSchema(
             longitude=-71.0589,
             latitude=42.3601,
+            bearing=0,
             direction_id=0,
             current_status="IN_TRANSIT_TO",
             id="vehicle-123",

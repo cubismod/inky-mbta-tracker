@@ -31,6 +31,7 @@ class VehicleRedisSchema(BaseModel):
     latitude: float
     longitude: float
     speed: Optional[float] = 0
+    bearing: Optional[int] = 0
     stop: Optional[str] = None
     route: str
     update_time: datetime
@@ -77,6 +78,7 @@ class RouteShapes(BaseModel):
 
 class LightStop(BaseModel):
     stop_id: str
+    mbta_stop_id: str
     long: Optional[float] = None
     lat: Optional[float] = None
     platform_prediction: Optional[str] = None

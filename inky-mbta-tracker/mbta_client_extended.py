@@ -279,6 +279,7 @@ async def _light_get_stop_impl(
                             stop = await watcher.get_stop(
                                 session, stop_id, tg, include_facilities=False
                             )
+                            mbta_stop_id = stop_id
                             if stop and stop[0]:
                                 if stop[0].data.attributes.description:
                                     stop_id = stop[0].data.attributes.description
@@ -288,6 +289,7 @@ async def _light_get_stop_impl(
                                     stop_id=stop_id,
                                     long=stop[0].data.attributes.longitude,
                                     lat=stop[0].data.attributes.latitude,
+                                    mbta_stop_id=mbta_stop_id,
                                 )
                             if ls:
                                 await write_cache(

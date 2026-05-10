@@ -146,6 +146,7 @@ def test_lookup_vehicle_color_mapping() -> None:
             latitude=0.0,
             longitude=0.0,
             speed=None,
+            bearing=0,
             stop=None,
             route=route,
             update_time=datetime.now(UTC),

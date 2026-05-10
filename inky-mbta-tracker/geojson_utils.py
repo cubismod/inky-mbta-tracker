@@ -473,23 +473,28 @@ async def get_vehicle_features(
         ):
             filtered_count += 1
             continue
+        point = Point((vehicle_info.longitude, vehicle_info.latitude))
+        stop = None
+        stop_id = None
+        long = None
+        lat = None
+        route_icon = "rail"
+        stop_eta = None
+        mbta_stop_id = ""
+        if vehicle_info.bearing:
+            vehicle_bearing = vehicle_info.bearing
         if vehicle_info.route:
-            point = Point((vehicle_info.longitude, vehicle_info.latitude))
-            stop = None
-            stop_id = None
-            long = None
-            lat = None
-            route_icon = "rail"
-            stop_eta = None
             if vehicle_info.stop and not vehicle_info.route.startswith("Amtrak"):
                 stop = await light_get_stop(r_client, vehicle_info.stop, tg)
                 if stop:
+                    mbta_stop_id = stop.mbta_stop_id
                     stop_id = stop.stop_id
                     if stop.long and stop.lat:
                         stop_point = Point((stop.long, stop.lat))
-                        vehicle_bearing = calculate_bearing(point, stop_point)
                         long = stop.long
                         lat = stop.lat
+                        if not vehicle_bearing:
+                            vehicle_bearing = calculate_bearing(point, stop_point)
                         if vehicle_info.speed and vehicle_info.speed >= 10:
                             stop_eta = calculate_stop_eta(
                                 Feature(geometry=stop_point),
@@ -520,6 +525,7 @@ async def get_vehicle_features(
                     "id": vehicle_info.id,
                     "stop": stop_id,
                     "stop_eta": stop_eta,
+                    "mbta_stop_id": mbta_stop_id,
                     "stop-coordinates": (
                         long,
                         lat,

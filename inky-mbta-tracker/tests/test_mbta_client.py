@@ -17,6 +17,7 @@ from mbta_responses import (
     PredictionAttributes,
     Vehicle,
     VehicleAttributes,
+    VehicleResource,
 )
 from redis.asyncio.client import Redis as RedisClient
 from shared_types.shared_types import LightStop, TaskType
@@ -79,20 +80,113 @@ class TestSilverLineLookup:
 
 class TestLightStop:
     def test_light_stop_creation(self) -> None:
-        stop = LightStop(stop_id="place-davis")
+        stop = LightStop(stop_id="place-davis", mbta_stop_id="place-davis")
         assert stop.stop_id == "place-davis"
         assert stop.long is None
         assert stop.lat is None
         assert stop.platform_prediction is None
 
     def test_light_stop_with_coordinates(self) -> None:
-        stop = LightStop(stop_id="place-davis", long=-71.1218, lat=42.3967)
+        stop = LightStop(
+            stop_id="place-davis",
+            long=-71.1218,
+            lat=42.3967,
+            mbta_stop_id="place-davis",
+        )
         assert stop.stop_id == "place-davis"
         assert stop.long == -71.1218
         assert stop.lat == 42.3967
 
 
 class TestMBTAApi:
+    def test_vehicle_resource_matches_swagger_schema(self) -> None:
+        vehicle = VehicleResource.model_validate(
+            {
+                "id": "y1817",
+                "type": "vehicle",
+                "links": {},
+                "attributes": {
+                    "bearing": 174,
+                    "carriages": [
+                        {
+                            "label": "some-carriage",
+                            "occupancy_percentage": 80,
+                            "occupancy_status": "MANY_SEATS_AVAILABLE",
+                        }
+                    ],
+                    "current_status": "IN_TRANSIT_TO",
+                    "current_stop_sequence": 8,
+                    "direction_id": 0,
+                    "label": "1817",
+                    "latitude": -71.27239990234375,
+                    "longitude": 42.32941818237305,
+                    "occupancy_status": "FEW_SEATS_AVAILABLE",
+                    "revenue_status": "REVENUE",
+                    "speed": 16,
+                    "updated_at": "2017-08-14T16:04:44-04:00",
+                },
+                "relationships": {
+                    "route": {
+                        "data": {"id": "Red", "type": "route"},
+                        "links": {
+                            "related": "/routes/Red",
+                            "self": "/vehicles/y1817/relationships/route",
+                        },
+                    },
+                    "stop": {
+                        "data": {"id": "place-davis", "type": "stop"},
+                        "links": {
+                            "related": "/stops/place-davis",
+                            "self": "/vehicles/y1817/relationships/stop",
+                        },
+                    },
+                    "trip": {
+                        "data": {"id": "trip-1", "type": "trip"},
+                        "links": {
+                            "related": "/trips/trip-1",
+                            "self": "/vehicles/y1817/relationships/trip",
+                        },
+                    },
+                },
+            }
+        )
+
+        assert vehicle.attributes.revenue_status == "REVENUE"
+        assert vehicle.attributes.updated_at == "2017-08-14T16:04:44-04:00"
+        assert vehicle.relationships is not None
+        assert vehicle.relationships.route.links is not None
+        assert vehicle.relationships.route.links.related == "/routes/Red"
+
+    def test_vehicle_document_wraps_vehicle_resource(self) -> None:
+        vehicle = Vehicle.model_validate(
+            {
+                "links": {"self": "/vehicles/y1817"},
+                "included": [{"id": "trip-1", "type": "trip"}],
+                "data": {
+                    "id": "y1817",
+                    "type": "vehicle",
+                    "links": {},
+                    "attributes": {
+                        "current_status": "IN_TRANSIT_TO",
+                        "direction_id": 0,
+                        "latitude": 42.3601,
+                        "longitude": -71.0589,
+                    },
+                    "relationships": {
+                        "route": {
+                            "data": {"id": "Red", "type": "route"},
+                        }
+                    },
+                },
+            }
+        )
+
+        assert vehicle.links is not None
+        assert vehicle.links.self == "/vehicles/y1817"
+        assert vehicle.data.id == "y1817"
+        assert vehicle.included is not None
+        assert vehicle.included[0].id == "trip-1"
+
     def test_init_default_values(self) -> None:
         api = MBTAApi(cast(RedisClient, MagicMock()))
         assert api.stop_id is None
@@ -169,7 +263,7 @@ class TestMBTAApi:
         assert MBTAApi.abbreviate("VFW Parkway") == "VFW Pkwy"
 
     def test_get_carriages_with_data(self) -> None:
-        vehicle = Vehicle(
+        vehicle = VehicleResource(
             id="test-vehicle",
             type="vehicle",
             attributes=VehicleAttributes(
@@ -196,7 +290,7 @@ class TestMBTAApi:
         assert status == "MANY_SEATS_AVAILABLE"
 
     def test_get_carriages_no_data(self) -> None:
-        vehicle = Vehicle(
+        vehicle = VehicleResource(
             id="test-vehicle",
             type="vehicle",
             attributes=VehicleAttributes(
@@ -262,7 +356,7 @@ class TestLightGetStop:
     ) -> None:
         mock_redis = AsyncMock()
 
-        cached_data = '{"stop_id": "Davis", "long": -71.1218, "lat": 42.3967}'
+        cached_data = '{"stop_id": "Davis", "long": -71.1218, "lat": 42.3967, "mbta_stop_id": "place-davis"}'
         mock_check_cache.return_value = cached_data
 
         async with anyio.create_task_group() as tg:

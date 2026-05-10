@@ -321,15 +321,26 @@ class CarriageStatus(BaseModel):
 # not every field is being included in responses
 class VehicleAttributes(BaseModel):
     current_status: str = ""
+    current_stop_sequence: Optional[int] = None
     direction_id: int
     latitude: float = 0
     longitude: float = 0
+    bearing: Optional[int] = None
+    label: Optional[str] = None
     speed: Optional[float] = None
     occupancy_status: Optional[str] = None
+    revenue_status: Optional[str] = None
+    updated_at: Optional[str] = None
     carriages: Optional[list[CarriageStatus]] = None
 
 
+class RelationshipLinks(BaseModel):
+    self: str
+    related: str
+
+
 class TypeAndIDinData(BaseModel):
+    links: Optional[RelationshipLinks] = None
     data: Optional[TypeAndID] = None
 
 
@@ -339,12 +350,27 @@ class VehicleRelationships(BaseModel):
     trip: Optional[TypeAndIDinData] = None
 
 
-class Vehicle(BaseModel):
+class VehicleResource(BaseModel):
     id: str
     links: Optional[dict] = None
     attributes: VehicleAttributes
     relationships: Optional[VehicleRelationships] = None
     type: str
+
+
+class VehicleDocumentLinks(BaseModel):
+    self: str
+
+
+class Vehicle(BaseModel):
+    links: Optional[VehicleDocumentLinks] = None
+    included: Optional[list[TypeAndID]] = None
+    data: VehicleResource
+
+
+class Vehicles(BaseModel):
+    links: Optional[PageLinks] = None
+    data: list[VehicleResource]
 
 
 class ShapeAttributes(BaseModel):
