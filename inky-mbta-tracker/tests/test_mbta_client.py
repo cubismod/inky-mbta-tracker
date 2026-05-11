@@ -80,7 +80,9 @@ class TestSilverLineLookup:
 
 class TestLightStop:
     def test_light_stop_creation(self) -> None:
-        stop = LightStop(stop_id="place-davis", mbta_stop_id="place-davis")
+        stop = LightStop(
+            stop_id="place-davis", mbta_stop_id="place-davis", parent_stop_id=None
+        )
         assert stop.stop_id == "place-davis"
         assert stop.long is None
         assert stop.lat is None
@@ -92,6 +94,7 @@ class TestLightStop:
             long=-71.1218,
             lat=42.3967,
             mbta_stop_id="place-davis",
+            parent_stop_id=None,
         )
         assert stop.stop_id == "place-davis"
         assert stop.long == -71.1218
@@ -356,7 +359,7 @@ class TestLightGetStop:
     ) -> None:
         mock_redis = AsyncMock()
 
-        cached_data = '{"stop_id": "Davis", "long": -71.1218, "lat": 42.3967, "mbta_stop_id": "place-davis"}'
+        cached_data = '{"stop_id": "Davis", "long": -71.1218, "lat": 42.3967, "mbta_stop_id": "place-davis", "parent_stop_id": null}'
         mock_check_cache.return_value = cached_data
 
         async with anyio.create_task_group() as tg:
@@ -367,6 +370,7 @@ class TestLightGetStop:
         assert result.stop_id == "Davis"
         assert result.long == -71.1218
         assert result.lat == 42.3967
+        assert result.parent_stop_id is None
 
         mock_check_cache.assert_called_once_with(mock_redis, "stop:place-davis:light")
         mock_write_cache.assert_not_called()
