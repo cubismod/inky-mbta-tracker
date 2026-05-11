@@ -182,3 +182,4 @@ mosquitto/
 backups/
 
 .zed/debug.json
+config2.json
