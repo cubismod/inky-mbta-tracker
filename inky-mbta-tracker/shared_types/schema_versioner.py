@@ -51,6 +51,7 @@ SCHEMAS = [
             class_hashes.FACILITYRESOURCE_HASH,
             class_hashes.FACILITY_HASH,
             class_hashes.FACILITIES_HASH,
+            class_hashes.LIGHTSTOP_HASH,
         },
     ),
     RedisSchema(
