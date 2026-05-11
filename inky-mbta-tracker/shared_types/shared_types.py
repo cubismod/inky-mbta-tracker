@@ -79,6 +79,7 @@ class RouteShapes(BaseModel):
 class LightStop(BaseModel):
     stop_id: str
     mbta_stop_id: str
+    parent_stop_id: Optional[str]
     long: Optional[float] = None
     lat: Optional[float] = None
     platform_prediction: Optional[str] = None
