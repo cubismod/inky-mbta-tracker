@@ -9,6 +9,7 @@ from api.endpoints.alerts import router as alerts_router
 # Routers
 from api.endpoints.health import router as health_router
 from api.endpoints.shapes import router as shapes_router
+from api.endpoints.stops import router as stops_router
 from api.endpoints.vehicles import router as vehicles_router
 from api.limits import limiter
 from api.middleware.cache_middleware import create_cache_middleware
@@ -96,6 +97,7 @@ def create_app() -> FastAPI:
                 "/alerts.json",
                 "/shapes*",
                 "/vehicles*",
+                "/stop",
             },
             exclude_paths={"/vehicles/stream"},
         )
@@ -131,6 +133,7 @@ def create_app() -> FastAPI:
     app.include_router(vehicles_router)
     app.include_router(alerts_router)
     app.include_router(shapes_router)
+    app.include_router(stops_router)
 
     return app
 
