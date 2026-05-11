@@ -196,7 +196,7 @@ class Trips(BaseModel):
 
 
 class StopRelationship(BaseModel):
-    parent_station: dict
+    parent_station: LinksAndData
 
 
 # Value	Type	Description
@@ -224,7 +224,7 @@ class StopAttributes(BaseModel):
 
 class StopResource(BaseModel):
     type: str
-    relationships: dict
+    relationships: Optional[StopRelationship]
     attributes: StopAttributes
     id: str
     links: Optional[dict] = None
