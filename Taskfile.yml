@@ -23,7 +23,7 @@ tasks:
       - uv run inky-mbta-tracker
   api-server:
     cmds:
-      - uv run uvicorn api_server:app --workers 4 --loop uvloop  --reload --log-config uvicorn_logging_config.json
+      - uv run uvicorn api_server:app --workers 2 --loop uvloop --log-config uvicorn_logging_config.json
   gunicorn:
     cmds:
       - uv run gunicorn -w 4 -k uvicorn_logging.NginxAccessUvicornWorker --forwarded-allow-ips "*" api_server:app

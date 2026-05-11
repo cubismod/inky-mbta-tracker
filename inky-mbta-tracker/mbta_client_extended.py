@@ -17,8 +17,6 @@ from config import Config
 from consts import (
     HOUR,
     MBTA_V3_ENDPOINT,
-    MINUTE,
-    TEN_MIN,
     TWO_MONTHS,
     YEAR,
 )
@@ -242,7 +240,7 @@ async def _light_get_stop_impl(
                 add_entity_id_attribute(
                     fetch_span, "stop.id", stop_id, entity_type="stop"
                 )
-                await sleep(randint(MINUTE, TEN_MIN))
+                await sleep(randint(0, 60))
                 if await check_cache(r_client, key):
                     logger.debug(
                         f"Stop data for {stop_id} was cached while waiting; skipping fetch"
@@ -281,15 +279,31 @@ async def _light_get_stop_impl(
                             )
                             mbta_stop_id = stop_id
                             if stop and stop[0]:
+                                parent_stop_id = None
                                 if stop[0].data.attributes.description:
                                     stop_id = stop[0].data.attributes.description
                                 elif stop[0].data.attributes.name:
                                     stop_id = stop[0].data.attributes.name
+
+                                if (
+                                    stop[0].data.relationships
+                                    and stop[0].data.relationships.parent_station.data
+                                ):
+                                    parent_stop_id = stop[
+                                        0
+                                    ].data.relationships.parent_station.data.id
+                                    tg.start_soon(
+                                        light_get_stop,
+                                        r_client,
+                                        parent_stop_id,
+                                        tg,
+                                    )
                                 ls = LightStop(
                                     stop_id=stop_id,
                                     long=stop[0].data.attributes.longitude,
                                     lat=stop[0].data.attributes.latitude,
                                     mbta_stop_id=mbta_stop_id,
+                                    parent_stop_id=parent_stop_id,
                                 )
                             if ls:
                                 await write_cache(
