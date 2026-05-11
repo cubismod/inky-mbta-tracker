@@ -481,6 +481,7 @@ async def get_vehicle_features(
         route_icon = "rail"
         stop_eta = None
         mbta_stop_id = ""
+        parent_stop_id = None
         if vehicle_info.bearing:
             vehicle_bearing = vehicle_info.bearing
         if vehicle_info.route:
@@ -489,6 +490,8 @@ async def get_vehicle_features(
                 if stop:
                     mbta_stop_id = stop.mbta_stop_id
                     stop_id = stop.stop_id
+                    if stop.parent_stop_id:
+                        parent_stop_id = stop.parent_stop_id
                     if stop.long and stop.lat:
                         stop_point = Point((stop.long, stop.lat))
                         long = stop.long
@@ -525,7 +528,8 @@ async def get_vehicle_features(
                     "id": vehicle_info.id,
                     "stop": stop_id,
                     "stop_eta": stop_eta,
-                    "mbta_stop_id": mbta_stop_id,
+                    "stop_id": mbta_stop_id,
+                    "parent_stop_id": parent_stop_id,
                     "stop-coordinates": (
                         long,
                         lat,
