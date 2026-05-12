@@ -36,7 +36,7 @@ dependencies = [
     "polyline==2.0.4",
     "prometheus-client==0.25.0",
     "prometheus-fastapi-instrumentator>=7.1.0",
-    "propcache==0.4.1",
+    "propcache==0.5.2",
     "pycares==5.0.1",
     "pycparser==3.0",
     "pydantic>=2.11.7",
