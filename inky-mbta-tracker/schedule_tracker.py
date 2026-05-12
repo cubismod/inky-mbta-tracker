@@ -305,10 +305,12 @@ class Tracker:
             event.speed, approximate = await self.calculate_vehicle_speed(event)
             event.approximate_speed = approximate
 
+            exp_min = 4
             if event.speed:
                 route = event.route
                 if route.startswith("CR"):
                     route = "Commuter Rail"
+                    exp_min = 10
                 if route.startswith("7"):
                     route = "Silver Line"
                 if route.startswith("Green"):
@@ -320,7 +322,7 @@ class Tracker:
                 )
 
             await pipeline.set(
-                redis_key, event.model_dump_json(), ex=timedelta(minutes=10)
+                redis_key, event.model_dump_json(), ex=timedelta(minutes=exp_min)
             )
             redis_commands.labels("set").inc()
 
