@@ -50,7 +50,7 @@ from prometheus import (
 from pydantic import ValidationError
 from redis import ResponseError
 from redis.asyncio.client import Pipeline, Redis
-from redis_cache import check_cache, write_cache
+from redis_cache import get_cache, write_cache
 from redis_lock.asyncio import RedisLock
 from shared_types.schema_versioner import export_schema_key_counts
 from shared_types.shared_types import (
@@ -149,7 +149,7 @@ class Tracker:
         try:
             cache_id = f"vehicle:speed:history:{event.id}"
             if event.current_status != "STOPPED_AT" and not event.speed:
-                last_event = await check_cache(self.redis, cache_id)
+                last_event = await get_cache(self.redis, cache_id)
                 redis_commands.labels("get").inc()
 
                 if last_event:

@@ -40,7 +40,7 @@ from prometheus import (
 )
 from pydantic import ValidationError
 from redis.asyncio.client import Redis
-from redis_cache import check_cache, write_cache
+from redis_cache import get_cache, write_cache
 from redis_lock.asyncio import RedisLock
 from schedule_tracker import ScheduleEvent, VehicleRedisSchema
 from shared_types.shared_types import LightStop, LineRoute, RouteShapes, TaskType
@@ -125,7 +125,7 @@ async def _get_shapes_impl(
     cache_misses = 0
     for route in routes:
         key = f"shape:{route}"
-        cached = await check_cache(r_client, key)
+        cached = await get_cache(r_client, key)
         body = ""
         if cached:
             cache_hits += 1
@@ -209,7 +209,7 @@ async def _light_get_stop_impl(
     key = f"stop:{stop_id}:light"
     import mbta_client
 
-    cached = await mbta_client.check_cache(r_client, key)
+    cached = await mbta_client.get_cache(r_client, key)
     if cached:
         if span:
             span.set_attribute("cache.hit", True)
@@ -241,7 +241,7 @@ async def _light_get_stop_impl(
                     fetch_span, "stop.id", stop_id, entity_type="stop"
                 )
                 await sleep(randint(0, 60))
-                if await check_cache(r_client, key):
+                if await get_cache(r_client, key):
                     logger.debug(
                         f"Stop data for {stop_id} was cached while waiting; skipping fetch"
                     )
@@ -258,7 +258,7 @@ async def _light_get_stop_impl(
                     blocking_timeout=5,
                     expire_timeout=30,
                 ):
-                    if await check_cache(r_client, key):
+                    if await get_cache(r_client, key):
                         logger.debug(
                             f"Stop data for {stop_id} was cached while waiting on lock; skipping fetch"
                         )

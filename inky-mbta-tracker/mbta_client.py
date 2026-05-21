@@ -47,7 +47,7 @@ from prometheus import mbta_api_requests
 from pydantic import TypeAdapter, ValidationError
 from redis.asyncio.client import Redis
 from redis.exceptions import RedisError
-from redis_cache import check_cache, write_cache
+from redis_cache import get_cache, write_cache
 from schedule_tracker import ScheduleEvent, VehicleRedisSchema, dummy_schedule_event
 from shared_types.shared_types import TaskType
 from tenacity import (
@@ -416,7 +416,7 @@ class MBTAApi:
                     type_and_id = TypeAndID.model_validate_json(data, strict=False)
                     # Remove from sets based on stored alert data, then delete key
                     try:
-                        cached = await check_cache(
+                        cached = await get_cache(
                             self.r_client, f"alert:{type_and_id.id}"
                         )
                         if cached:
@@ -811,7 +811,7 @@ class MBTAApi:
                 span.set_attribute("session.closed", True)
             return None
         key = f"trip:{trip_id}:full"
-        cached = await check_cache(self.r_client, key)
+        cached = await get_cache(self.r_client, key)
         try:
             if cached:
                 if span:
@@ -1069,7 +1069,7 @@ class MBTAApi:
         key = stop_key(stop_id)
         stop = None
         facilities = None
-        cached = await check_cache(self.r_client, key)
+        cached = await get_cache(self.r_client, key)
         if cached:
             if span:
                 span.set_attribute("cache.hit", True)

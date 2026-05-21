@@ -14,7 +14,7 @@ Behavior:
   the middleware becomes a no-op and passes requests through.
 - By default only caches GET responses.
 - Only caches successful (HTTP 200) responses.
-- Uses the repository's existing cache helpers `check_cache` and `write_cache`.
+- Uses the repository's existing cache helpers `get_cache` and `write_cache`.
 - Cache payloads are stored as UTF-8 strings (most API responses are JSON).
 
 Per-endpoint usage examples
@@ -72,7 +72,7 @@ from otel_utils import add_cache_key_attributes, add_span_attributes
 from redis.asyncio import Redis
 
 # Use the project's cache helpers (they operate on redis.asyncio.Redis)
-from redis_cache import check_cache, write_cache
+from redis_cache import get_cache, write_cache
 
 logger = logging.getLogger("api.cache_middleware")
 
@@ -258,7 +258,7 @@ def create_cache_middleware(
 
         # Try cache read
         try:
-            cached = await check_cache(r_client, key)
+            cached = await get_cache(r_client, key)
         except Exception:
             logger.debug("Cache middleware: error reading cache", exc_info=True)
             add_span_attributes(

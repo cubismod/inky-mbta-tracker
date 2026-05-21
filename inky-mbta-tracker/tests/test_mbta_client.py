@@ -312,14 +312,14 @@ class TestMBTAApi:
     @pytest.mark.anyio("asyncio")
     @patch("mbta_client.Stop.model_validate_json")
     @patch("mbta_client.Facilities.model_validate_json")
-    @patch("mbta_client.check_cache")
+    @patch("mbta_client.get_cache")
     async def test_get_stop_can_skip_facilities_fetch(
         self,
-        mock_check_cache: MagicMock,
+        mock_get_cache: MagicMock,
         mock_facilities_validate: MagicMock,
         mock_stop_validate: MagicMock,
     ) -> None:
-        mock_check_cache.return_value = None
+        mock_get_cache.return_value = None
         mock_stop_validate.return_value = None
 
         response = AsyncMock()
@@ -351,16 +351,16 @@ class TestMBTAApi:
 
 @pytest.mark.anyio("asyncio")
 class TestLightGetStop:
-    @patch("mbta_client.check_cache")
+    @patch("mbta_client.get_cache")
     @patch("mbta_client.write_cache")
     @pytest.mark.anyio("asyncio")
     async def test_light_get_stop_cached(
-        self, mock_write_cache: MagicMock, mock_check_cache: MagicMock
+        self, mock_write_cache: MagicMock, mock_get_cache: MagicMock
     ) -> None:
         mock_redis = AsyncMock()
 
         cached_data = '{"stop_id": "Davis", "long": -71.1218, "lat": 42.3967, "mbta_stop_id": "place-davis", "parent_stop_id": null}'
-        mock_check_cache.return_value = cached_data
+        mock_get_cache.return_value = cached_data
 
         async with anyio.create_task_group() as tg:
             result = await light_get_stop(mock_redis, "place-davis", tg)
@@ -372,18 +372,18 @@ class TestLightGetStop:
         assert result.lat == 42.3967
         assert result.parent_stop_id is None
 
-        mock_check_cache.assert_called_once_with(mock_redis, "stop:place-davis:light")
+        mock_get_cache.assert_called_once_with(mock_redis, "stop:place-davis:light")
         mock_write_cache.assert_not_called()
 
-    @patch("mbta_client.check_cache")
+    @patch("mbta_client.get_cache")
     @patch("mbta_client.MBTAApi")
     @pytest.mark.anyio("asyncio")
     async def test_light_get_stop_not_cached(
-        self, mock_mbta_api: MagicMock, mock_check_cache: MagicMock
+        self, mock_mbta_api: MagicMock, mock_get_cache: MagicMock
     ) -> None:
         mock_redis = AsyncMock()
 
-        mock_check_cache.return_value = None
+        mock_get_cache.return_value = None
 
         mock_watcher = AsyncMock()
         mock_mbta_api.return_value.__aenter__.return_value = mock_watcher
@@ -394,7 +394,7 @@ class TestLightGetStop:
             tg.cancel_scope.cancel()
 
         assert result is None
-        mock_check_cache.assert_called_once()
+        mock_get_cache.assert_called_once()
 
 
 @pytest.mark.anyio("asyncio")

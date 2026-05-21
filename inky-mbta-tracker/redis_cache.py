@@ -12,7 +12,7 @@ logger = logging.getLogger("redis_cache")
 
 
 @alru_cache(ttl=5)
-async def check_cache(redis: Redis, key: str) -> Optional[str]:
+async def get_cache(redis: Redis, key: str) -> Optional[str]:
     try:
         # Redis operations are auto-instrumented, but we can add custom attributes
         span = trace.get_current_span()

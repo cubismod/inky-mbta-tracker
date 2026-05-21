@@ -22,7 +22,7 @@ from otel_utils import should_trace_operation
 from pydantic import ValidationError
 from redis.asyncio import Redis
 from redis.asyncio.client import Redis as RedisClient
-from redis_cache import check_cache, delete_cache, write_cache
+from redis_cache import delete_cache, get_cache, write_cache
 from redis_lock.asyncio import RedisLock
 from shared_types.shared_types import (
     DiscordEmbed,
@@ -405,7 +405,7 @@ async def _send_webhook_payload(
 ) -> None:
     if WEBHOOK_URL:
         async with aiohttp.ClientSession() as session:
-            existing = await check_cache(r_client, f"webhook:{webhook_id}")
+            existing = await get_cache(r_client, f"webhook:{webhook_id}")
             if existing:
                 try:
                     existing_val = WebhookRedisEntry.model_validate_json(existing)
@@ -632,7 +632,7 @@ async def patch_webhook(
     session: aiohttp.ClientSession,
     r_client: Redis,
 ):
-    existing = await check_cache(r_client, f"webhook:{webhook_id}")
+    existing = await get_cache(r_client, f"webhook:{webhook_id}")
     if existing:
         try:
             existing_val = WebhookRedisEntry.model_validate_json(existing)
@@ -685,7 +685,7 @@ async def patch_webhook(
 )
 async def delete_webhook(webhook_id: str, r_client: Redis):
     async with aiohttp.ClientSession() as session:
-        existing = await check_cache(r_client, f"webhook:{webhook_id}")
+        existing = await get_cache(r_client, f"webhook:{webhook_id}")
         if existing and WEBHOOK_URL:
             try:
                 existing_val = WebhookRedisEntry.model_validate_json(existing)

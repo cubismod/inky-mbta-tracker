@@ -3,55 +3,55 @@ from unittest.mock import AsyncMock
 
 import pytest
 from redis import ResponseError
-from redis_cache import check_cache, write_cache
+from redis_cache import get_cache, write_cache
 
 
 @pytest.fixture(autouse=True)
 def clear_alru_cache() -> None:
     # Ensure per-test isolation for alru_cache, including event loop binding
-    if hasattr(check_cache, "cache_clear"):
-        check_cache.cache_clear()  # type: ignore[attr-defined]
+    if hasattr(get_cache, "cache_clear"):
+        get_cache.cache_clear()  # type: ignore[attr-defined]
     # Reset the loop reference so the next test's event loop can bind cleanly
-    if hasattr(check_cache, "_LRUCacheWrapper__first_loop"):
-        check_cache._LRUCacheWrapper__first_loop = None  # type: ignore[attr-defined]
+    if hasattr(get_cache, "_LRUCacheWrapper__first_loop"):
+        get_cache._LRUCacheWrapper__first_loop = None  # type: ignore[attr-defined]
 
 
 @pytest.mark.anyio("asyncio")
-async def test_check_cache_hit_decodes_bytes() -> None:
+async def test_get_cache_hit_decodes_bytes() -> None:
     mock_redis = AsyncMock()
     mock_redis.get.return_value = b'{"ok": 1}'
 
-    res = await check_cache(mock_redis, "key")
+    res = await get_cache(mock_redis, "key")
     assert res == json.dumps({"ok": 1})
     mock_redis.get.assert_called_once_with("key")
 
 
 @pytest.mark.anyio("asyncio")
-async def test_check_cache_miss_returns_none() -> None:
+async def test_get_cache_miss_returns_none() -> None:
     mock_redis = AsyncMock()
     mock_redis.get.return_value = None
 
-    res = await check_cache(mock_redis, "missing")
+    res = await get_cache(mock_redis, "missing")
     assert res is None
     mock_redis.get.assert_called_once_with("missing")
 
 
 @pytest.mark.anyio("asyncio")
-async def test_check_cache_response_error_logged_and_none() -> None:
+async def test_get_cache_response_error_logged_and_none() -> None:
     mock_redis = AsyncMock()
     mock_redis.get.side_effect = ResponseError("boom")
 
-    res = await check_cache(mock_redis, "err")
+    res = await get_cache(mock_redis, "err")
     assert res is None
 
 
 @pytest.mark.anyio("asyncio")
-async def test_check_cache_ttl_prevents_duplicate_calls() -> None:
+async def test_get_cache_ttl_prevents_duplicate_calls() -> None:
     mock_redis = AsyncMock()
     mock_redis.get.return_value = b"cached"
 
-    first = await check_cache(mock_redis, "ttl-key")
-    second = await check_cache(mock_redis, "ttl-key")
+    first = await get_cache(mock_redis, "ttl-key")
+    second = await get_cache(mock_redis, "ttl-key")
 
     assert first == "cached"
     assert second == "cached"
