@@ -189,3 +189,12 @@ class DiscordWebhook(BaseModel):
 class WebhookRedisEntry(BaseModel):
     message_id: str
     message_hash: str
+
+class BlueskyPost(BaseModel):
+    uri: str
+    cid: str
+
+class BlueskyAlertRef(BaseModel):
+    alert_id: str
+    root: BlueskyPost
+    latest: BlueskyPost
