@@ -9,11 +9,12 @@ from typing import Optional
 from zoneinfo import ZoneInfo
 
 from aiohttp import ClientSession
+from alert_stream import handle_alert_stream_event
 from anyio import sleep
 from anyio.abc import TaskGroup
 from anyio.streams.memory import MemoryObjectSendStream
 from config import Config
-from consts import DAY, HOUR, MINUTE, TWO_MONTHS, WEEK, YEAR
+from consts import DAY, MINUTE, TWO_MONTHS, YEAR
 from exceptions import RateLimitExceeded
 from mbta_client_extended import silver_line_lookup
 from mbta_rate_limiter import rate_limited_get
@@ -56,7 +57,6 @@ from tenacity import (
     retry_if_not_exception_type,
     wait_exponential_jitter,
 )
-from webhook.discord_webhook import delete_webhook, process_alert_event
 
 MBTA_AUTH = os.environ.get("AUTH_TOKEN")
 logger = logging.getLogger(__name__)
@@ -357,95 +357,9 @@ class MBTAApi:
         try:
             # Handle Alerts stream separately
             if self.watcher_type == TaskType.ALERTS:
-                if event_type == "reset":
-                    ta = TypeAdapter(list[AlertResource])
-                    alerts = ta.validate_json(data, strict=False)
-                    # If filtering by a single route, reset that set first
-                    if self.route:
-                        await self.r_client.delete(f"alerts:route:{self.route}")
-                    for a in alerts:
-                        await process_alert_event(a, self.r_client, config, tg)
-                        await write_cache(
-                            self.r_client,
-                            f"alert:{a.id}",
-                            a.model_dump_json(),
-                            2 * HOUR,
-                        )
-                        # Ensure membership in sets
-                        if self.route:
-                            await self.r_client.sadd(f"alerts:route:{self.route}", a.id)  # type: ignore
-                        # Also map to any routes in informed_entity
-                        if a.attributes and a.attributes.informed_entity:
-                            for ent in a.attributes.informed_entity:
-                                if ent.route:
-                                    await self.r_client.sadd(
-                                        f"alerts:route:{ent.route}", a.id
-                                    )  # type: ignore[misc]
-                                # Map to trip as well if present
-                                if ent.trip:
-                                    await self.r_client.sadd(
-                                        f"alerts:trip:{ent.trip}", a.id
-                                    )  # type: ignore[misc]
-                                    await self.r_client.expire(
-                                        f"alerts:trip:{ent.trip}", WEEK
-                                    )
-                    return
-                elif event_type in ("add", "update"):
-                    a = AlertResource.model_validate_json(data, strict=False)
-                    await write_cache(
-                        self.r_client, f"alert:{a.id}", a.model_dump_json(), 2 * HOUR
-                    )
-                    if self.route:
-                        await self.r_client.sadd(f"alerts:route:{self.route}", a.id)  # type: ignore[misc]
-                    await process_alert_event(a, self.r_client, config, tg)
-                    if a.attributes and a.attributes.informed_entity:
-                        for ent in a.attributes.informed_entity:
-                            if ent.route:
-                                await self.r_client.sadd(
-                                    f"alerts:route:{ent.route}", a.id
-                                )  # type: ignore[misc]
-                            if ent.trip:
-                                await self.r_client.sadd(
-                                    f"alerts:trip:{ent.trip}", a.id
-                                )  # type: ignore[misc]
-                                await self.r_client.expire(
-                                    f"alerts:trip:{ent.trip}", WEEK
-                                )
-                    return
-                elif event_type == "remove":
-                    type_and_id = TypeAndID.model_validate_json(data, strict=False)
-                    # Remove from sets based on stored alert data, then delete key
-                    try:
-                        cached = await get_cache(
-                            self.r_client, f"alert:{type_and_id.id}"
-                        )
-                        if cached:
-                            try:
-                                a = AlertResource.model_validate_json(
-                                    cached, strict=False
-                                )
-                                await delete_webhook(type_and_id.id, self.r_client)
-                                if a.attributes and a.attributes.informed_entity:
-                                    for ent in a.attributes.informed_entity:
-                                        if ent.route:
-                                            await self.r_client.srem(
-                                                f"alerts:route:{ent.route}",
-                                                type_and_id.id,
-                                            )  # type: ignore[misc]
-                                        if ent.trip:
-                                            await self.r_client.srem(
-                                                f"alerts:trip:{ent.trip}",
-                                                type_and_id.id,
-                                            )  # type: ignore[misc]
-                                            await self.r_client.expire(
-                                                f"alerts:trip:{ent.trip}", WEEK
-                                            )
-                            except ValidationError:
-                                pass
-                    finally:
-                        await self.r_client.delete(f"alert:{type_and_id.id}")  # type: ignore[misc]
-                    return
-                # For unknown event types, ignore
+                await handle_alert_stream_event(
+                    data, event_type, self.r_client, config, tg, self.route
+                )
                 return
             match event_type:
                 case "reset":
