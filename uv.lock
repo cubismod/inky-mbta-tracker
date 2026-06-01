@@ -535,11 +535,11 @@ wheels = [
 
 [[package]]
 name = "geojson"
-version = "3.1.0"
+version = "3.3.0"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/0f/34/0ea653dec93d3a360856e629a897a1d3ab534f2952852bb59d55853055ed/geojson-3.1.0.tar.gz", hash = "sha256:58a7fa40727ea058efc28b0e9ff0099eadf6d0965e04690830208d3ef571adac", size = 24492, upload-time = "2023-11-05T21:06:50.615Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/13/a9/bd61eee2c7904947094b74866b569f3fd5a8d6ac907ecdfecef74b19d459/geojson-3.3.0.tar.gz", hash = "sha256:92e83b9cb378a450b42f1207bb9b2a031f9fc89185f335153c44369b8b8b71fd", size = 25141, upload-time = "2026-05-28T21:48:08.214Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/8e/1b/4f57660aa148d3e3043d048b7e1ab87dfeb85204d0fdb5b4e19c08202162/geojson-3.1.0-py3-none-any.whl", hash = "sha256:68a9771827237adb8c0c71f8527509c8f5bef61733aa434cefc9c9d4f0ebe8f3", size = 15044, upload-time = "2023-11-05T21:15:41.659Z" },
+    { url = "https://files.pythonhosted.org/packages/aa/5e/fdd72167b57158d743353f71d453200719744d1e75f18b1c8230508db370/geojson-3.3.0-py3-none-any.whl", hash = "sha256:a2d885187eeaa8b357600b3fcc9d963cb4300d1694196636dbd7eddc82fd0825", size = 15181, upload-time = "2026-05-28T21:48:06.648Z" },
 ]
 
 [[package]]
@@ -809,7 +809,7 @@ requires-dist = [
     { name = "deepdiff", extras = ["optimize"], specifier = ">=8.6.1" },
     { name = "fastapi", specifier = "==0.136.3" },
     { name = "frozenlist", specifier = "==1.8.0" },
-    { name = "geojson", specifier = "==3.1.0" },
+    { name = "geojson", specifier = "==3.3.0" },
     { name = "gunicorn", specifier = ">=23.0.0" },
     { name = "h11", specifier = "==0.16.0" },
     { name = "hiredis", specifier = ">=2.3.2" },
