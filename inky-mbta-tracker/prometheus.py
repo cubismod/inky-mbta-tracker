@@ -1,14 +1,8 @@
 import logging
-import os
-from typing import Optional
 from urllib.parse import urlsplit
 
-import aiohttp
 from anyio import get_running_tasks, sleep
-from consts import AIOHTTP_TIMEOUT
 from prometheus_client import Counter, Gauge
-from pydantic import ValidationError
-from shared_types.shared_types import PrometheusAPIResponse
 
 logger = logging.getLogger(__name__)
 
@@ -155,32 +149,3 @@ running_tasks = Gauge("imt_tasks", "Number of anyio tasks")
 async def watch_running_tasks():
     running_tasks.set(len(get_running_tasks()))
     await sleep(15)
-
-
-async def query_server_side_events(
-    session: aiohttp.ClientSession, job: str, id: str
-) -> Optional[PrometheusAPIResponse]:
-    metric = os.getenv("IMT_METRIC_NAME", "mbta_server_side_events:rate30m")
-    prom_query = f'{metric}{{job="{job}",id="{id}"}}'
-    try:
-        resp = await session.get(
-            f"{os.getenv('IMT_PROMETHEUS_ENDPOINT')}/api/v1/query",
-            params={"query": prom_query},
-            timeout=AIOHTTP_TIMEOUT,
-        )
-        resp_json = await resp.json()
-        logger.debug(resp_json)
-        prom_resp = PrometheusAPIResponse.model_validate(resp_json)
-        logger.debug(f"Prometheus response: {prom_resp.model_dump_json()}")
-        return prom_resp
-
-    except ValidationError as err:
-        logger.error("Unable to parse response", exc_info=err)
-    except (
-        aiohttp.ClientError,
-        TimeoutError,
-        ValueError,
-        OSError,
-        RuntimeError,
-    ) as err:
-        logger.error("Failed to query Prometheus", exc_info=err)
