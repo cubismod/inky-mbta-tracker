@@ -727,7 +727,7 @@ async def watch_alerts(
       `alerts:route:{route_id}` set membership.
     - Stores individual alerts under `alert:{id}` with a short TTL.
     """
-    endpoint = f"{MBTA_V3_ENDPOINT}/alerts?api_key={MBTA_AUTH}&filter[lifecycle]=NEW,ONGOING,ONGOING_UPCOMING&filter[datetime]=NOW&filter[severity]=3,4,5,6,7,8,9,10"
+    endpoint = f"{MBTA_V3_ENDPOINT}/alerts?api_key={MBTA_AUTH}&filter[lifecycle]=NEW,ONGOING,ONGOING_UPCOMING&filter[datetime]=NOW"
     if route_id:
         endpoint += f"&filter[route]={route_id}"
     headers = {"accept": "text/event-stream"}

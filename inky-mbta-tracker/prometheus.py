@@ -123,6 +123,10 @@ vehicle_batch_items = Gauge(
     "imt_vehicle_batch_items", "Vehicles processed in last batch", ["name"]
 )
 
+alerts_counter = Counter(
+    "imt_alerts", "Counts of Alerts", ["route", "severity", "effect"]
+)
+
 schedule_batch_items = Gauge(
     "imt_schedule_batch_items", "Schedule events processed in last batch", ["name"]
 )

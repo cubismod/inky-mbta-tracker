@@ -43,7 +43,7 @@ from otel_utils import (
     set_span_error,
     should_trace_operation,
 )
-from prometheus import mbta_api_requests
+from prometheus import alerts_counter, mbta_api_requests
 from pydantic import TypeAdapter, ValidationError
 from redis.asyncio.client import Redis
 from redis.exceptions import RedisError
@@ -368,6 +368,11 @@ class MBTAApi:
                             a.model_dump_json(),
                             2 * HOUR,
                         )
+                        alerts_counter.labels(
+                            route=self.route,
+                            severity=a.attributes.severity,
+                            effect=a.attributes.effect,
+                        ).inc()
                         # Ensure membership in sets
                         if self.route:
                             await self.r_client.sadd(f"alerts:route:{self.route}", a.id)  # type: ignore
