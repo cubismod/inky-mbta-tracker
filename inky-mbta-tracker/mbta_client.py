@@ -373,6 +373,7 @@ class MBTAApi:
                             severity=a.attributes.severity,
                             effect=a.attributes.effect,
                         ).inc()
+                        logger.info(f"Alert: {self.route} | {a.attributes.header}")
                         # Ensure membership in sets
                         if self.route:
                             await self.r_client.sadd(f"alerts:route:{self.route}", a.id)  # type: ignore
