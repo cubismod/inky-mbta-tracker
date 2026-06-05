@@ -5,7 +5,7 @@ from typing import AsyncGenerator, Optional
 
 from api.middleware.cache_middleware import cache_ttl
 from fastapi import APIRouter, HTTPException, Request, Response
-from geojson import FeatureCollection, dumps
+from fastapi.responses import RedirectResponse
 from geojson_utils import get_vehicle_features
 from opentelemetry import trace
 from otel_utils import add_span_attributes, add_transaction_ids_to_span, set_span_error
@@ -124,68 +124,12 @@ async def get_vehicles_sse(
 @router.get(
     "/vehicles.json",
     summary="Get Vehicle Positions (JSON File)",
-    description=(
-        "Get current vehicle positions as GeoJSON file. ⚠️ WARNING: Do not use 'Try it out' - large response may crash browser!"
-    ),
-    response_class=Response,
+    description=("Get current vehicle positions as GeoJSON file."),
+    status_code=302,
+    response_class=RedirectResponse,
 )
-@cache_ttl(2)
-@limiter.limit("70/minute")
-async def get_vehicles_json(
-    request: Request, commons: GET_DI, frequent_buses: bool = False
-) -> Response:
-    with tracer.start_as_current_span("api.vehicles.get_vehicles_json") as span:
-        # Add transaction IDs to the span
-        add_transaction_ids_to_span(span)
-        add_span_attributes(
-            span,
-            {
-                "request.frequent_buses": frequent_buses,
-                "api.endpoint": "vehicles_json",
-                "response.format": "geojson_file",
-            },
-        )
-
-        try:
-            if commons.tg:
-                features = await get_vehicle_features(
-                    commons.r_client, commons.config, commons.tg, frequent_buses
-                )
-                span.set_attribute("vehicles.count", len(features))
-                feature_collection = FeatureCollection(features)
-                geojson_str = dumps(feature_collection, sort_keys=True)
-                add_span_attributes(
-                    span,
-                    {
-                        "api.response.success": True,
-                        "response.body.bytes": len(geojson_str.encode("utf-8")),
-                    },
-                )
-
-                return Response(
-                    content=geojson_str,
-                    media_type="application/json",
-                    headers={
-                        "Content-Disposition": "attachment; filename=vehicles.json"
-                    },
-                )
-            else:
-                add_span_attributes(
-                    span,
-                    {
-                        "api.response.success": False,
-                        "error": True,
-                        "error.type": "no_task_group",
-                    },
-                )
-                return Response(status_code=500)
-        except (ConnectionError, TimeoutError) as exc:
-            logger.error(
-                "Error getting vehicles JSON due to connection issue", exc_info=True
-            )
-            set_span_error(span, exc)
-            add_span_attributes(span, {"error.type": "connection"})
-            raise HTTPException(status_code=500, detail="Internal server error")
+async def get_vehicles_json(request: Request):
+    return RedirectResponse(url="/vehicles")
 
 
 @router.get(

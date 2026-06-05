@@ -2,8 +2,8 @@ import logging
 
 from api.core import GET_DI
 from api.middleware.cache_middleware import cache_ttl
-from consts import ALERTS_CACHE_TTL
 from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi.responses import RedirectResponse
 from mbta_responses import Alerts
 from opentelemetry import trace
 from otel_utils import add_span_attributes, add_transaction_ids_to_span, set_span_error
@@ -76,76 +76,9 @@ async def get_alerts(request: Request, commons: GET_DI) -> Response:
     "/alerts.json",
     summary="Get MBTA Alerts (JSON File)",
     description="Get current MBTA alerts as JSON file.",
-    response_class=Response,
+    response_class=RedirectResponse,
+    status_code=302,
 )
 @limiter.limit("100/minute")
-async def get_alerts_json(request: Request, commons: GET_DI) -> Response:
-    with tracer.start_as_current_span("api.alerts.get_alerts_json") as span:
-        # Add transaction IDs to the span
-        add_transaction_ids_to_span(span)
-        add_span_attributes(
-            span,
-            {
-                "api.endpoint": "alerts_json",
-                "response.format": "json_file",
-            },
-        )
-
-        try:
-            cache_key = "api:alerts:json"
-            cached_data = await commons.r_client.get(cache_key)
-            if cached_data:
-                span.set_attribute("cache.hit", True)
-                add_span_attributes(
-                    span,
-                    {
-                        "api.response.success": True,
-                        "response.body.bytes": len(cached_data),
-                    },
-                )
-                return Response(
-                    content=cached_data,
-                    media_type="application/json",
-                    headers={"Content-Disposition": "attachment; filename=alerts.json"},
-                )
-
-            span.set_attribute("cache.hit", False)
-            alerts = await fetch_alerts_with_retry(
-                commons.config, commons.session, commons.r_client
-            )
-            span.set_attribute("alerts.count", len(alerts))
-            alerts_data = Alerts(data=alerts)
-            alerts_json = alerts_data.model_dump_json(exclude_unset=True)
-            await commons.r_client.setex(cache_key, ALERTS_CACHE_TTL, alerts_json)
-            add_span_attributes(
-                span,
-                {
-                    "api.response.success": True,
-                    "cache.ttl_seconds": ALERTS_CACHE_TTL,
-                    "response.body.bytes": len(alerts_json.encode("utf-8")),
-                },
-            )
-            return Response(
-                content=alerts_json,
-                media_type="application/json",
-                headers={"Content-Disposition": "attachment; filename=alerts.json"},
-            )
-        except (ConnectionError, TimeoutError) as exc:
-            logger.error(
-                "Error getting alerts JSON due to connection issue", exc_info=True
-            )
-            set_span_error(span, exc)
-            add_span_attributes(span, {"error.type": "connection"})
-            raise HTTPException(status_code=500, detail="Internal server error")
-        except RedisError as exc:
-            logger.error("Error getting alerts JSON due to Redis error", exc_info=True)
-            set_span_error(span, exc)
-            add_span_attributes(span, {"error.type": "redis"})
-            raise HTTPException(status_code=500, detail="Internal server error")
-        except ValidationError as exc:
-            logger.error(
-                "Error getting alerts JSON due to validation error", exc_info=True
-            )
-            set_span_error(span, exc)
-            add_span_attributes(span, {"error.type": "validation"})
-            raise HTTPException(status_code=500, detail="Internal server error")
+async def get_alerts_json(request: Request) -> RedirectResponse:
+    return RedirectResponse(url="/alerts")

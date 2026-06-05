@@ -4,7 +4,7 @@ import logging
 from api.middleware.cache_middleware import cache_ttl
 from consts import WEEK
 from fastapi import APIRouter, HTTPException, Request, Response
-from geojson import FeatureCollection, dumps
+from fastapi.responses import RedirectResponse
 from geojson_utils import get_shapes_features
 from opentelemetry import trace
 from otel_utils import add_span_attributes, add_transaction_ids_to_span, set_span_error
@@ -75,60 +75,12 @@ async def get_shapes(
     "/shapes.json",
     summary="Get Route Shapes (JSON File)",
     description="Get route shapes as GeoJSON file.",
-    response_class=Response,
+    response_class=RedirectResponse,
+    status_code=302,
 )
 @limiter.limit("70/minute")
 @cache_ttl(2 * WEEK)
 async def get_shapes_json(
     request: Request, commons: GET_DI, frequent_buses: bool = False
-) -> Response:
-    with tracer.start_as_current_span("api.shapes.get_shapes_json") as span:
-        # Add transaction IDs to the span
-        add_transaction_ids_to_span(span)
-        add_span_attributes(
-            span,
-            {
-                "request.frequent_buses": frequent_buses,
-                "api.endpoint": "shapes_json",
-                "response.format": "geojson_file",
-            },
-        )
-
-        try:
-            features = await get_shapes_features(
-                commons.config,
-                commons.r_client,
-                commons.tg,
-                commons.session,
-                frequent_buses,
-            )
-            span.set_attribute("shapes.count", len(features))
-            feature_collection = FeatureCollection(features)
-            geojson_str = dumps(feature_collection, sort_keys=True)
-            add_span_attributes(
-                span,
-                {
-                    "api.response.success": True,
-                    "response.body.bytes": len(geojson_str.encode("utf-8")),
-                },
-            )
-
-            return Response(
-                content=geojson_str,
-                media_type="application/json",
-                headers={"Content-Disposition": "attachment; filename=shapes.json"},
-            )
-        except (ConnectionError, TimeoutError) as exc:
-            logger.error(
-                "Error getting shapes JSON due to connection issue", exc_info=True
-            )
-            set_span_error(span, exc)
-            add_span_attributes(span, {"error.type": "connection"})
-            raise HTTPException(status_code=500, detail="Internal server error")
-        except ValidationError as exc:
-            logger.error(
-                "Error getting shapes JSON due to validation error", exc_info=True
-            )
-            set_span_error(span, exc)
-            add_span_attributes(span, {"error.type": "validation"})
-            raise HTTPException(status_code=500, detail="Internal server error")
+) -> RedirectResponse:
+    return RedirectResponse(url="/shapes.geojson")
