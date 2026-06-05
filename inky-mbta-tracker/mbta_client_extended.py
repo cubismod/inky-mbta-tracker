@@ -20,7 +20,7 @@ from consts import (
     TWO_MONTHS,
     YEAR,
 )
-from exceptions import RateLimitExceeded
+from exceptions import RateLimitExceeded, WatcherRefreshRequested
 from mbta_rate_limiter import rate_limited_get
 from mbta_responses import AlertResource, Shapes
 from opentelemetry.trace import Span
@@ -431,6 +431,11 @@ async def watch_mbta_server_side_events(
                 for err in eg.exceptions:
                     set_span_error(span, err)
                     logger.warning("SSE client payload error", exc_info=err)
+            except* WatcherRefreshRequested:
+                reconnect_reason = "watcher_refresh_requested"
+                logger.info(
+                    "Reconnecting MBTA SSE watcher after health monitor refresh request"
+                )
             finally:
                 add_span_attributes(
                     span,

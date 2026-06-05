@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import anyio
 import pytest
 from aiohttp import ClientResponseError
+from exceptions import WatcherRefreshRequested
 from mbta_client import MBTAApi, silver_line_lookup
 from mbta_client_extended import (
     light_get_alerts,
@@ -62,6 +63,42 @@ async def test_watch_mbta_server_side_events_records_rate_limit_hit() -> None:
 
     record.assert_called_once_with(endpoint)
     assert aiosseclient_kwargs["raise_for_status"] is True
+
+
+@pytest.mark.anyio("asyncio")
+async def test_watch_mbta_server_side_events_reconnects_after_health_refresh() -> None:
+    monitor_starts = 0
+    sleep_mock = AsyncMock(side_effect=[None, CancelledError])
+
+    async def monitor_health(_tg) -> None:  # type: ignore[no-untyped-def]
+        nonlocal monitor_starts
+        monitor_starts += 1
+        raise WatcherRefreshRequested
+
+    async def fake_aiosseclient(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        await anyio.sleep(999)
+        yield
+
+    watcher = MagicMock()
+    watcher._monitor_health = monitor_health
+    watcher.gen_unique_id.return_value = "vehicle-red"
+
+    with (
+        patch("mbta_client_extended.aiosseclient", new=fake_aiosseclient),
+        patch("mbta_client_extended.sleep", new=sleep_mock),
+    ):
+        with pytest.raises(CancelledError):
+            await watch_mbta_server_side_events(
+                watcher,
+                "https://api-v3.mbta.com/vehicles?filter[route]=Red",
+                {},
+                None,
+                MagicMock(),
+                0,
+                MagicMock(),
+            )
+
+    assert monitor_starts == 2
 
 
 class TestSilverLineLookup:

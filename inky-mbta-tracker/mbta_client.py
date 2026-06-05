@@ -14,7 +14,7 @@ from anyio.abc import TaskGroup
 from anyio.streams.memory import MemoryObjectSendStream
 from config import Config
 from consts import DAY, HOUR, MINUTE, TWO_MONTHS, WEEK, YEAR
-from exceptions import RateLimitExceeded
+from exceptions import RateLimitExceeded, WatcherRefreshRequested
 from mbta_client_extended import silver_line_lookup
 from mbta_rate_limiter import rate_limited_get
 from mbta_responses import (
@@ -259,8 +259,7 @@ class MBTAApi:
                     logger.info(
                         f"Refreshing alerts watcher (route={self.route}) due to health check failure/scheduled restart."
                     )
-                    tg.cancel_scope.cancel()
-                    return
+                    raise WatcherRefreshRequested
                 heartbeat_key = "heartbeat:events:alerts"
                 if self.route:
                     heartbeat_key = f"heartbeat:events:alerts:{self.route}"
@@ -303,14 +302,12 @@ class MBTAApi:
                 logger.info(
                     f"Refreshing vehicle watcher (route={self.route}) due to scheduled restart."
                 )
-                tg.cancel_scope.cancel()
-                return
+                raise WatcherRefreshRequested
             if failtime and now >= failtime:
                 logger.info(
                     f"Refreshing {self.watcher_type} watcher (route={self.route}, stop={self.stop_id}) due to health check failure/scheduled restart."
                 )
-                tg.cancel_scope.cancel()
-                return
+                raise WatcherRefreshRequested
             if self.get_service_status():
                 heartbeat_key = f"heartbeat:events:{self.route}"
                 try:
