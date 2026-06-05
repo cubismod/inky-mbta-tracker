@@ -125,11 +125,10 @@ async def get_vehicles_sse(
     "/vehicles.json",
     summary="Get Vehicle Positions (JSON File)",
     description=("Get current vehicle positions as GeoJSON file."),
-    status_code=302,
     response_class=RedirectResponse,
 )
 async def get_vehicles_json(request: Request):
-    return RedirectResponse(url="/vehicles")
+    return RedirectResponse(url="/vehicles", status_code=302)
 
 
 @router.get(

@@ -77,8 +77,7 @@ async def get_alerts(request: Request, commons: GET_DI) -> Response:
     summary="Get MBTA Alerts (JSON File)",
     description="Get current MBTA alerts as JSON file.",
     response_class=RedirectResponse,
-    status_code=302,
 )
 @limiter.limit("100/minute")
 async def get_alerts_json(request: Request) -> RedirectResponse:
-    return RedirectResponse(url="/alerts")
+    return RedirectResponse(url="/alerts", status_code=302)

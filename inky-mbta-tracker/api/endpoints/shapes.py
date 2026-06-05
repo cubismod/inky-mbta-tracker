@@ -76,11 +76,10 @@ async def get_shapes(
     summary="Get Route Shapes (JSON File)",
     description="Get route shapes as GeoJSON file.",
     response_class=RedirectResponse,
-    status_code=302,
 )
 @limiter.limit("70/minute")
 @cache_ttl(2 * WEEK)
 async def get_shapes_json(
     request: Request, commons: GET_DI, frequent_buses: bool = False
 ) -> RedirectResponse:
-    return RedirectResponse(url="/shapes.geojson")
+    return RedirectResponse(url="/shapes.geojson", status_code=302)
