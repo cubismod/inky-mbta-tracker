@@ -398,6 +398,12 @@ class MBTAApi:
                     await write_cache(
                         self.r_client, f"alert:{a.id}", a.model_dump_json(), 2 * HOUR
                     )
+                    if event_type == "add":
+                        alerts_counter.labels(
+                            route=self.route,
+                            severity=a.attributes.severity,
+                            effect=a.attributes.effect,
+                        ).inc()
                     if self.route:
                         await self.r_client.sadd(f"alerts:route:{self.route}", a.id)  # type: ignore[misc]
                     await process_alert_event(a, self.r_client, config, tg)
