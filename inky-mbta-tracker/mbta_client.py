@@ -13,7 +13,7 @@ from anyio import sleep
 from anyio.abc import TaskGroup
 from anyio.streams.memory import MemoryObjectSendStream
 from config import Config
-from consts import DAY, HOUR, MINUTE, TWO_MONTHS, WEEK, YEAR
+from consts import ALERTS_SET_KEY, DAY, HOUR, MINUTE, TWO_MONTHS, WEEK, YEAR
 from exceptions import RateLimitExceeded, WatcherRefreshRequested
 from mbta_client_extended import silver_line_lookup
 from mbta_rate_limiter import rate_limited_get
@@ -373,6 +373,12 @@ class MBTAApi:
                             severity=a.attributes.severity,
                             effect=a.attributes.effect,
                         ).inc()
+                        if self.route and datetime.now().astimezone(
+                            UTC
+                        ) - datetime.fromisoformat(a.attributes.updated_at).astimezone(
+                            UTC
+                        ) < timedelta(minutes=4):
+                            await self.r_client.hincrby(ALERTS_SET_KEY, self.route)  # type: ignore[misc]
                         logger.info(f"Alert: {self.route} | {a.attributes.header}")
                         # Ensure membership in sets
                         if self.route:
@@ -406,6 +412,7 @@ class MBTAApi:
                         ).inc()
                     if self.route:
                         await self.r_client.sadd(f"alerts:route:{self.route}", a.id)  # type: ignore[misc]
+                        await self.r_client.hincrby(ALERTS_SET_KEY, self.route)  # type: ignore[misc]
                     await process_alert_event(a, self.r_client, config, tg)
                     if a.attributes and a.attributes.informed_entity:
                         for ent in a.attributes.informed_entity:

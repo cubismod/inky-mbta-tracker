@@ -15,6 +15,7 @@ from anyio.abc import TaskGroup
 from config import Config
 from consts import DAY
 from exceptions import RateLimitExceeded
+from mbta_client_extended import silver_line_lookup
 from mbta_responses import AlertResource
 from opentelemetry.trace import Span
 from otel_config import get_tracer, is_otel_enabled
@@ -400,6 +401,15 @@ async def send_batch_entry(
         await _send_webhook_payload(batch_message_id, grouped, r_client)
 
 
+def _human_readable_webhook_payload(payload: str) -> str:
+    new_payload: list[str] = []
+    for i in payload.split():
+        if i.startswith("CR-"):
+            i = f"{i.replace('CR-', '')} Line"
+        new_payload.append(silver_line_lookup(i))
+    return " ".join(new_payload)
+
+
 async def _send_webhook_payload(
     webhook_id: str, webhook: DiscordWebhook, r_client: RedisClient
 ) -> None:
@@ -449,6 +459,7 @@ async def send_pending_webhook(
             return
         try:
             webhook = DiscordWebhook.model_validate_json(pending.webhook_json)
+            webhook.content = _human_readable_webhook_payload(webhook.content)
         except ValidationError as err:
             logger.error(
                 f"Failed to parse pending webhook payload for {webhook_id}",

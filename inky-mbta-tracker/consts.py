@@ -16,6 +16,7 @@ FORTY_FIVE_MIN = 2700
 YEAR = 31536000
 MINUTE = 60
 INSTANCE_ID = uuid.uuid4()
+ALERTS_SET_KEY = "alerts:stats"
 
 # API Cache TTL configurations
 VEHICLES_CACHE_TTL = 3  # seconds

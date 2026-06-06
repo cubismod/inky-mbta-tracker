@@ -255,7 +255,7 @@ async def _light_get_stop_impl(
                 async with RedisLock(
                     r_client,
                     f"stop_fetch:{stop_id}",
-                    blocking_timeout=5,
+                    blocking_timeout=60,
                     expire_timeout=30,
                 ):
                     if await get_cache(r_client, key):
