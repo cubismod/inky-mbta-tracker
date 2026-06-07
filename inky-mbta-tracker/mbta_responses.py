@@ -265,6 +265,10 @@ class PredictionResource(BaseModel):
     attributes: PredictionAttributes
 
 
+class Predictions(BaseModel):
+    data: list[PredictionResource]
+
+
 class FacilityRelationships(BaseModel):
     stop: LinksAndData
 

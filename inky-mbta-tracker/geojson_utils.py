@@ -36,7 +36,7 @@ from shapely.geometry import LineString as ShapelyLineString
 
 logger = logging.getLogger("geojson_utils")
 
-STOPPED_VEHICLE_OFFSET_METERS = 2.0
+STOPPED_VEHICLE_OFFSET_METERS = 4.0
 METERS_PER_LATITUDE_DEGREE = 111_320.0
 
 
@@ -568,7 +568,9 @@ async def get_vehicle_features(
                     "marker-size": "medium",
                     "marker-symbol": route_icon,
                     "marker-color": lookup_vehicle_color(vehicle_info),
-                    "speed": vehicle_info.speed,
+                    "speed": round(vehicle_info.speed)
+                    if vehicle_info.speed is not None
+                    else None,
                     "direction": vehicle_info.direction_id,
                     "id": vehicle_info.id,
                     "stop": stop_id,

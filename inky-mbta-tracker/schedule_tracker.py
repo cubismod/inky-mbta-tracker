@@ -169,7 +169,7 @@ class Tracker:
 
             if event.speed is not None:
                 await self.write_vehicle_speed_history(cache_id, event, event.speed)
-                return round(event.speed), False
+                return event.speed, False
 
             if event.current_status == "STOPPED_AT":
                 await self.write_vehicle_speed_history(cache_id, event, 0)
@@ -198,7 +198,7 @@ class Tracker:
 
             if duration_seconds < MIN_APPROXIMATE_SPEED_SAMPLE_SECONDS:
                 if last_event_validated.speed > 0:
-                    return round(last_event_validated.speed), True
+                    return last_event_validated.speed, True
                 return None, False
 
             start = Feature(
@@ -231,11 +231,11 @@ class Tracker:
                 )
                 # throw out insane predictions
                 if last_event_validated.speed > 0:
-                    return (round(last_event_validated.speed), True)
+                    return (last_event_validated.speed, True)
                 return None, False
 
             await self.write_vehicle_speed_history(cache_id, event, speed)
-            return round(speed), True
+            return speed, True
         except ResponseError as err:
             logger.error("unable to get redis event", exc_info=err)
         except ValidationError as err:
