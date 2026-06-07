@@ -537,7 +537,11 @@ async def get_vehicle_features(
                         lat = stop.lat
                         if not vehicle_bearing:
                             vehicle_bearing = calculate_bearing(point, stop_point)
-                        if vehicle_info.speed and vehicle_info.speed >= 10:
+                        if (
+                            vehicle_info.speed
+                            and vehicle_info.speed >= 10
+                            and vehicle_info.current_status != "STOPPED_AT"
+                        ):
                             stop_eta = calculate_stop_eta(
                                 Feature(geometry=stop_point),
                                 Feature(geometry=point),
