@@ -444,7 +444,7 @@ async def watch_mbta_server_side_events(
                         "mbta.sse.reconnect_reason": reconnect_reason,
                     },
                 )
-        await sleep(1)
+        await sleep(0.01)
 
 
 @retry(
