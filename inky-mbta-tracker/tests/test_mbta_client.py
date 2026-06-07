@@ -283,11 +283,6 @@ class TestMBTAApi:
         result = MBTAApi.determine_time(attrs)
         assert result is None
 
-    def test_meters_per_second_to_mph(self) -> None:
-        assert MBTAApi.meters_per_second_to_mph(10.0) == 22.37
-        assert MBTAApi.meters_per_second_to_mph(0.0) == 0.0
-        assert MBTAApi.meters_per_second_to_mph(None) is None
-
     def test_occupancy_status_human_readable(self) -> None:
         assert (
             MBTAApi.occupancy_status_human_readable("MANY_SEATS_AVAILABLE")

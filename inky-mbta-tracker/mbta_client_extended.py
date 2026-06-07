@@ -444,9 +444,7 @@ async def watch_mbta_server_side_events(
                         "mbta.sse.reconnect_reason": reconnect_reason,
                     },
                 )
-        await sleep(
-            randint(5, 15)
-        )  # in case we invoke a 429 which is just logged but not thrown from aiosseclient
+        await sleep(1)
 
 
 @retry(

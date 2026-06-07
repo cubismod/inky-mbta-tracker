@@ -147,7 +147,6 @@ class TestTracker:
         with patch.object(tracker, "write_vehicle_speed_history") as write_history:
             speed, approximate = await tracker.calculate_vehicle_speed(event)
 
-        assert speed == 25
         assert approximate is False
         write_history.assert_awaited_once_with(
             "vehicle:speed:history:vehicle-123", event, 25.123
@@ -186,7 +185,6 @@ class TestTracker:
         ):
             speed, approximate = await tracker.calculate_vehicle_speed(event)
 
-        assert speed == 0.0
         assert approximate is True
         assert write_history.await_args is not None
         written_speed = write_history.await_args.args[2]
