@@ -4,14 +4,18 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp import ClientSession
+from config import Config
+from geo_math import distance
 from geojson import Feature, Point
 from geojson_utils import (
     calculate_bearing,
     calculate_stop_eta,
+    get_vehicle_features,
     light_get_alerts_batch,
     lookup_vehicle_color,
+    vehicle_display_point,
 )
-from shared_types.shared_types import VehicleRedisSchema
+from shared_types.shared_types import LightStop, VehicleRedisSchema
 
 
 class MockResp:
@@ -183,3 +187,124 @@ def test_calculate_bearing_east_is_90() -> None:
 def test_calculate_bearing_west_is_negative_90() -> None:
     b = calculate_bearing(Point((0.0, 0.0)), Point((-1.0, 0.0)))
     assert -95 <= b <= -85
+
+
+def test_vehicle_display_point_uses_stop_point_when_stopped_at() -> None:
+    vehicle_point = Point((-71.0, 42.0))
+    display_point = vehicle_display_point(
+        vehicle_point, -71.1, 42.1, "STOPPED_AT", "vehicle-123"
+    )
+
+    assert display_point != Point((-71.1, 42.1))
+    assert distance(display_point, Point((-71.1, 42.1)), "m") < 9
+
+
+def test_vehicle_display_point_keeps_vehicle_point_when_not_stopped() -> None:
+    vehicle_point = Point((-71.0, 42.0))
+
+    assert (
+        vehicle_display_point(vehicle_point, -71.1, 42.1, "IN_TRANSIT_TO", "vehicle-123")
+        == vehicle_point
+    )
+
+
+def test_vehicle_display_point_offsets_vehicles_at_same_stop_differently() -> None:
+    vehicle_point = Point((-71.0, 42.0))
+
+    first_display_point = vehicle_display_point(
+        vehicle_point, -71.1, 42.1, "STOPPED_AT", "vehicle-123"
+    )
+    second_display_point = vehicle_display_point(
+        vehicle_point, -71.1, 42.1, "STOPPED_AT", "vehicle-456"
+    )
+
+    assert first_display_point != second_display_point
+
+
+@pytest.mark.anyio("asyncio")
+@patch("geojson_utils.light_get_stop")
+async def test_get_vehicle_features_places_stopped_vehicle_at_stop_coordinates(
+    mock_light_get_stop: AsyncMock,
+) -> None:
+    vehicle = VehicleRedisSchema(
+        action="add",
+        id="vehicle-123",
+        current_status="STOPPED_AT",
+        direction_id=0,
+        latitude=42.0,
+        longitude=-71.0,
+        speed=0,
+        bearing=0,
+        stop="place-davis",
+        route="Red",
+        update_time=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+    redis = MagicMock()
+    redis.smembers = AsyncMock(return_value={b"vehicle:vehicle-123"})
+    pipeline = MagicMock()
+    pipeline.get = AsyncMock()
+    pipeline.execute = AsyncMock(return_value=[vehicle.model_dump_json().encode()])
+    redis.pipeline.return_value = pipeline
+    mock_light_get_stop.return_value = LightStop(
+        stop_id="Davis",
+        mbta_stop_id="place-davis",
+        parent_stop_id=None,
+        long=-71.1218,
+        lat=42.3967,
+    )
+
+    features = await get_vehicle_features(
+        redis, Config(vehicles_by_route=["Red"]), cast(Any, object())
+    )
+
+    display_point = Point(features["vehicle-123"]["geometry"]["coordinates"])
+
+    assert display_point != Point((-71.1218, 42.3967))
+    assert distance(display_point, Point((-71.1218, 42.3967)), "m") < 9
+    assert features["vehicle-123"]["properties"]["stop-coordinates"] == (
+        -71.1218,
+        42.3967,
+    )
+
+
+@pytest.mark.anyio("asyncio")
+@patch("geojson_utils.light_get_stop")
+async def test_get_vehicle_features_keeps_in_transit_vehicle_coordinates(
+    mock_light_get_stop: AsyncMock,
+) -> None:
+    vehicle = VehicleRedisSchema(
+        action="add",
+        id="vehicle-456",
+        current_status="IN_TRANSIT_TO",
+        direction_id=0,
+        latitude=42.0,
+        longitude=-71.0,
+        speed=15,
+        bearing=0,
+        stop="place-davis",
+        route="Red",
+        update_time=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+    redis = MagicMock()
+    redis.smembers = AsyncMock(return_value={b"vehicle:vehicle-456"})
+    pipeline = MagicMock()
+    pipeline.get = AsyncMock()
+    pipeline.execute = AsyncMock(return_value=[vehicle.model_dump_json().encode()])
+    redis.pipeline.return_value = pipeline
+    mock_light_get_stop.return_value = LightStop(
+        stop_id="Davis",
+        mbta_stop_id="place-davis",
+        parent_stop_id=None,
+        long=-71.1218,
+        lat=42.3967,
+    )
+
+    features = await get_vehicle_features(
+        redis, Config(vehicles_by_route=["Red"]), cast(Any, object())
+    )
+
+    assert features["vehicle-456"]["geometry"]["coordinates"] == [-71.0, 42.0]
+    assert features["vehicle-456"]["properties"]["stop-coordinates"] == (
+        -71.1218,
+        42.3967,
+    )

@@ -1,5 +1,7 @@
+import hashlib
 import logging
 from datetime import timedelta
+from math import cos, radians, sin, tau
 from typing import Optional
 
 import aiohttp
@@ -33,6 +35,42 @@ from schedule_tracker import VehicleRedisSchema
 from shapely.geometry import LineString as ShapelyLineString
 
 logger = logging.getLogger("geojson_utils")
+
+STOPPED_VEHICLE_OFFSET_METERS = 2.0
+METERS_PER_LATITUDE_DEGREE = 111_320.0
+
+
+def vehicle_display_point(
+    vehicle_point: Point,
+    stop_longitude: float | None,
+    stop_latitude: float | None,
+    current_status: str,
+    vehicle_id: str,
+) -> Point:
+    if (
+        current_status != "STOPPED_AT"
+        or stop_longitude is None
+        or stop_latitude is None
+    ):
+        return vehicle_point
+
+    digest = hashlib.blake2s(vehicle_id.encode("utf-8"), digest_size=2).digest()
+    angle = int.from_bytes(digest, "big") / 65_535 * tau
+    latitude_offset = (
+        sin(angle) * STOPPED_VEHICLE_OFFSET_METERS / METERS_PER_LATITUDE_DEGREE
+    )
+    longitude_scale = max(cos(radians(stop_latitude)), 0.01)
+    longitude_offset = (
+        cos(angle)
+        * STOPPED_VEHICLE_OFFSET_METERS
+        / (METERS_PER_LATITUDE_DEGREE * longitude_scale)
+    )
+    return Point(
+        (
+            stop_longitude + longitude_offset,
+            stop_latitude + latitude_offset,
+        )
+    )
 
 
 async def light_get_alerts_batch(
@@ -478,6 +516,7 @@ async def get_vehicle_features(
         stop_id = None
         long = None
         lat = None
+        stop_point = None
         route_icon = "rail"
         stop_eta = None
         mbta_stop_id = ""
@@ -492,7 +531,7 @@ async def get_vehicle_features(
                     stop_id = stop.stop_id
                     if stop.parent_stop_id:
                         parent_stop_id = stop.parent_stop_id
-                    if stop.long and stop.lat:
+                    if stop.long is not None and stop.lat is not None:
                         stop_point = Point((stop.long, stop.lat))
                         long = stop.long
                         lat = stop.lat
@@ -515,7 +554,13 @@ async def get_vehicle_features(
             ):
                 vehicle_info.route = silver_line_lookup(vehicle_info.route)
             feature = Feature(
-                geometry=point,
+                geometry=vehicle_display_point(
+                    point,
+                    long,
+                    lat,
+                    vehicle_info.current_status,
+                    vehicle_info.id,
+                ),
                 id=vehicle_info.id,
                 properties={
                     "route": vehicle_info.route,
