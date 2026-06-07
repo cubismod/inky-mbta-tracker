@@ -270,6 +270,11 @@ class VehicleStreamManager:
                             delta_response = calculate_diff(
                                 state.last_raw_data, raw_data
                             )
+                            if (
+                                not delta_response.updated
+                                and not delta_response.removed
+                            ):
+                                continue
                             delta_event = (
                                 f"data: {delta_response.model_dump_json()}\n\n"
                             )

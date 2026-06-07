@@ -17,6 +17,7 @@ YEAR = 31536000
 MINUTE = 60
 INSTANCE_ID = uuid.uuid4()
 ALERTS_SET_KEY = "alerts:stats"
+LIVE_NEGATIVE_CACHE_KEY = "live_negative_cache"
 
 # API Cache TTL configurations
 VEHICLES_CACHE_TTL = 3  # seconds

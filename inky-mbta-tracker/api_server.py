@@ -43,7 +43,7 @@ def create_app() -> FastAPI:
         app.state.session = aiohttp.ClientSession(base_url=MBTA_V3_ENDPOINT)
         async with create_task_group() as tg:
             app.state.vehicle_stream_manager = VehicleStreamManager(
-                app.state.session, tg
+                app.state.session, tg, interval_seconds=2
             )
             try:
                 yield

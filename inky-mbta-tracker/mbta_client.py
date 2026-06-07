@@ -1,3 +1,4 @@
+import hashlib
 import logging
 import os
 from asyncio import CancelledError
@@ -9,11 +10,20 @@ from typing import Optional
 from zoneinfo import ZoneInfo
 
 from aiohttp import ClientSession
-from anyio import sleep
+from anyio import create_task_group, sleep
 from anyio.abc import TaskGroup
 from anyio.streams.memory import MemoryObjectSendStream
 from config import Config
-from consts import ALERTS_SET_KEY, DAY, HOUR, MINUTE, TWO_MONTHS, WEEK, YEAR
+from consts import (
+    ALERTS_SET_KEY,
+    DAY,
+    HOUR,
+    LIVE_NEGATIVE_CACHE_KEY,
+    MINUTE,
+    TWO_MONTHS,
+    WEEK,
+    YEAR,
+)
 from exceptions import RateLimitExceeded, WatcherRefreshRequested
 from mbta_client_extended import silver_line_lookup
 from mbta_rate_limiter import rate_limited_get
@@ -340,6 +350,144 @@ class MBTAApi:
                 return f"[NR] ${hs}"
         return hs
 
+    async def _save_live_negative_cache(self, data: str, event_type: str):
+        ex_time = 1
+        if self.watcher_type == TaskType.ALERTS:
+            ex_time = HOUR
+        h = f"{event_type}:{hashlib.sha512(data.encode('utf-8')).hexdigest()}"
+        await self.r_client.hsetex(LIVE_NEGATIVE_CACHE_KEY, h, "", ex=ex_time)  # type: ignore[misc]
+
+    async def _skip_live_negative_cache(self, data: str, event_type: str) -> bool:
+        h = f"{event_type}:{hashlib.sha512(data.encode('utf-8')).hexdigest()}"
+        return await self.r_client.hexists(LIVE_NEGATIVE_CACHE_KEY, h)  # type: ignore[misc]
+
+    def _parses_prediction_events(self) -> bool:
+        return self.watcher_type in (
+            TaskType.SCHEDULE_PREDICTIONS,
+            TaskType.SCHEDULES,
+        )
+
+    def _parse_live_reset_items(
+        self, data: str
+    ) -> list[PredictionResource] | list[VehicleResource]:
+        if self._parses_prediction_events():
+            return TypeAdapter(list[PredictionResource]).validate_json(
+                data, strict=False
+            )
+        return TypeAdapter(list[VehicleResource]).validate_json(data, strict=False)
+
+    def _parse_live_item(self, data: str) -> PredictionResource | VehicleResource:
+        if self._parses_prediction_events():
+            return PredictionResource.model_validate_json(data, strict=False)
+        return VehicleResource.model_validate_json(data, strict=False)
+
+    async def _queue_item_event(
+        self,
+        item: PredictionResource | ScheduleResource | VehicleResource,
+        event_type: str,
+        send_stream: MemoryObjectSendStream[ScheduleEvent | VehicleRedisSchema],
+        session: ClientSession,
+        transit_time_min: Optional[int] = None,
+    ) -> None:
+        async with create_task_group() as item_tg:
+            await self.queue_event(
+                item,
+                event_type,
+                send_stream,
+                session,
+                item_tg,
+                transit_time_min,
+            )
+
+    async def _send_remove_event(
+        self,
+        type_and_id: TypeAndID,
+        send_stream: MemoryObjectSendStream[ScheduleEvent | VehicleRedisSchema],
+    ) -> None:
+        if self._parses_prediction_events():
+            await send_stream.send(dummy_schedule_event(type_and_id.id))
+        elif self.route:
+            await send_stream.send(
+                VehicleRedisSchema(
+                    longitude=0,
+                    latitude=0,
+                    direction_id=0,
+                    current_status="",
+                    id=type_and_id.id,
+                    action="remove",
+                    route=self.route,
+                    update_time=datetime.now().astimezone(UTC),
+                    bearing=0,
+                )
+            )
+
+    async def _save_alert_memberships(self, alert: AlertResource) -> None:
+        if self.route:
+            await self.r_client.sadd(f"alerts:route:{self.route}", alert.id)  # type: ignore[misc]
+        for ent in alert.attributes.informed_entity:
+            if ent.route:
+                await self.r_client.sadd(f"alerts:route:{ent.route}", alert.id)  # type: ignore[misc]
+            if ent.trip:
+                await self.r_client.sadd(f"alerts:trip:{ent.trip}", alert.id)  # type: ignore[misc]
+                await self.r_client.expire(f"alerts:trip:{ent.trip}", WEEK)
+
+    async def _process_alert_item(
+        self,
+        alert: AlertResource,
+        event_type: str,
+        config: Config,
+    ) -> None:
+        async with create_task_group() as item_tg:
+            await write_cache(
+                self.r_client,
+                f"alert:{alert.id}",
+                alert.model_dump_json(),
+                2 * HOUR,
+            )
+            if event_type in ("reset", "add"):
+                alerts_counter.labels(
+                    route=self.route,
+                    severity=alert.attributes.severity,
+                    effect=alert.attributes.effect,
+                ).inc()
+            if event_type in ("add") and self.route:
+                await self.r_client.hincrby(ALERTS_SET_KEY, self.route)  # type: ignore[misc]
+            if (
+                event_type == "reset"
+                and self.route
+                and datetime.now().astimezone(UTC)
+                - datetime.fromisoformat(alert.attributes.updated_at).astimezone(UTC)
+                < timedelta(minutes=4)
+            ):
+                await self.r_client.hincrby(ALERTS_SET_KEY, self.route)  # type: ignore[misc]
+            await process_alert_event(alert, self.r_client, config, item_tg)
+            await self._save_alert_memberships(alert)
+            logger.debug(f"Alert: {self.route} | {alert.attributes.header}")
+
+    async def _process_alert_remove(self, type_and_id: TypeAndID) -> None:
+        try:
+            cached = await get_cache(self.r_client, f"alert:{type_and_id.id}")
+            if cached:
+                try:
+                    alert = AlertResource.model_validate_json(cached, strict=False)
+                    await delete_webhook(type_and_id.id, self.r_client)
+                    for ent in alert.attributes.informed_entity:
+                        if ent.route:
+                            await self.r_client.srem(
+                                f"alerts:route:{ent.route}",
+                                type_and_id.id,
+                            )  # type: ignore[misc]
+                        if ent.trip:
+                            await self.r_client.srem(
+                                f"alerts:trip:{ent.trip}",
+                                type_and_id.id,
+                            )  # type: ignore[misc]
+                            await self.r_client.expire(f"alerts:trip:{ent.trip}", WEEK)
+                except ValidationError:
+                    pass
+        finally:
+            await self.r_client.delete(f"alert:{type_and_id.id}")  # type: ignore[misc]
+
     async def parse_live_api_response(
         self,
         data: str,
@@ -351,139 +499,58 @@ class MBTAApi:
         config: Config,
     ) -> None:
         # https://www.mbta.com/developers/v3-api/streaming
-        try:
-            # Handle Alerts stream separately
-            if self.watcher_type == TaskType.ALERTS:
-                if event_type == "reset":
-                    ta = TypeAdapter(list[AlertResource])
-                    alerts = ta.validate_json(data, strict=False)
-                    # If filtering by a single route, reset that set first
-                    if self.route:
-                        await self.r_client.delete(f"alerts:route:{self.route}")
-                    for a in alerts:
-                        await process_alert_event(a, self.r_client, config, tg)
-                        await write_cache(
-                            self.r_client,
-                            f"alert:{a.id}",
-                            a.model_dump_json(),
-                            2 * HOUR,
+        if data != "[]":
+            try:
+                if await self._skip_live_negative_cache(data, event_type):
+                    logger.debug(f"Skipping live negative cache for data: {data}")
+                    return
+                # Handle Alerts stream separately
+                if self.watcher_type == TaskType.ALERTS:
+                    if event_type == "reset":
+                        alerts = TypeAdapter(list[AlertResource]).validate_json(
+                            data, strict=False
                         )
-                        alerts_counter.labels(
-                            route=self.route,
-                            severity=a.attributes.severity,
-                            effect=a.attributes.effect,
-                        ).inc()
-                        if self.route and datetime.now().astimezone(
-                            UTC
-                        ) - datetime.fromisoformat(a.attributes.updated_at).astimezone(
-                            UTC
-                        ) < timedelta(minutes=4):
-                            await self.r_client.hincrby(ALERTS_SET_KEY, self.route)  # type: ignore[misc]
-                        logger.info(f"Alert: {self.route} | {a.attributes.header}")
-                        # Ensure membership in sets
+                        # If filtering by a single route, reset that set first
                         if self.route:
-                            await self.r_client.sadd(f"alerts:route:{self.route}", a.id)  # type: ignore
-                        # Also map to any routes in informed_entity
-                        if a.attributes and a.attributes.informed_entity:
-                            for ent in a.attributes.informed_entity:
-                                if ent.route:
-                                    await self.r_client.sadd(
-                                        f"alerts:route:{ent.route}", a.id
-                                    )  # type: ignore[misc]
-                                # Map to trip as well if present
-                                if ent.trip:
-                                    await self.r_client.sadd(
-                                        f"alerts:trip:{ent.trip}", a.id
-                                    )  # type: ignore[misc]
-                                    await self.r_client.expire(
-                                        f"alerts:trip:{ent.trip}", WEEK
-                                    )
-                    return
-                elif event_type in ("add", "update"):
-                    a = AlertResource.model_validate_json(data, strict=False)
-                    await write_cache(
-                        self.r_client, f"alert:{a.id}", a.model_dump_json(), 2 * HOUR
-                    )
-                    if event_type == "add":
-                        alerts_counter.labels(
-                            route=self.route,
-                            severity=a.attributes.severity,
-                            effect=a.attributes.effect,
-                        ).inc()
-                    if self.route:
-                        await self.r_client.sadd(f"alerts:route:{self.route}", a.id)  # type: ignore[misc]
-                        await self.r_client.hincrby(ALERTS_SET_KEY, self.route)  # type: ignore[misc]
-                    await process_alert_event(a, self.r_client, config, tg)
-                    if a.attributes and a.attributes.informed_entity:
-                        for ent in a.attributes.informed_entity:
-                            if ent.route:
-                                await self.r_client.sadd(
-                                    f"alerts:route:{ent.route}", a.id
-                                )  # type: ignore[misc]
-                            if ent.trip:
-                                await self.r_client.sadd(
-                                    f"alerts:trip:{ent.trip}", a.id
-                                )  # type: ignore[misc]
-                                await self.r_client.expire(
-                                    f"alerts:trip:{ent.trip}", WEEK
-                                )
-                    return
-                elif event_type == "remove":
-                    type_and_id = TypeAndID.model_validate_json(data, strict=False)
-                    # Remove from sets based on stored alert data, then delete key
-                    try:
-                        cached = await get_cache(
-                            self.r_client, f"alert:{type_and_id.id}"
+                            await self.r_client.delete(f"alerts:route:{self.route}")
+                        for alert in alerts:
+                            tg.start_soon(
+                                self._process_alert_item,
+                                alert,
+                                event_type,
+                                config,
+                            )
+                        return
+                    elif event_type in ("add", "update"):
+                        alert = AlertResource.model_validate_json(data, strict=False)
+                        tg.start_soon(
+                            self._process_alert_item,
+                            alert,
+                            event_type,
+                            config,
                         )
-                        if cached:
-                            try:
-                                a = AlertResource.model_validate_json(
-                                    cached, strict=False
-                                )
-                                await delete_webhook(type_and_id.id, self.r_client)
-                                if a.attributes and a.attributes.informed_entity:
-                                    for ent in a.attributes.informed_entity:
-                                        if ent.route:
-                                            await self.r_client.srem(
-                                                f"alerts:route:{ent.route}",
-                                                type_and_id.id,
-                                            )  # type: ignore[misc]
-                                        if ent.trip:
-                                            await self.r_client.srem(
-                                                f"alerts:trip:{ent.trip}",
-                                                type_and_id.id,
-                                            )  # type: ignore[misc]
-                                            await self.r_client.expire(
-                                                f"alerts:trip:{ent.trip}", WEEK
-                                            )
-                            except ValidationError:
-                                pass
-                    finally:
-                        await self.r_client.delete(f"alert:{type_and_id.id}")  # type: ignore[misc]
+                        return
+                    elif event_type == "remove":
+                        type_and_id = TypeAndID.model_validate_json(data, strict=False)
+                        # Remove from sets based on stored alert data, then delete key
+                        tg.start_soon(self._process_alert_remove, type_and_id)
+                        return
+                    # For unknown event types, ignore
                     return
-                # For unknown event types, ignore
-                return
-            match event_type:
-                case "reset":
-                    if (
-                        self.watcher_type == TaskType.SCHEDULE_PREDICTIONS
-                        or self.watcher_type == TaskType.SCHEDULES
-                    ):
-                        ta = TypeAdapter(list[PredictionResource])
-                        prediction_resource = ta.validate_json(data, strict=False)
+                match event_type:
+                    case "reset":
+                        items = self._parse_live_reset_items(data)
                         if send_stream is not None:
-                            for item in prediction_resource:
+                            for item in items:
                                 tg.start_soon(
-                                    self.queue_event,
+                                    self._queue_item_event,
                                     item,
-                                    "reset",
+                                    event_type,
                                     send_stream,
                                     session,
-                                    tg,
                                     transit_time_min,
                                 )
-                        if len(prediction_resource) == 0:
-                            if send_stream is not None:
+                            if self._parses_prediction_events() and len(items) == 0:
                                 tg.start_soon(
                                     self.save_schedule,
                                     transit_time_min,
@@ -492,109 +559,31 @@ class MBTAApi:
                                     tg,
                                     timedelta(hours=4),
                                 )
-                    else:
-                        if send_stream is not None:
-                            ta = TypeAdapter(list[VehicleResource])
-                            vehicles = ta.validate_json(data, strict=False)
-                            for v in vehicles:
-                                tg.start_soon(
-                                    self.queue_event,
-                                    v,
-                                    event_type,
-                                    send_stream,
-                                    session,
-                                    tg,
-                                )
 
-                case "add":
-                    if (
-                        self.watcher_type == TaskType.SCHEDULE_PREDICTIONS
-                        or self.watcher_type == TaskType.SCHEDULES
-                    ):
+                    case "add" | "update":
+                        item = self._parse_live_item(data)
                         if send_stream is not None:
                             tg.start_soon(
-                                self.queue_event,
-                                PredictionResource.model_validate_json(
-                                    data, strict=False
-                                ),
-                                "add",
-                                send_stream,
-                                session,
-                                tg,
-                                transit_time_min,
-                            )
-                    else:
-                        if send_stream is not None:
-                            vehicle = VehicleResource.model_validate_json(
-                                data, strict=False
-                            )
-                            tg.start_soon(
-                                self.queue_event,
-                                vehicle,
+                                self._queue_item_event,
+                                item,
                                 event_type,
                                 send_stream,
                                 session,
-                                tg,
-                            )
-                case "update":
-                    if (
-                        self.watcher_type == TaskType.SCHEDULE_PREDICTIONS
-                        or self.watcher_type == TaskType.SCHEDULES
-                    ):
-                        if send_stream is not None:
-                            tg.start_soon(
-                                self.queue_event,
-                                PredictionResource.model_validate_json(
-                                    data, strict=False
-                                ),
-                                "update",
-                                send_stream,
-                                session,
-                                tg,
                                 transit_time_min,
                             )
-                    else:
+                    case "remove":
+                        type_and_id = TypeAndID.model_validate_json(data, strict=False)
+                        # directly interact with the queue here to use a dummy object
                         if send_stream is not None:
-                            vehicle = VehicleResource.model_validate_json(
-                                data, strict=False
-                            )
                             tg.start_soon(
-                                self.queue_event,
-                                vehicle,
-                                event_type,
-                                send_stream,
-                                session,
-                                tg,
-                            )
-                case "remove":
-                    type_and_id = TypeAndID.model_validate_json(data, strict=False)
-                    # directly interact with the queue here to use a dummy object
-                    if (
-                        self.watcher_type == TaskType.SCHEDULE_PREDICTIONS
-                        or self.watcher_type == TaskType.SCHEDULES
-                    ):
-                        if send_stream is not None:
-                            await send_stream.send(dummy_schedule_event(type_and_id.id))
-                    elif self.route:
-                        if send_stream is not None:
-                            await send_stream.send(
-                                VehicleRedisSchema(
-                                    longitude=0,
-                                    latitude=0,
-                                    direction_id=0,
-                                    current_status="",
-                                    id=type_and_id.id,
-                                    action="remove",
-                                    route=self.route,
-                                    update_time=datetime.now().astimezone(UTC),
-                                    bearing=0,
-                                )
+                                self._send_remove_event, type_and_id, send_stream
                             )
 
-        except ValidationError as err:
-            logger.error("Unable to parse schedule", exc_info=err)
-        except KeyError as err:
-            logger.error("Could not find prediction", exc_info=err)
+                tg.start_soon(self._save_live_negative_cache, data, event_type)
+            except ValidationError as err:
+                logger.error("Unable to parse schedule", exc_info=err)
+            except KeyError as err:
+                logger.error("Could not find prediction", exc_info=err)
 
     async def get_alerting_state(self, trip_id: str, session: ClientSession) -> bool:
         alerts = await self.get_alerts(trip_id=trip_id, session=session)
@@ -1026,12 +1015,11 @@ class MBTAApi:
                 for item in schedules.data:
                     tg.start_soon(self.save_route, item, session)
                     tg.start_soon(
-                        self.queue_event,
+                        self._queue_item_event,
                         item,
                         "reset",
                         send_stream,
                         session,
-                        tg,
                         transit_time_min,
                     )
             except ValidationError as err:
