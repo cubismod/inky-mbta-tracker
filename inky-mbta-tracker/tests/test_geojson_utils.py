@@ -203,7 +203,9 @@ def test_vehicle_display_point_keeps_vehicle_point_when_not_stopped() -> None:
     vehicle_point = Point((-71.0, 42.0))
 
     assert (
-        vehicle_display_point(vehicle_point, -71.1, 42.1, "IN_TRANSIT_TO", "vehicle-123")
+        vehicle_display_point(
+            vehicle_point, -71.1, 42.1, "IN_TRANSIT_TO", "vehicle-123"
+        )
         == vehicle_point
     )
 
