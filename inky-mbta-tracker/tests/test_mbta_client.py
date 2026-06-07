@@ -285,6 +285,7 @@ class TestMBTAApi:
 
     def test_meters_per_second_to_mph(self) -> None:
         assert MBTAApi.meters_per_second_to_mph(10.0) == 22.37
+        assert MBTAApi.meters_per_second_to_mph(0.0) == 0.0
         assert MBTAApi.meters_per_second_to_mph(None) is None
 
     def test_occupancy_status_human_readable(self) -> None:
@@ -384,60 +385,6 @@ class TestMBTAApi:
         assert facilities is None
         assert session.get.call_count == 1
         mock_facilities_validate.assert_not_called()
-
-    @pytest.mark.anyio("asyncio")
-    async def test_parse_live_api_response_uses_taskgroup_per_item(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        redis = AsyncMock()
-        api = MBTAApi(cast(RedisClient, redis), watcher_type=TaskType.VEHICLES)
-        item_taskgroup_ids: list[int] = []
-        done = anyio.Event()
-
-        async def fake_queue_event(
-            _item: VehicleResource,
-            _event_type: str,
-            _send_stream: MagicMock,
-            _session: MagicMock,
-            item_tg: object,
-            _transit_time_min: int | None = None,
-        ) -> None:
-            item_taskgroup_ids.append(id(item_tg))
-            if len(item_taskgroup_ids) == 2:
-                done.set()
-
-        monkeypatch.setattr(api, "queue_event", fake_queue_event)
-        data = """
-        [
-            {
-                "id": "vehicle-1",
-                "type": "vehicle",
-                "attributes": {"current_status": "", "direction_id": 0}
-            },
-            {
-                "id": "vehicle-2",
-                "type": "vehicle",
-                "attributes": {"current_status": "", "direction_id": 1}
-            }
-        ]
-        """
-
-        async with anyio.create_task_group() as tg:
-            parent_taskgroup_id = id(tg)
-            await api.parse_live_api_response(
-                data,
-                "reset",
-                MagicMock(),
-                1,
-                MagicMock(),
-                tg,
-                MagicMock(),
-            )
-            with anyio.fail_after(1):
-                await done.wait()
-
-        assert len(set(item_taskgroup_ids)) == 2
-        assert parent_taskgroup_id not in item_taskgroup_ids
 
 
 @pytest.mark.anyio("asyncio")

@@ -9,7 +9,11 @@ from schedule_tracker import (
     dummy_schedule_event,
     process_queue,
 )
-from shared_types.shared_types import ScheduleEvent, VehicleRedisSchema
+from shared_types.shared_types import (
+    ScheduleEvent,
+    VehicleRedisSchema,
+    VehicleSpeedHistory,
+)
 
 
 class TestDummyScheduleEvent:
@@ -113,12 +117,116 @@ class TestTracker:
         assert Tracker.is_speed_reasonable(40, "Blue") is True
         assert Tracker.is_speed_reasonable(55, "Blue") is False
         assert Tracker.is_speed_reasonable(60, "742") is True  # Silver Line
+        assert Tracker.is_speed_reasonable(70, "742") is False
         assert Tracker.is_speed_reasonable(80, "CR-Franklin") is True  # Commuter Rail
         assert Tracker.is_speed_reasonable(90, "CR-Franklin") is False
         assert Tracker.is_speed_reasonable(35, "Green-B") is True
         assert Tracker.is_speed_reasonable(45, "Green-B") is False
         assert Tracker.is_speed_reasonable(35, "Mattapan") is True
         assert Tracker.is_speed_reasonable(45, "Mattapan") is False
+
+    @pytest.mark.anyio("asyncio")
+    async def test_calculate_vehicle_speed_updates_history_for_reported_speed(
+        self,
+    ) -> None:
+        tracker = Tracker()
+        tracker.redis = AsyncMock()
+
+        event = VehicleRedisSchema(
+            longitude=-71.0589,
+            latitude=42.3601,
+            direction_id=0,
+            current_status="IN_TRANSIT_TO",
+            id="vehicle-123",
+            action="add",
+            route="Red",
+            update_time=datetime.now(UTC),
+            speed=25.123,
+        )
+
+        with patch.object(tracker, "write_vehicle_speed_history") as write_history:
+            speed, approximate = await tracker.calculate_vehicle_speed(event)
+
+        assert speed == 25
+        assert approximate is False
+        write_history.assert_awaited_once_with(
+            "vehicle:speed:history:vehicle-123", event, 25.123
+        )
+
+    @pytest.mark.anyio("asyncio")
+    async def test_calculate_vehicle_speed_uses_total_seconds(self) -> None:
+        tracker = Tracker()
+        tracker.redis = AsyncMock()
+        previous_time = datetime(2026, 1, 1, tzinfo=UTC)
+        current_time = previous_time + timedelta(days=1, seconds=10)
+        previous_event = VehicleSpeedHistory(
+            long=-71.0589,
+            lat=42.3601,
+            speed=0,
+            update_time=previous_time,
+        )
+        event = VehicleRedisSchema(
+            longitude=-71.0579,
+            latitude=42.3601,
+            direction_id=0,
+            current_status="IN_TRANSIT_TO",
+            id="vehicle-123",
+            action="update",
+            route="Red",
+            update_time=current_time,
+            speed=None,
+        )
+
+        with (
+            patch(
+                "schedule_tracker.get_cache",
+                return_value=previous_event.model_dump_json(),
+            ),
+            patch.object(tracker, "write_vehicle_speed_history") as write_history,
+        ):
+            speed, approximate = await tracker.calculate_vehicle_speed(event)
+
+        assert speed == 0.0
+        assert approximate is True
+        assert write_history.await_args is not None
+        written_speed = write_history.await_args.args[2]
+        assert written_speed < 0.01
+
+    @pytest.mark.anyio("asyncio")
+    async def test_calculate_vehicle_speed_skips_out_of_order_events(self) -> None:
+        tracker = Tracker()
+        tracker.redis = AsyncMock()
+        current_time = datetime.now(UTC)
+        previous_event = VehicleSpeedHistory(
+            long=-71.0589,
+            lat=42.3601,
+            speed=20,
+            update_time=current_time + timedelta(seconds=10),
+        )
+        event = VehicleRedisSchema(
+            longitude=-71.0579,
+            latitude=42.3601,
+            direction_id=0,
+            current_status="IN_TRANSIT_TO",
+            id="vehicle-123",
+            action="update",
+            route="Red",
+            update_time=current_time,
+            speed=None,
+        )
+
+        with (
+            patch(
+                "schedule_tracker.get_cache",
+                return_value=previous_event.model_dump_json(),
+            ),
+            patch.object(tracker, "write_vehicle_speed_history") as write_history,
+        ):
+            speed, approximate = await tracker.calculate_vehicle_speed(event)
+
+        assert speed is None
+        assert approximate is False
+        write_history.assert_not_awaited()
 
     def test_get_route_icon(self) -> None:
         light_rail_event = ScheduleEvent(
@@ -270,90 +378,6 @@ class TestTracker:
 
         result = Tracker.prediction_display(event)
         assert result == " DEP"
-
-    # @pytest.mark.anyio("asyncio")
-    # async def test_calculate_vehicle_speed_no_previous_data(self) -> None:
-    #     tracker = Tracker()
-    #     mock_redis = AsyncMock()
-    #     tracker.redis = mock_redis
-    #     mock_redis.get.return_value = None
-
-    #     event = VehicleRedisSchema(
-    #         longitude=-71.0589,
-    #         latitude=42.3601,
-    #         direction_id=0,
-    #         current_status="IN_TRANSIT_TO",
-    #         id="vehicle-123",
-    #         action="add",
-    #         route="Red",
-    #         update_time=datetime.now(UTC),
-    #         speed=25.0,
-    #     )
-
-    #     speed, approximate = await tracker.calculate_vehicle_speed(event)
-    #     assert speed == 25.0
-    #     assert approximate is False
-
-    # @pytest.mark.anyio("asyncio")
-    # async def test_calculate_vehicle_speed_with_previous_data(self) -> None:
-    #     tracker = Tracker()
-    #     mock_redis = AsyncMock()
-    #     tracker.redis = mock_redis
-
-    #     previous_time = datetime.now(UTC) - timedelta(seconds=30)
-    #     previous_event = VehicleRedisSchema(
-    #         longitude=-71.0599,
-    #         latitude=42.3611,
-    #         direction_id=0,
-    #         current_status="IN_TRANSIT_TO",
-    #         id="vehicle-123",
-    #         action="add",
-    #         route="Red",
-    #         update_time=previous_time,
-    #         speed=20.0,
-    #         approximate_speed=False,
-    #     )
-
-    #     mock_redis.get.return_value = previous_event.model_dump_json().encode("utf-8")
-
-    #     current_time = datetime.now(UTC)
-    #     event = VehicleRedisSchema(
-    #         longitude=-71.0589,
-    #         latitude=42.3601,
-    #         direction_id=0,
-    #         current_status="IN_TRANSIT_TO",
-    #         id="vehicle-123",
-    #         action="update",
-    #         route="Red",
-    #         update_time=current_time,
-    #         speed=None,
-    #     )
-
-    #     speed, approximate = await tracker.calculate_vehicle_speed(event)
-    #     assert speed is not None
-    #     assert approximate is True
-
-    # @pytest.mark.anyio("asyncio")
-    # async def test_calculate_vehicle_speed_stopped(self) -> None:
-    #     tracker = Tracker()
-    #     mock_redis = AsyncMock()
-    #     tracker.redis = mock_redis
-
-    #     event = VehicleRedisSchema(
-    #         longitude=-71.0589,
-    #         latitude=42.3601,
-    #         direction_id=0,
-    #         current_status="STOPPED_AT",
-    #         id="vehicle-123",
-    #         action="add",
-    #         route="Red",
-    #         update_time=datetime.now(UTC),
-    #         speed=None,
-    #     )
-
-    #     speed, approximate = await tracker.calculate_vehicle_speed(event)
-    #     assert speed is None
-    #     assert approximate is False
 
     @pytest.mark.anyio("asyncio")
     async def test_cleanup(self) -> None:

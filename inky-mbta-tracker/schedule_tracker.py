@@ -65,6 +65,9 @@ from tenacity import (
 )
 
 logger = logging.getLogger("schedule_tracker")
+SPEED_HISTORY_TTL_SECONDS = 300
+MIN_APPROXIMATE_SPEED_SAMPLE_SECONDS = 5
+METERS_PER_SECOND_TO_MPH = 2.2369362921
 
 
 def dummy_schedule_event(event_id: str) -> ScheduleEvent:
@@ -135,11 +138,26 @@ class Tracker:
             return True
         if line == "Blue" and speed <= 50:
             return True
-        if line.startswith("7") or line.isnumeric() and speed <= 66:
+        if (line.startswith("7") or line.isnumeric()) and speed <= 66:
             return True
         if (line.startswith("Green") or line == "Mattapan") and speed <= 40:
             return True
         return False
+
+    async def write_vehicle_speed_history(
+        self, cache_id: str, event: VehicleRedisSchema, speed: float
+    ) -> None:
+        await write_cache(
+            self.redis,
+            cache_id,
+            VehicleSpeedHistory(
+                long=event.longitude,
+                lat=event.latitude,
+                speed=speed,
+                update_time=event.update_time,
+            ).model_dump_json(),
+            exp_sec=SPEED_HISTORY_TTL_SECONDS,
+        )
 
     # calculate an approximate vehicle speed using the previous position and timestamp
     # returns (the speed, if this was an approximate calculation)
@@ -148,67 +166,76 @@ class Tracker:
     ) -> tuple[Optional[float], bool]:
         try:
             cache_id = f"vehicle:speed:history:{event.id}"
-            if event.current_status != "STOPPED_AT" and not event.speed:
-                last_event = await get_cache(self.redis, cache_id)
-                redis_commands.labels("get").inc()
 
-                if last_event:
-                    last_event_validated = VehicleSpeedHistory.model_validate_json(
-                        last_event, strict=False
+            if event.speed is not None:
+                await self.write_vehicle_speed_history(cache_id, event, event.speed)
+                return round(event.speed), False
+
+            if event.current_status == "STOPPED_AT":
+                await self.write_vehicle_speed_history(cache_id, event, 0)
+                return None, False
+
+            last_event = await get_cache(self.redis, cache_id)
+            redis_commands.labels("get").inc()
+
+            if not last_event:
+                await self.write_vehicle_speed_history(cache_id, event, 0)
+                return None, False
+
+            last_event_validated = VehicleSpeedHistory.model_validate_json(
+                last_event, strict=False
+            )
+
+            duration_seconds = (
+                event.update_time - last_event_validated.update_time
+            ).total_seconds()
+            if duration_seconds <= 0:
+                logger.debug(
+                    f"Skipping speed calculation for {event.route} vehicle {event.id}: "
+                    f"non-positive duration {duration_seconds} seconds"
+                )
+                return None, False
+
+            if duration_seconds < MIN_APPROXIMATE_SPEED_SAMPLE_SECONDS:
+                if last_event_validated.speed > 0:
+                    return round(last_event_validated.speed), True
+                return None, False
+
+            start = Feature(
+                geometry=Point(
+                    (
+                        last_event_validated.long,
+                        last_event_validated.lat,
                     )
+                )
+            )
+            end = Feature(geometry=Point((event.longitude, event.latitude)))
 
-                    start = Feature(
-                        geometry=Point(
-                            (
-                                last_event_validated.long,
-                                last_event_validated.lat,
-                            )
-                        )
-                    )
-                    end = Feature(geometry=Point((event.longitude, event.latitude)))
+            distance_meters = distance(start, end, "m")
+            if distance_meters == 0:
+                await self.write_vehicle_speed_history(cache_id, event, 0)
+                return 0, True
 
-                    distance_meters = distance(start, end, "m")
-                    duration = event.update_time - last_event_validated.update_time
+            meters_per_second = distance_meters / duration_seconds
+            speed = meters_per_second * METERS_PER_SECOND_TO_MPH
+            if (
+                last_event_validated.speed != 0
+                and duration_seconds < 30
+                and self.is_speed_reasonable(last_event_validated.speed, event.route)
+            ):
+                speed = fmean([speed, last_event_validated.speed])
 
-                    if duration.seconds != 0 and distance_meters != 0:
-                        meters_per_second = distance_meters / duration.seconds
-                        speed = meters_per_second * 2.2369362921
-                        if last_event_validated.speed != 0 and duration.seconds < 30:
-                            speed = fmean([speed, last_event_validated.speed])
+            if not self.is_speed_reasonable(speed, event.route):
+                logger.debug(
+                    f"Rejecting speed calculation for {event.route} vehicle {event.id}: speed {speed} mph is unreasonable"
+                )
+                # throw out insane predictions
+                if last_event_validated.speed > 0:
+                    return (round(last_event_validated.speed), True)
+                return None, False
 
-                        if not self.is_speed_reasonable(speed, event.route):
-                            logger.debug(
-                                f"Rejecting speed calculation for {event.route} vehicle {event.id}: speed {speed} mph is unreasonable"
-                            )
-                            # throw out insane predictions
-                            return (round(last_event_validated.speed, 2), True)
-                        else:
-                            await write_cache(
-                                self.redis,
-                                cache_id,
-                                VehicleSpeedHistory(
-                                    long=event.longitude,
-                                    lat=event.latitude,
-                                    speed=speed,
-                                    update_time=event.update_time,
-                                ).model_dump_json(),
-                                exp_sec=300,
-                            )
-                            return round(speed, 2), True
-                else:
-                    await write_cache(
-                        self.redis,
-                        cache_id,
-                        VehicleSpeedHistory(
-                            long=event.longitude,
-                            lat=event.latitude,
-                            speed=0,
-                            update_time=event.update_time,
-                        ).model_dump_json(),
-                        exp_sec=300,
-                    )
-            if event.speed:
-                return event.speed, False
+            await self.write_vehicle_speed_history(cache_id, event, speed)
+            return round(speed), True
         except ResponseError as err:
             logger.error("unable to get redis event", exc_info=err)
         except ValidationError as err:

@@ -616,7 +616,7 @@ class MBTAApi:
 
     @staticmethod
     def meters_per_second_to_mph(speed: Optional[float]) -> Optional[float]:
-        if speed:
+        if speed is not None:
             return round(speed * 2.23693629, 2)
         return None
 

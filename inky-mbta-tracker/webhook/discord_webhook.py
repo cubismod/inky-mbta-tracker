@@ -459,7 +459,8 @@ async def send_pending_webhook(
             return
         try:
             webhook = DiscordWebhook.model_validate_json(pending.webhook_json)
-            webhook.content = _human_readable_webhook_payload(webhook.content)
+            if webhook.content:
+                webhook.content = _human_readable_webhook_payload(webhook.content)
         except ValidationError as err:
             logger.error(
                 f"Failed to parse pending webhook payload for {webhook_id}",
