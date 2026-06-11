@@ -591,6 +591,7 @@ async def get_vehicle_features(
                     "update_time": vehicle_info.update_time.strftime(
                         "%Y-%m-%dT%H:%M:%S.000Z"
                     ),
+                    "carriages": vehicle_info.carriages,
                     "platform_prediction": platform_prediction,
                     "headsign": vehicle_info.headsign,
                 },
