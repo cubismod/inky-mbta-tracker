@@ -49,7 +49,6 @@ SCHEMAS = [
             class_hashes.FACILITYPROPERTY_HASH,
             class_hashes.FACILITYATTRIBUTES_HASH,
             class_hashes.FACILITYRESOURCE_HASH,
-            class_hashes.FACILITY_HASH,
             class_hashes.FACILITIES_HASH,
             class_hashes.LIGHTSTOP_HASH,
         },
@@ -70,7 +69,6 @@ SCHEMAS = [
             class_hashes.TRIPS_HASH,
             class_hashes.TRIPRESOURCE_HASH,
             class_hashes.TRIPATTRIBUTES_HASH,
-            class_hashes.TRIPGENERIC_HASH,
         },
     ),
 ]
