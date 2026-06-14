@@ -183,3 +183,5 @@ backups/
 
 .zed/debug.json
 config2.json
+
+.worktrees/
