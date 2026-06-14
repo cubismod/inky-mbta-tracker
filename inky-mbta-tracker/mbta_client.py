@@ -351,7 +351,7 @@ class MBTAApi:
         return hs
 
     async def _save_live_negative_cache(self, data: str, event_type: str):
-        ex_time = 3
+        ex_time = 30
         if self.watcher_type == TaskType.ALERTS:
             ex_time = HOUR
         h = f"{event_type}:{hashlib.sha512(data.encode('utf-8')).hexdigest()}"
@@ -578,7 +578,6 @@ class MBTAApi:
                             tg.start_soon(
                                 self._send_remove_event, type_and_id, send_stream
                             )
-
                 tg.start_soon(self._save_live_negative_cache, data, event_type)
             except ValidationError as err:
                 logger.error("Unable to parse schedule", exc_info=err)
@@ -816,7 +815,9 @@ class MBTAApi:
                 span.set_attribute("session.closed", True)
             return None
         key = f"trip:{trip_id}:full"
+        trip_negative_cache = f"trip:{trip_id}:negative"
         cached = await get_cache(self.r_client, key)
+        cached_negative = await get_cache(self.r_client, trip_negative_cache)
         try:
             if cached:
                 if span:
@@ -824,6 +825,11 @@ class MBTAApi:
                 trip = Trips.model_validate_json(cached, strict=False)
                 add_span_attributes(span, {"trip.result": "cache_hit"})
                 return trip
+            elif cached_negative:
+                if span:
+                    add_span_attributes(span, {"cache.hit": True})
+                add_span_attributes(span, {"trip.result": "cache_hit"})
+                return None
             else:
                 if span:
                     add_span_attributes(span, {"cache.hit": False})
@@ -841,6 +847,12 @@ class MBTAApi:
                     )
                     if response.status == 429:
                         raise RateLimitExceeded()
+                    if response.status == 403:
+                        logger.warning(f"Received 403 for trip {trip_id}")
+                        await write_cache(
+                            self.r_client, trip_negative_cache, "negative", WEEK
+                        )
+                        return None
                     body = await response.text()
                     mbta_api_requests.labels("trips").inc()
 

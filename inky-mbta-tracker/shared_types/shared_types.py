@@ -1,9 +1,9 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Dict, List, Optional, Set, Tuple
 
 from geojson import Feature
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 
 
 class ScheduleEvent(BaseModel):
@@ -88,6 +88,13 @@ class VehicleSpeedHistory(BaseModel):
     lat: float
     speed: float
     update_time: datetime
+
+    @field_validator("update_time", mode="after")
+    @classmethod
+    def ensure_tz(cls, v: datetime) -> datetime:
+        if v.tzinfo is None:
+            return v.replace(tzinfo=timezone.utc)
+        return v
 
 
 class DiscordEmbedFooter(BaseModel):

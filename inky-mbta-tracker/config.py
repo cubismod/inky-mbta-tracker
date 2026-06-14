@@ -34,6 +34,8 @@ class Config(BaseModel):
     vehicle_git_email: Optional[str] = None
     # web links to status icons to use for Discord ordered in severity from 1-10
     severity_icons: Optional[list[str]] = None
+    # whether to use MBTA's GTFS feed in addition to the V3 API
+    gtfs: bool = False
 
 
 def load_config() -> Config:

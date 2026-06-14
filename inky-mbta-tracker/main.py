@@ -21,6 +21,7 @@ from mbta_client_extended import (
     watch_station,
     watch_vehicles,
 )
+from mbta_gtfs import gtfs_loop
 from opentelemetry import trace
 from otel_config import initialize_otel, is_otel_enabled, shutdown_otel
 from otel_utils import add_span_attributes, set_span_error
@@ -279,6 +280,10 @@ async def __main__() -> None:
             tg.start_soon(heartbeat_task, get_redis(redis_pool))
 
             tg.start_soon(watch_running_tasks)
+
+            if config.gtfs:
+                r_client = get_redis(redis_pool)
+                tg.start_soon(gtfs_loop, r_client, send_stream, tg, config)
 
             next_backup = get_next_backup_time()
             # cron/timed tasks

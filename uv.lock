@@ -599,6 +599,18 @@ wheels = [
 ]
 
 [[package]]
+name = "gtfs-realtime-bindings"
+version = "2.0.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "protobuf" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/6b/9b/c33d7889ff8d24cc9e9ae82a83fb9defba3f6595312f056cb62937dd1b33/gtfs_realtime_bindings-2.0.0.tar.gz", hash = "sha256:861a9dcf4c40f9a59520044d870e336b00894ad5638bcf2c4a9b998923543b42", size = 6231, upload-time = "2025-12-03T19:19:40.273Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/91/d7/a5a71c655fd10c98fadb00d4db080195ced839445f410684fa6dfb901c28/gtfs_realtime_bindings-2.0.0-py3-none-any.whl", hash = "sha256:e66e581dfccad20e3b9eaed36aae106f945c2f5e506b03a63d37070096b8de39", size = 5303, upload-time = "2025-12-03T19:19:38.845Z" },
+]
+
+[[package]]
 name = "gunicorn"
 version = "26.0.0"
 source = { registry = "https://pypi.org/simple" }
@@ -761,6 +773,7 @@ dependencies = [
     { name = "fastapi" },
     { name = "frozenlist" },
     { name = "geojson" },
+    { name = "gtfs-realtime-bindings" },
     { name = "gunicorn" },
     { name = "h11" },
     { name = "hiredis" },
@@ -834,6 +847,7 @@ requires-dist = [
     { name = "fastapi", specifier = "==0.136.3" },
     { name = "frozenlist", specifier = "==1.8.0" },
     { name = "geojson", specifier = "==3.3.0" },
+    { name = "gtfs-realtime-bindings", specifier = ">=2.0.0" },
     { name = "gunicorn", specifier = ">=23.0.0" },
     { name = "h11", specifier = "==0.16.0" },
     { name = "hiredis", specifier = ">=2.3.2" },
