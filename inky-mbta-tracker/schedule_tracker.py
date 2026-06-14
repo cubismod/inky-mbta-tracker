@@ -1,11 +1,7 @@
 import logging
 import os
-import random
-import threading
 import time
-from asyncio import QueueEmpty, Runner
 from datetime import UTC, datetime, timedelta
-from queue import Queue
 from statistics import fmean
 from typing import Optional
 from zoneinfo import ZoneInfo
@@ -52,16 +48,10 @@ from redis import ResponseError
 from redis.asyncio.client import Pipeline, Redis
 from redis_cache import get_cache, write_cache
 from redis_lock.asyncio import RedisLock
-from shared_types.schema_versioner import export_schema_key_counts
 from shared_types.shared_types import (
     ScheduleEvent,
     VehicleRedisSchema,
     VehicleSpeedHistory,
-)
-from tenacity import (
-    before_sleep_log,
-    retry,
-    wait_random_exponential,
 )
 
 logger = logging.getLogger("schedule_tracker")
@@ -96,10 +86,6 @@ class Tracker:
             password=os.environ.get("IMT_REDIS_PASSWORD") or "",
         )
         self.redis = r
-
-    @staticmethod
-    def str_timestamp(event: ScheduleEvent) -> str:
-        return str(event.time.timestamp())
 
     @staticmethod
     def calculate_time_diff(event: ScheduleEvent) -> timedelta:
@@ -387,22 +373,6 @@ class Tracker:
         except ValidationError as err:
             logger.error("unable to validate ScheduleEvent model", exc_info=err)
 
-    @staticmethod
-    def __determine_color(event: ScheduleEvent) -> str:
-        if event.route_id == "Red":
-            return "#DA291C"
-        if event.route_id.startswith("Green"):
-            return "#00843D"
-        if event.route_id == "Orange":
-            return "#ED8B00"
-        if event.route_id == "Blue":
-            return "#003DA5"
-        if event.route_id.startswith("SL"):
-            return "#7C878E"
-        if event.route_id.startswith("CR"):
-            return "#80276C"
-        return "black"
-
     async def fetch_mqtt_events(self) -> list[ScheduleEvent]:
         ret = list[ScheduleEvent]()
         try:
@@ -518,69 +488,6 @@ class Tracker:
                 await self.add(event, pipeline, "update")
             case "remove":
                 await self.rm(event, pipeline)
-
-
-async def execute(
-    tracker: Tracker, queue: Queue[ScheduleEvent] | Queue[VehicleRedisSchema]
-) -> None:
-    pipeline = tracker.redis.pipeline()
-    while queue.qsize() != 0:
-        try:
-            item = queue.get()
-            await tracker.process_queue_item(item, pipeline)
-        except QueueEmpty:
-            break
-    try:
-        await pipeline.execute()
-        redis_commands.labels("execute").inc()
-        await tracker.redis.zremrangebyscore(
-            "time", "-inf", str(datetime.now().timestamp())
-        )
-        redis_commands.labels("zremrangebyscore").inc()
-    except ResponseError as err:
-        logger.error("Unable to communicate with Redis", exc_info=err)
-
-    should_send_mqtt = random.randint(0, 10) < 3  # Reduced from 5 to 3
-
-    if should_send_mqtt:
-        async with RedisLock(
-            tracker.redis, "send_mqtt", blocking_timeout=15, expire_timeout=20
-        ):
-            cleanup_pipeline = tracker.redis.pipeline()
-            await tracker.cleanup(cleanup_pipeline)
-            try:
-                await cleanup_pipeline.execute()
-                redis_commands.labels("execute").inc()
-            except ResponseError as err:
-                logger.error("Unable to execute cleanup pipeline", exc_info=err)
-
-            await tracker.send_mqtt()
-            try:
-                await export_schema_key_counts(tracker.redis)
-            except ResponseError as e:
-                logger.error("Failed to export schema key counts", exc_info=e)
-
-
-@retry(
-    wait=wait_random_exponential(multiplier=1, min=1, max=60),
-    before_sleep=before_sleep_log(logger, logging.WARNING, exc_info=True),
-)
-def process_queue(queue: Queue[ScheduleEvent]) -> None:
-    tracker = Tracker()
-    thread_id = threading.current_thread().ident or 0
-    base_sleep = 5 + (thread_id % 10)
-
-    with Runner() as runner:
-        while True:
-            try:
-                runner.run(execute(tracker, queue))
-                sleep_time = base_sleep + random.randint(0, 25)
-                time.sleep(sleep_time)
-            except Exception as e:
-                logger.error(
-                    f"Error in process_queue thread {threading.current_thread().name}: {e}"
-                )
-                time.sleep(min(60, base_sleep * 2))
 
 
 async def process_queue_async(

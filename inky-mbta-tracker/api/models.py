@@ -1,43 +1,6 @@
 from datetime import datetime
-from enum import Enum
-from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel
-
-
-class SummaryFormat(str, Enum):
-    TEXT = "text"
-    MARKDOWN = "markdown"
-    JSON = "json"
-
-
-class MLDiagnosticResult(BaseModel):
-    """Diagnostic information for a single ML/pattern prediction comparison."""
-
-    station_id: str
-    route_id: str
-    trip_id: str
-    scheduled_time: datetime
-    prediction_method: str
-    predicted_track: Optional[str]
-    confidence_score: float
-    ml_prediction: Optional[str]
-    ml_confidence: Optional[float]
-    pattern_prediction: Optional[str]
-    pattern_confidence: Optional[float]
-    ml_result_data: Optional[Dict[str, Any]]  # Raw ML result for debugging
-    created_at: datetime
-
-
-class MLDiagnosticsResponse(BaseModel):
-    """Response containing recent ML/pattern diagnostic results."""
-
-    success: bool
-    results: List[MLDiagnosticResult] | str
-    total_count: int
-    ml_enabled: bool
-    ml_compare_enabled: bool
-
 
 # ------------------------------------------------------------------------
 # Vehicle counts models

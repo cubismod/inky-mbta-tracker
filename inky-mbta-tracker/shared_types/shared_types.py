@@ -1,9 +1,9 @@
 from datetime import datetime
 from enum import Enum
-from typing import Dict, List, Optional, Set, Tuple, TypedDict
+from typing import Dict, List, Optional, Set, Tuple
 
 from geojson import Feature
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict
 
 
 class ScheduleEvent(BaseModel):
@@ -56,17 +56,6 @@ class TaskType(Enum):
     ALERTS = 9
 
 
-class MBTAServiceType(Enum):
-    BUS_WEEKDAY = 0
-    BUS_WEEKEND = 1
-    RAPID_WEEKDAY = 2  # includes silver line
-    RAPID_LATE = 3  # late night hours on fridays & saturdays
-    RAPID_WEEKEND = 4
-    COMMUTER_WEEKDAY = 5
-    COMMUTER_WEEKEND = 6
-    NO_SERVICE = 9
-
-
 type ShapeTuple = Tuple[float, float]
 
 type LineRoute = List[List[ShapeTuple]]
@@ -83,35 +72,6 @@ class LightStop(BaseModel):
     long: Optional[float] = None
     lat: Optional[float] = None
     platform_prediction: Optional[str] = None
-
-
-class DepartureInfo(TypedDict):
-    trip_id: str
-    station_id: str
-    route_id: str
-    direction_id: int
-    departure_time: str
-
-
-class PrometheusServerSideMetric(BaseModel):
-    name: str = Field(alias="__name__")
-    id: str
-    instance: str
-    job: str
-
-
-class PrometheusResult(BaseModel):
-    metric: PrometheusServerSideMetric
-    value: List[float | str]
-
-
-class PrometheusData(BaseModel):
-    result: Optional[List[PrometheusResult]] = None
-
-
-class PrometheusAPIResponse(BaseModel):
-    status: str
-    data: PrometheusData
 
 
 class DiffApiResponse(BaseModel):
@@ -143,11 +103,6 @@ class DiscordEmbedMedia(BaseModel):
     width: Optional[int] = None
 
 
-class DiscordEmbedProvider(BaseModel):
-    name: Optional[str] = None
-    url: Optional[str] = None
-
-
 class DiscordEmbedAuthor(BaseModel):
     name: str
     url: Optional[str] = None
@@ -172,7 +127,6 @@ class DiscordEmbed(BaseModel):
     image: Optional[DiscordEmbedMedia] = None
     thumbnail: Optional[DiscordEmbedMedia] = None
     video: Optional[DiscordEmbedMedia] = None
-    provider: Optional[DiscordEmbedProvider] = None
     fields: Optional[List[DiscordEmbedField]] = None
     author: Optional[DiscordEmbedAuthor] = None
 

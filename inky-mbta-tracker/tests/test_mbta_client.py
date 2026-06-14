@@ -9,7 +9,6 @@ from aiohttp import ClientResponseError
 from exceptions import WatcherRefreshRequested
 from mbta_client import MBTAApi, silver_line_lookup
 from mbta_client_extended import (
-    light_get_alerts,
     light_get_stop,
     watch_mbta_server_side_events,
 )
@@ -428,37 +427,6 @@ class TestLightGetStop:
 
         assert result is None
         mock_get_cache.assert_called_once()
-
-
-@pytest.mark.anyio("asyncio")
-class TestLightGetAlerts:
-    @patch("mbta_client.MBTAApi")
-    async def test_light_get_alerts_success(self, mock_mbta_api: MagicMock) -> None:
-        mock_session = AsyncMock()
-        mock_redis = AsyncMock()
-
-        mock_watcher = AsyncMock()
-        mock_mbta_api.return_value.__aenter__.return_value = mock_watcher
-        mock_alerts = [MagicMock()]
-        mock_watcher.get_alerts.return_value = mock_alerts
-
-        result = await light_get_alerts("Red", mock_session, mock_redis)
-
-        assert result == mock_alerts
-        mock_watcher.get_alerts.assert_called_once_with(mock_session, route_id="Red")
-
-    @patch("mbta_client.MBTAApi")
-    async def test_light_get_alerts_none(self, mock_mbta_api: MagicMock) -> None:
-        mock_session = AsyncMock()
-        mock_redis = AsyncMock()
-
-        mock_watcher = AsyncMock()
-        mock_mbta_api.return_value.__aenter__.return_value = mock_watcher
-        mock_watcher.get_alerts.return_value = None
-
-        result = await light_get_alerts("Red", mock_session, mock_redis)
-
-        assert result is None
 
 
 if __name__ == "__main__":

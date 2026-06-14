@@ -13,11 +13,6 @@ class PageLinks(BaseModel):
     first: str
 
 
-class ScheduleRelationshipLinks(BaseModel):
-    self: str
-    related: str
-
-
 class TypeAndID(BaseModel):
     type: str
     id: str
@@ -62,29 +57,10 @@ class ScheduleResource(BaseModel):
     attributes: ScheduleAttributes
 
 
-# https://www.mbta.com/developers/v3-api/streaming
-class AddUpdateSchedule(BaseModel):
-    data: ScheduleResource
-
-
 class Schedules(BaseModel):
     data: list[ScheduleResource]
 
 
-class RemoveSchedule(BaseModel):
-    data: TypeAndID
-
-
-class RouteLinks(BaseModel):
-    self: str
-
-
-# About RouteAttributes.type:
-# 0	Light Rail
-# 1	Heavy Rail
-# 2	Commuter
-# 3	Bus
-# 4	Ferry
 class RouteAttributes(BaseModel):
     color: str
     direction_destinations: Optional[list[str]] = None
@@ -108,11 +84,6 @@ class RouteResource(BaseModel):
 
 class Route(BaseModel):
     data: list[RouteResource]
-
-
-class FacilityData(BaseModel):
-    type: str
-    id: str
 
 
 class ActivePeriod(BaseModel):
@@ -162,11 +133,6 @@ class Alerts(BaseModel):
     data: list[AlertResource]
 
 
-class TripGeneric(BaseModel):
-    links: SelfAndRelated
-    data: TypeAndID
-
-
 class TripAttributes(BaseModel):
     wheelchair_accessible: int
     revenue_status: Optional[str] = None
@@ -175,14 +141,6 @@ class TripAttributes(BaseModel):
     direction_id: int
     block_id: Optional[str] = None
     bikes_allowed: Optional[int] = None
-
-
-class TripRelationship(BaseModel):
-    shape: Optional[LinksAndData] = None
-    service: Optional[LinksAndData] = None
-    route_pattern: Optional[LinksAndData] = None
-    route: Optional[LinksAndData] = None
-    occupancy: Optional[LinksAndData] = None
 
 
 class TripResource(BaseModel):
@@ -298,12 +256,6 @@ class FacilityResource(BaseModel):
     links: Optional[dict] = None
     id: str
     attributes: FacilityAttributes
-
-
-class Facility(BaseModel):
-    links: Optional[dict] = None
-    included: TypeAndID
-    data: FacilityResource
 
 
 class Facilities(BaseModel):

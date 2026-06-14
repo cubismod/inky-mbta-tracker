@@ -1,6 +1,5 @@
 import logging
 import os
-import random
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from typing import Annotated, Self
@@ -48,12 +47,5 @@ async def get_di(request: Request):
 
 GET_DI = Annotated[DIParams, Depends(get_di)]
 
-# API timeout/config flags
-API_REQUEST_TIMEOUT = int(os.environ.get("IMT_API_REQUEST_TIMEOUT", "30"))  # seconds
 RATE_LIMITING_ENABLED = os.getenv("IMT_RATE_LIMITING_ENABLED", "true").lower() == "true"
 SSE_ENABLED = os.getenv("IMT_SSE_ENABLED", "true").lower() == "true"
-
-
-# Random helper (used in lifespan tasks)
-def rand_sleep(min_seconds: int, max_seconds: int) -> int:
-    return random.randint(min_seconds, max_seconds)

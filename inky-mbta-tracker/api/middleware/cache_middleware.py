@@ -110,34 +110,6 @@ def cache_ttl(seconds: int) -> Callable[[Callable[P, R]], Callable[P, R]]:
     return _decorator
 
 
-def _ttl_for_request(request: Request, response: Response, default_ttl: int) -> int:
-    """Determine TTL precedence: response header > endpoint decorator > default."""
-    # 1) Response header override
-    hdr = response.headers.get("X-Cache-TTL", None)
-    if hdr:
-        try:
-            val = int(hdr)
-            if val >= 0:
-                return val
-        except Exception:
-            pass
-
-    # 2) Endpoint decorator attribute
-    endpoint = request.scope.get("endpoint")
-    if endpoint is not None:
-        ttl_attr = getattr(endpoint, "_cache_ttl", None)
-        if ttl_attr is not None:
-            try:
-                val = int(ttl_attr)
-                if val >= 0:
-                    return val
-            except Exception:
-                pass
-
-    # Fallback
-    return int(default_ttl)
-
-
 def _ttl_with_source(
     request: Request, response: Response, default_ttl: int
 ) -> tuple[int, str]:

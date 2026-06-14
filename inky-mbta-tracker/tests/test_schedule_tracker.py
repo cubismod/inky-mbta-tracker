@@ -1,13 +1,11 @@
 import os
 from datetime import UTC, datetime, timedelta
-from queue import Queue
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from schedule_tracker import (
     Tracker,
     dummy_schedule_event,
-    process_queue,
 )
 from shared_types.shared_types import (
     ScheduleEvent,
@@ -51,25 +49,6 @@ class TestTracker:
         assert (
             tracker.redis.connection_pool.connection_kwargs["password"] == "test-pass"
         )
-
-    def test_str_timestamp(self) -> None:
-        now = datetime.now(UTC)
-        event = ScheduleEvent(
-            action="add",
-            time=now,
-            route_id="Red",
-            route_type=1,
-            headsign="Alewife",
-            id="test-id",
-            stop="Davis",
-            transit_time_min=5,
-            trip_id="trip-123",
-            alerting=False,
-            bikes_allowed=True,
-        )
-
-        result = Tracker.str_timestamp(event)
-        assert result == str(now.timestamp())
 
     def test_calculate_time_diff_future(self) -> None:
         future_time = datetime.now(UTC) + timedelta(minutes=10)
@@ -622,47 +601,6 @@ class TestTracker:
         await tracker.send_mqtt()
 
         mock_publish.multiple.assert_not_called()
-
-
-class TestProcessQueue:
-    @patch("schedule_tracker.Tracker")
-    @patch("schedule_tracker.Runner")
-    @patch("time.sleep")
-    def test_process_queue(
-        self,
-        mock_sleep: MagicMock,
-        mock_runner: MagicMock,
-        mock_tracker_class: MagicMock,
-    ) -> None:
-        mock_tracker = MagicMock()
-        mock_tracker_class.return_value = mock_tracker
-
-        mock_runner_instance = MagicMock()
-        mock_runner.return_value.__enter__.return_value = mock_runner_instance
-
-        # Avoid un-awaited coroutine warnings by consuming the coroutine passed to run()
-        def _consume(coro: object) -> None:
-            try:
-                # Close coroutine objects to suppress RuntimeWarning about un-awaited coroutines
-                close = getattr(coro, "close", None)
-                if callable(close):
-                    close()
-            except Exception:
-                pass
-
-        mock_runner_instance.run.side_effect = _consume
-
-        queue = Queue[ScheduleEvent]()
-
-        # Mock sleep to raise an exception after first iteration to exit the loop
-        mock_sleep.side_effect = [None, KeyboardInterrupt()]
-
-        with pytest.raises(KeyboardInterrupt):
-            process_queue(queue)
-
-        mock_tracker_class.assert_called_once()
-        mock_runner_instance.run.assert_called()
-        assert mock_sleep.call_count == 2
 
 
 if __name__ == "__main__":
