@@ -16,7 +16,6 @@ from contextvars import ContextVar
 from typing import Any, Callable, Optional, ParamSpec, TypeVar
 
 from opentelemetry import trace
-from opentelemetry.context import Context
 from opentelemetry.trace import Link, Span, SpanKind, Status, StatusCode
 
 logger = logging.getLogger(__name__)
@@ -103,85 +102,6 @@ def add_entity_id_attribute(
         return
 
     span.set_attribute(f"{attr_name}.hash", _stable_hash(value))
-
-
-def serialize_trace_context() -> Optional[str]:
-    """
-    Serialize the current trace context to a JSON string.
-
-    This allows trace context to be stored in Redis or passed through
-    memory object streams to maintain trace continuity across anyio tasks.
-
-    Returns:
-        JSON string containing trace context, or None if no active span
-    """
-    try:
-        span = trace.get_current_span()
-        if not span or not span.is_recording():
-            return None
-
-        span_context = span.get_span_context()
-        if not span_context.is_valid:
-            return None
-
-        context_dict = {
-            "trace_id": format(span_context.trace_id, "032x"),
-            "span_id": format(span_context.span_id, "016x"),
-            "trace_flags": span_context.trace_flags,
-            "trace_state": (
-                str(span_context.trace_state) if span_context.trace_state else None
-            ),
-        }
-
-        # Include current transaction IDs in serialized context
-        txn_ids = get_current_transaction_ids()
-        if any(txn_ids.values()):
-            context_dict["transaction_ids"] = {
-                k: v for k, v in txn_ids.items() if v is not None
-            }
-
-        return json.dumps(context_dict)
-    except Exception as e:
-        logger.debug(f"Failed to serialize trace context: {e}")
-        return None
-
-
-def deserialize_trace_context(context_json: Optional[str]) -> Optional[Context]:
-    """
-    Deserialize trace context from JSON string.
-
-    Args:
-        context_json: JSON string containing trace context
-
-    Returns:
-        OpenTelemetry Context object, or None if deserialization fails
-    """
-    if not context_json:
-        return None
-
-    try:
-        context_dict = json.loads(context_json)
-        trace_id = int(context_dict["trace_id"], 16)
-        span_id = int(context_dict["span_id"], 16)
-        trace_flags = context_dict["trace_flags"]
-
-        span_context = trace.SpanContext(
-            trace_id=trace_id,
-            span_id=span_id,
-            is_remote=True,
-            trace_flags=trace_flags,
-        )
-
-        # Restore transaction IDs if present
-        if "transaction_ids" in context_dict:
-            restore_transaction_context(context_dict["transaction_ids"])
-
-        # Create a context with this span context
-        ctx = trace.set_span_in_context(trace.NonRecordingSpan(span_context))
-        return ctx
-    except Exception as e:
-        logger.debug(f"Failed to deserialize trace context: {e}")
-        return None
 
 
 def create_span_link_from_context(context_json: Optional[str]) -> Optional[Link]:
@@ -359,13 +279,6 @@ def restore_transaction_context(txn_ids: dict[str, str]) -> None:
         user_query_txn_context.set(txn_ids["user_query"])
 
 
-def clear_transaction_context() -> None:
-    """Clear all transaction IDs from context."""
-    route_monitor_txn_context.set(None)
-    vehicle_track_txn_context.set(None)
-    user_query_txn_context.set(None)
-
-
 def add_span_attributes(span: Optional[Span], attributes: dict[str, Any]) -> None:
     """
     Safely add multiple attributes to a span.
@@ -507,54 +420,6 @@ def set_span_error(span: Optional[Span], exception: Exception) -> None:
         logger.debug(f"Failed to record exception: {e}")
 
 
-def traced_anyio_task(
-    operation_name: Optional[str] = None,
-    span_kind: SpanKind = SpanKind.INTERNAL,
-    attributes: Optional[dict[str, Any]] = None,
-    include_transaction_ids: bool = True,
-):
-    """
-    Decorator to create a traced anyio task.
-
-    This decorator creates a new root span for the task, suitable for
-    long-running concurrent tasks started via TaskGroup.start_soon().
-
-    Args:
-        operation_name: Span name (defaults to function name)
-        span_kind: Span kind (default: INTERNAL)
-        attributes: Additional span attributes
-        include_transaction_ids: Whether to include current transaction IDs in span
-
-    Example:
-        @traced_anyio_task("watch_vehicles", attributes={"route.id": "Red"})
-        async def watch_vehicles(route_id: str):
-            ...
-    """
-
-    def decorator(func: Callable[P, R]) -> Callable[P, R]:
-        @functools.wraps(func)
-        async def wrapper(*args: P.args, **kwargs: P.kwargs) -> Any:
-            tracer = trace.get_tracer(__name__)
-            span_name = operation_name or func.__name__
-
-            with tracer.start_as_current_span(span_name, kind=span_kind) as span:
-                if attributes:
-                    add_span_attributes(span, attributes)
-
-                if include_transaction_ids:
-                    add_transaction_ids_to_span(span)
-
-                try:
-                    return await func(*args, **kwargs)  # type: ignore
-                except Exception as e:
-                    set_span_error(span, e)
-                    raise
-
-        return wrapper  # type: ignore
-
-    return decorator
-
-
 def traced_function(
     operation_name: Optional[str] = None,
     span_kind: SpanKind = SpanKind.INTERNAL,
@@ -613,52 +478,6 @@ def traced_function(
         return async_wrapper  # type: ignore
 
     return decorator
-
-
-def start_linked_span(
-    tracer: trace.Tracer,
-    span_name: str,
-    context_json: Optional[str] = None,
-    attributes: Optional[dict[str, Any]] = None,
-    span_kind: SpanKind = SpanKind.INTERNAL,
-    include_transaction_ids: bool = True,
-) -> trace.Span:
-    """
-    Start a new span with a link to a previous span context.
-
-    Useful for connecting related operations across anyio task boundaries
-    without creating strict parent-child relationships.
-
-    Args:
-        tracer: Tracer instance
-        span_name: Name for the new span
-        context_json: Serialized context to link to
-        attributes: Span attributes
-        span_kind: Span kind
-        include_transaction_ids: Whether to include current transaction IDs
-
-    Returns:
-        New span with link to previous context
-    """
-    links = []
-    if context_json:
-        link = create_span_link_from_context(context_json)
-        if link:
-            links.append(link)
-
-    span = tracer.start_span(
-        span_name,
-        kind=span_kind,
-        links=links,
-    )
-
-    if attributes:
-        add_span_attributes(span, attributes)
-
-    if include_transaction_ids:
-        add_transaction_ids_to_span(span)
-
-    return span
 
 
 def get_high_cardinality_attributes(

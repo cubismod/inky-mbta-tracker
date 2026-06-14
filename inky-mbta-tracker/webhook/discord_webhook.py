@@ -171,50 +171,6 @@ async def _get_batch_entry(
     return _validate_batch_entry(raw)
 
 
-async def enqueue_pending_webhook(
-    webhook_id: str,
-    webhook: DiscordWebhook,
-    r_client: RedisClient,
-    delay_range: tuple[float, float] = PENDING_WEBHOOK_DELAY_RANGE,
-    clock: Callable[[], float] = time.time,
-) -> bool:
-    pending_key = webhook_helpers._pending_key(webhook_id)
-    message_hash = webhook_helpers._webhook_hash(webhook)
-    webhook_json = webhook.model_dump_json()
-    existing = await _get_pending_entry(r_client, webhook_id)
-    if existing:
-        updated = existing.model_copy(
-            update={"webhook_json": webhook_json, "message_hash": message_hash}
-        )
-        await r_client.set(
-            pending_key, updated.model_dump_json(), ex=PENDING_WEBHOOK_TTL
-        )
-        return False
-
-    ready_at = clock() + random.uniform(*delay_range)
-    entry = PendingWebhookEntry(
-        webhook_json=webhook_json, message_hash=message_hash, ready_at=ready_at
-    )
-    created = await r_client.set(
-        pending_key, entry.model_dump_json(), ex=PENDING_WEBHOOK_TTL, nx=True
-    )
-    if created:
-        return True
-
-    existing = await _get_pending_entry(r_client, webhook_id)
-    if existing:
-        updated = existing.model_copy(
-            update={"webhook_json": webhook_json, "message_hash": message_hash}
-        )
-        await r_client.set(
-            pending_key, updated.model_dump_json(), ex=PENDING_WEBHOOK_TTL
-        )
-        return False
-
-    await r_client.set(pending_key, entry.model_dump_json(), ex=PENDING_WEBHOOK_TTL)
-    return True
-
-
 async def enqueue_pending_batch(
     webhook_id: str,
     webhook: DiscordWebhook,

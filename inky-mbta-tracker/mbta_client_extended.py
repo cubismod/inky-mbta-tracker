@@ -22,7 +22,7 @@ from consts import (
 )
 from exceptions import RateLimitExceeded, WatcherRefreshRequested
 from mbta_rate_limiter import rate_limited_get
-from mbta_responses import AlertResource, Shapes
+from mbta_responses import Shapes
 from opentelemetry.trace import Span
 from otel_config import get_tracer, is_otel_enabled
 from otel_utils import (
@@ -322,20 +322,6 @@ async def _light_get_stop_impl(
 
         tg.start_soon(fetch_stop, stop_id, tg)
         return None
-
-
-async def light_get_alerts(
-    route_id: str, session: ClientSession, r_client: Redis
-) -> Optional[list[AlertResource]]:
-    from mbta_client import MBTAApi
-
-    async with MBTAApi(
-        r_client, route=route_id, watcher_type=TaskType.VEHICLES
-    ) as watcher:
-        alerts = await watcher.get_alerts(session, route_id=route_id)
-        if alerts:
-            return alerts
-    return None
 
 
 @retry(

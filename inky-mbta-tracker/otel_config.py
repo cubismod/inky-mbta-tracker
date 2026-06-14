@@ -400,21 +400,6 @@ def shutdown_otel() -> None:
             logger.error(f"Error during OpenTelemetry shutdown: {e}", exc_info=True)
 
 
-def get_sampling_config() -> dict[str, float]:
-    """
-    Get sampling rates for different operation types.
-
-    Returns:
-        Dictionary mapping operation types to sample rates
-    """
-    config = get_otel_config()
-    return {
-        "default": float(config["traces_sampler_arg"]),
-        "high_volume": float(config["high_volume_sample_rate"]),
-        "background": float(config["background_sample_rate"]),
-    }
-
-
 def should_sample_high_volume() -> bool:
     """
     Determine if a high-volume operation should be sampled.

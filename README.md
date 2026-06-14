@@ -48,10 +48,6 @@ IMT_MQTT_HOST=127.0.0.1
 IMT_MQTT_USER=username
 IMT_MQTT_PASS=mqtt_pass # change this!
 
-# API Timeouts
-IMT_API_REQUEST_TIMEOUT=30 # API request timeout in seconds
-IMT_TRACK_PREDICTION_TIMEOUT=15 # Track prediction timeout in seconds
-
 # Feature Flags
 IMT_RATE_LIMITING_ENABLED=true # Enable/disable rate limiting
 IMT_SSE_ENABLED=true # Enable/disable Server-Sent Events
