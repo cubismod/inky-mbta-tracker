@@ -74,6 +74,7 @@ dev = [
     "pytest>=8.4.1",
     "pytest-asyncio>=1.0.0",
     "ruff==0.15.16",
+    "vulture>=2.16",
 ]
 
 [project.scripts]

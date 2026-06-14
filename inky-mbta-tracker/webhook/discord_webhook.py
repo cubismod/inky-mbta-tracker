@@ -100,8 +100,8 @@ def create_webhook_object(
         description=alert.attributes.header,
         timestamp=alert.attributes.updated_at,
         author=DiscordEmbedAuthor(
-            name=f"MBTA Alert, Sev {alert.attributes.severity}",
-            url="https://ryanwallace.cloud/alerts",
+            name=f"{format_route_names(', '.join(routes))} Alert",
+            url="https://bostontraintracker.com",
         ),
         color=color,
     )
@@ -109,7 +109,9 @@ def create_webhook_object(
         embed.footer = DiscordEmbedFooter(text="EXPIRED")
     if len(routes) > 1:
         embed.fields = [
-            DiscordEmbedField(name="Lines", value=", ".join(routes), inline=False)
+            DiscordEmbedField(
+                name="Lines", value=format_route_names(", ".join(routes)), inline=False
+            )
         ]
     avatar_url = None
     if alert.attributes.image:
@@ -401,7 +403,7 @@ async def send_batch_entry(
         await _send_webhook_payload(batch_message_id, grouped, r_client)
 
 
-def _human_readable_webhook_payload(payload: str) -> str:
+def format_route_names(payload: str) -> str:
     new_payload: list[str] = []
     for i in payload.split():
         if i.startswith("CR-"):
@@ -434,42 +436,6 @@ async def _send_webhook_payload(
                     )
             else:
                 await post_webhook(WEBHOOK_URL, webhook_id, webhook, r_client, session)
-
-
-@retry(stop=stop_after_attempt(5), wait=wait_exponential(multiplier=1, min=4, max=10))
-async def send_pending_webhook(
-    webhook_id: str,
-    r_client: RedisClient,
-    clock: Callable[[], float] = time.time,
-) -> None:
-    pending = await _get_pending_entry(r_client, webhook_id)
-    if not pending:
-        return
-    if pending.ready_at > clock():
-        return
-
-    async with RedisLock(
-        r_client,
-        webhook_helpers._pending_lock_key(webhook_id),
-        blocking_timeout=15,
-        expire_timeout=60,
-    ):
-        pending = await _get_pending_entry(r_client, webhook_id)
-        if not pending:
-            return
-        try:
-            webhook = DiscordWebhook.model_validate_json(pending.webhook_json)
-            if webhook.content:
-                webhook.content = _human_readable_webhook_payload(webhook.content)
-        except ValidationError as err:
-            logger.error(
-                f"Failed to parse pending webhook payload for {webhook_id}",
-                exc_info=err,
-            )
-            return
-
-        await _send_webhook_payload(webhook_id, webhook, r_client)
-        await r_client.delete(webhook_helpers._pending_key(webhook_id))
 
 
 @retry(stop=stop_after_attempt(5), wait=wait_exponential(multiplier=1, min=4, max=10))
