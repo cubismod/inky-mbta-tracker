@@ -495,42 +495,41 @@ async def get_vehicle_features(
     filtered_count = 0
 
     # Pre-scan: collect unique trip IDs for prediction lookup
-    unique_trip_ids: set[str] = set()
-    for vk_bytes, result in zip(vehicle_keys_list, results):
-        if not result:
-            continue
-        try:
-            vehicle_info: VehicleRedisSchema = VehicleRedisSchema.model_validate_json(
-                strict=False, json_data=result
-            )
-        except ValidationError:
-            continue
-
-        if (
-            vehicle_info.stop
-            and not vehicle_info.route.startswith("Amtrak")
-            and vehicle_info.speed is not None
-            and vehicle_info.speed >= 10
-            and vehicle_info.current_status != "STOPPED_AT"
-        ):
+    pred_lookup: dict[tuple[str, str], datetime] = {}
+    if session is not None:
+        unique_trip_ids: set[str] = set()
+        for vk_bytes, result in zip(vehicle_keys_list, results):
+            if not result:
+                continue
             try:
-                trip_id = vk_bytes.decode().split(":", 1)[1]
-                unique_trip_ids.add(trip_id)
-            except (IndexError, UnicodeDecodeError):
+                vehicle_info = VehicleRedisSchema.model_validate_json(
+                    strict=False, json_data=result
+                )
+            except ValidationError:
                 continue
 
-    # Fetch predictions for eligible trips
-    pred_lookup: dict[tuple[str, str], datetime] = {}
-    if session is not None and unique_trip_ids:
-        try:
-            from api.services.predictions import batch_fetch_trip_predictions
+            if (
+                vehicle_info.stop
+                and not vehicle_info.route.startswith("Amtrak")
+                and vehicle_info.speed is not None
+                and vehicle_info.speed >= 10
+                and vehicle_info.current_status != "STOPPED_AT"
+            ):
+                try:
+                    trip_id = vk_bytes.decode().split(":", 1)[1]
+                    unique_trip_ids.add(trip_id)
+                except (IndexError, UnicodeDecodeError):
+                    continue
 
-            predictions = await batch_fetch_trip_predictions(
-                session, r_client, list(unique_trip_ids)
-            )
-            pred_lookup = predictions
-        except Exception as exc:
-            logger.warning("Failed to batch-fetch predictions", exc_info=exc)
+        if unique_trip_ids:
+            try:
+                from api.services.predictions import batch_fetch_trip_predictions
+
+                pred_lookup = await batch_fetch_trip_predictions(
+                    session, r_client, list(unique_trip_ids)
+                )
+            except Exception as exc:
+                logger.warning("Failed to batch-fetch predictions", exc_info=exc)
 
     for vk_bytes, result in zip(vehicle_keys_list, results):
         if not result:
