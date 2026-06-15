@@ -494,10 +494,10 @@ async def get_vehicle_features(
     validation_errors = 0
     filtered_count = 0
 
-    # Pre-scan: collect unique trip IDs for prediction lookup
+    # Pre-scan: collect unique stop IDs for prediction lookup
     pred_lookup: dict[tuple[str, str], datetime] = {}
     if session is not None:
-        unique_trip_ids: set[str] = set()
+        unique_stops: set[str] = set()
         for vk_bytes, result in zip(vehicle_keys_list, results):
             if not result:
                 continue
@@ -516,14 +516,14 @@ async def get_vehicle_features(
                 and vehicle_info.speed >= 10
                 and vehicle_info.current_status != "STOPPED_AT"
             ):
-                unique_trip_ids.add(vehicle_info.trip_id)
+                unique_stops.add(vehicle_info.stop)
 
-        if unique_trip_ids:
+        if unique_stops:
             try:
                 from api.services.predictions import batch_fetch_trip_predictions
 
                 pred_lookup = await batch_fetch_trip_predictions(
-                    session, r_client, list(unique_trip_ids)
+                    session, r_client, list(unique_stops)
                 )
             except Exception as exc:
                 logger.warning("Failed to batch-fetch predictions", exc_info=exc)
@@ -588,7 +588,13 @@ async def get_vehicle_features(
                             and vehicle_info.speed >= 10
                             and vehicle_info.current_status != "STOPPED_AT"
                         ):
-                            predicted = pred_lookup.get((vehicle_info.trip_id, vehicle_info.stop)) if vehicle_info.trip_id else None  # type: ignore[arg-type]
+                            predicted = (
+                                pred_lookup.get(
+                                    (vehicle_info.trip_id, vehicle_info.stop)
+                                )
+                                if vehicle_info.trip_id
+                                else None
+                            )  # type: ignore[arg-type]
                             stop_eta = calculate_stop_eta(
                                 Feature(geometry=stop_point),
                                 Feature(geometry=point),

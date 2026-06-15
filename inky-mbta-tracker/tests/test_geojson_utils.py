@@ -180,7 +180,9 @@ async def test_calculate_stop_eta_uses_distance_and_speed(mock_dist: MagicMock) 
 
 
 @patch("geojson_utils.distance", return_value=10.0)
-def test_calculate_stop_eta_uses_predicted_arrival_when_provided(mock_dist: MagicMock) -> None:
+def test_calculate_stop_eta_uses_predicted_arrival_when_provided(
+    mock_dist: MagicMock,
+) -> None:
     future = datetime.now(UTC) + timedelta(hours=1)
     eta = calculate_stop_eta(
         Feature(geometry=Point((0, 0))),
@@ -194,7 +196,9 @@ def test_calculate_stop_eta_uses_predicted_arrival_when_provided(mock_dist: Magi
 
 
 @patch("geojson_utils.distance", return_value=10.0)
-def test_calculate_stop_eta_falls_back_to_speed_when_no_prediction(mock_dist: MagicMock) -> None:
+def test_calculate_stop_eta_falls_back_to_speed_when_no_prediction(
+    mock_dist: MagicMock,
+) -> None:
     eta = calculate_stop_eta(
         Feature(geometry=Point((0, 0))), Feature(geometry=Point((1, 1))), speed=60.0
     )
@@ -203,7 +207,9 @@ def test_calculate_stop_eta_falls_back_to_speed_when_no_prediction(mock_dist: Ma
 
 
 @patch("geojson_utils.distance", return_value=10.0)
-def test_calculate_stop_eta_falls_back_when_prediction_is_past(mock_dist: MagicMock) -> None:
+def test_calculate_stop_eta_falls_back_when_prediction_is_past(
+    mock_dist: MagicMock,
+) -> None:
     past = datetime(2020, 1, 1, tzinfo=UTC)
     eta = calculate_stop_eta(
         Feature(geometry=Point((0, 0))),

@@ -101,57 +101,60 @@ async def fetch_predictions(
 async def batch_fetch_trip_predictions(
     session: aiohttp.ClientSession,
     r_client: Redis,
-    trip_ids: list[str],
+    stop_ids: list[str],
 ) -> dict[tuple[str, str], datetime]:
     with tracer.start_as_current_span(
         "api.services.batch_fetch_trip_predictions"
     ) as span:
-        unique_trip_ids = list(set(trip_ids))
+        unique_stops = list(set(stop_ids))
         add_span_attributes(
             span,
             {
-                "trip_ids.count": len(trip_ids),
-                "trip_ids.unique_count": len(unique_trip_ids),
+                "stop_ids.count": len(unique_stops),
             },
         )
 
         results: dict[tuple[str, str], datetime] = {}
         limiter = anyio.CapacityLimiter(5)
 
-        async def fetch_single(trip_id: str) -> None:
-            cache_key = f"prediction:trip:{trip_id}"
+        async def fetch_single(stop_id: str) -> None:
+            cache_key = f"prediction:stop:{stop_id}"
             cached = await get_cache(r_client, cache_key)
             if cached is not None:
                 try:
                     predictions = Predictions.model_validate_json(cached, strict=False)
                 except ValidationError:
                     logger.warning(
-                        "Failed to parse cached predictions for trip %s",
-                        trip_id,
+                        "Failed to parse cached predictions for stop %s",
+                        stop_id,
                         exc_info=True,
                     )
                 else:
                     for pred in predictions.data:
+                        trip_data = pred.relationships.trip.data
                         stop_data = pred.relationships.stop.data
-                        if stop_data is None:
+                        if trip_data is None or stop_data is None:
                             continue
                         arrival_time = pred.attributes.arrival_time
                         if arrival_time:
-                            results[(trip_id, stop_data.id)] = datetime.fromisoformat(
-                                arrival_time
+                            results[(trip_data.id, stop_data.id)] = (
+                                datetime.fromisoformat(arrival_time)
                             )
                     return
 
+            api_key_param = f"&api_key={MBTA_AUTH}" if MBTA_AUTH else ""
             async with limiter:
                 try:
                     async with rate_limited_get(
-                        session, r_client, f"/predictions?filter[trip]={trip_id}"
+                        session,
+                        r_client,
+                        f"/predictions?filter[stop]={stop_id}{api_key_param}",
                     ) as response:
                         if response.status != 200:
                             logger.warning(
-                                "MBTA API returned HTTP %d for trip %s",
+                                "MBTA API returned HTTP %d for stop %s",
                                 response.status,
-                                trip_id,
+                                stop_id,
                             )
                             return
                         body = await response.text()
@@ -161,32 +164,33 @@ async def batch_fetch_trip_predictions(
                         )
                 except ValidationError:
                     logger.warning(
-                        "Failed to parse predictions for trip %s",
-                        trip_id,
+                        "Failed to parse predictions for stop %s",
+                        stop_id,
                         exc_info=True,
                     )
                     return
                 except Exception:
                     logger.warning(
-                        "Failed to fetch predictions for trip %s",
-                        trip_id,
+                        "Failed to fetch predictions for stop %s",
+                        stop_id,
                         exc_info=True,
                     )
                     return
 
                 for pred in predictions.data:
+                    trip_data = pred.relationships.trip.data
                     stop_data = pred.relationships.stop.data
-                    if stop_data is None:
+                    if trip_data is None or stop_data is None:
                         continue
                     arrival_time = pred.attributes.arrival_time
                     if arrival_time:
-                        results[(trip_id, stop_data.id)] = datetime.fromisoformat(
-                            arrival_time
+                        results[(trip_data.id, stop_data.id)] = (
+                            datetime.fromisoformat(arrival_time)
                         )
 
         async with anyio.create_task_group() as tg:
-            for trip_id in unique_trip_ids:
-                tg.start_soon(fetch_single, trip_id)
+            for stop_id in unique_stops:
+                tg.start_soon(fetch_single, stop_id)
 
         add_span_attributes(
             span,

@@ -61,7 +61,7 @@ async def test_batch_fetch_returns_predicted_arrival_times(
     monkeypatch.setattr(predictions, "rate_limited_get", fake_rate_limited_get)
 
     result = await predictions.batch_fetch_trip_predictions(
-        cast(ClientSession, None), cast(Redis, None), ["trip-1"]
+        cast(ClientSession, None), cast(Redis, None), ["stop-1"]
     )
 
     assert len(result) == 1
@@ -71,6 +71,7 @@ async def test_batch_fetch_returns_predicted_arrival_times(
         "2026-06-06T12:00:00-04:00"
     )
     assert len(api_calls) == 1
+    assert "filter[stop]=stop-1" in api_calls[0]
 
 
 @pytest.mark.anyio
@@ -88,7 +89,7 @@ async def test_batch_fetch_handles_api_failure(
     monkeypatch.setattr(predictions, "rate_limited_get", fake_rate_limited_get)
 
     result = await predictions.batch_fetch_trip_predictions(
-        cast(ClientSession, None), cast(Redis, None), ["trip-1"]
+        cast(ClientSession, None), cast(Redis, None), ["stop-1"]
     )
 
     assert result == {}
@@ -116,7 +117,7 @@ async def test_batch_fetch_uses_cache(
     monkeypatch.setattr(predictions, "get_cache", fake_get_cache)
 
     result = await predictions.batch_fetch_trip_predictions(
-        cast(ClientSession, None), cast(Redis, None), ["trip-1", "trip-1"]
+        cast(ClientSession, None), cast(Redis, None), ["stop-1", "stop-1"]
     )
 
     assert ("trip-1", "stop-1") in result
