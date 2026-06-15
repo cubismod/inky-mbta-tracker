@@ -496,36 +496,35 @@ async def get_vehicle_features(
 
     # Pre-scan: collect unique stop IDs for prediction lookup
     pred_lookup: dict[tuple[str, str], datetime] = {}
-    if session is not None:
-        unique_stops: set[str] = set()
-        for vk_bytes, result in zip(vehicle_keys_list, results):
-            if not result:
-                continue
-            try:
-                vehicle_info = VehicleRedisSchema.model_validate_json(
-                    strict=False, json_data=result
-                )
-            except ValidationError:
-                continue
+    unique_stops: set[str] = set()
+    for vk_bytes, result in zip(vehicle_keys_list, results):
+        if not result:
+            continue
+        try:
+            vehicle_info = VehicleRedisSchema.model_validate_json(
+                strict=False, json_data=result
+            )
+        except ValidationError:
+            continue
 
-            if (
-                vehicle_info.stop
-                and not vehicle_info.route.startswith("Amtrak")
-                and vehicle_info.speed is not None
-                and vehicle_info.speed >= 10
-                and vehicle_info.current_status != "STOPPED_AT"
-            ):
-                unique_stops.add(vehicle_info.stop)
+        if (
+            vehicle_info.stop
+            and not vehicle_info.route.startswith("Amtrak")
+            and vehicle_info.speed is not None
+            and vehicle_info.speed >= 10
+            and vehicle_info.current_status != "STOPPED_AT"
+        ):
+            unique_stops.add(vehicle_info.stop)
 
-        if unique_stops:
-            try:
-                from api.services.predictions import batch_fetch_trip_predictions
+    if unique_stops:
+        try:
+            from api.services.predictions import batch_fetch_trip_predictions
 
-                pred_lookup = await batch_fetch_trip_predictions(
-                    session, r_client, list(unique_stops)
-                )
-            except Exception as exc:
-                logger.warning("Failed to batch-fetch predictions", exc_info=exc)
+            pred_lookup = await batch_fetch_trip_predictions(
+                session, r_client, list(unique_stops)
+            )
+        except Exception as exc:
+            logger.warning("Failed to batch-fetch predictions", exc_info=exc)
 
     for vk_bytes, result in zip(vehicle_keys_list, results):
         if not result:
