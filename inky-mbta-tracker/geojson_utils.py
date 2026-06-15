@@ -1,6 +1,6 @@
 import hashlib
 import logging
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from math import cos, radians, sin, tau
 from typing import Optional
 
@@ -197,7 +197,14 @@ def lookup_route_color(route: str) -> str:
     return ""
 
 
-def calculate_stop_eta(stop: Feature, vehicle: Feature, speed: float) -> str:
+def calculate_stop_eta(
+    stop: Feature,
+    vehicle: Feature,
+    speed: float,
+    predicted_arrival: datetime | None = None,
+) -> str:
+    if predicted_arrival is not None and predicted_arrival > datetime.now(UTC):
+        return humanize.naturaldelta(predicted_arrival - datetime.now(UTC))
     dis = distance(stop, vehicle, "mi")
     # mi / mph = hr
     elapsed = dis / speed
