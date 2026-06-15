@@ -119,9 +119,7 @@ async def batch_fetch_trip_predictions(
     results: dict[tuple[str, str], datetime] = {}
     limiter = anyio.CapacityLimiter(5)
 
-    async def fetch_single(
-        client: aiohttp.ClientSession, stop_id: str
-    ) -> None:
+    async def fetch_single(client: aiohttp.ClientSession, stop_id: str) -> None:
         cache_key = f"prediction:stop:{stop_id}"
         cached = await get_cache(r_client, cache_key)
         if cached is not None:
@@ -141,8 +139,8 @@ async def batch_fetch_trip_predictions(
                         continue
                     arrival_time = pred.attributes.arrival_time
                     if arrival_time:
-                        results[(trip_data.id, stop_data.id)] = (
-                            datetime.fromisoformat(arrival_time)
+                        results[(trip_data.id, stop_data.id)] = datetime.fromisoformat(
+                            arrival_time
                         )
                 return
 
@@ -163,9 +161,7 @@ async def batch_fetch_trip_predictions(
                         return
                     body = await response.text()
                     await write_cache(r_client, cache_key, body, 30)
-                    predictions = Predictions.model_validate_json(
-                        body, strict=False
-                    )
+                    predictions = Predictions.model_validate_json(body, strict=False)
             except ValidationError:
                 logger.warning(
                     "Failed to parse predictions for stop %s",
@@ -188,8 +184,8 @@ async def batch_fetch_trip_predictions(
                     continue
                 arrival_time = pred.attributes.arrival_time
                 if arrival_time:
-                    results[(trip_data.id, stop_data.id)] = (
-                        datetime.fromisoformat(arrival_time)
+                    results[(trip_data.id, stop_data.id)] = datetime.fromisoformat(
+                        arrival_time
                     )
 
     async def run_with_session(client: aiohttp.ClientSession) -> None:
@@ -200,9 +196,7 @@ async def batch_fetch_trip_predictions(
     if session is not None:
         await run_with_session(session)
     else:
-        async with aiohttp.ClientSession(
-            base_url=MBTA_V3_ENDPOINT
-        ) as local_session:
+        async with aiohttp.ClientSession(base_url=MBTA_V3_ENDPOINT) as local_session:
             await run_with_session(local_session)
 
     add_span_attributes(

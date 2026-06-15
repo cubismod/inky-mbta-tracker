@@ -200,16 +200,17 @@ def lookup_route_color(route: str) -> str:
 def calculate_stop_eta(
     stop: Feature,
     vehicle: Feature,
-    speed: float,
+    speed: Optional[float],
     predicted_arrival: datetime | None = None,
-) -> str:
+) -> Optional[str]:
     now = datetime.now(UTC)
     if predicted_arrival is not None and predicted_arrival > now:
         return humanize.naturaldelta(predicted_arrival - now)
-    dis = distance(stop, vehicle, "mi")
-    # mi / mph = hr
-    elapsed = dis / speed
-    return humanize.naturaldelta(timedelta(hours=elapsed))
+    if speed:
+        dis = distance(stop, vehicle, "mi")
+        # mi / mph = hr
+        elapsed = dis / speed
+        return humanize.naturaldelta(timedelta(hours=elapsed))
 
 
 def calculate_bearing(start: Point, end: Point) -> float:
@@ -581,11 +582,7 @@ async def get_vehicle_features(
                         lat = stop.lat
                         if not vehicle_bearing:
                             vehicle_bearing = calculate_bearing(point, stop_point)
-                        if (
-                            vehicle_info.speed
-                            and vehicle_info.speed >= 10
-                            and vehicle_info.current_status != "STOPPED_AT"
-                        ):
+                        if vehicle_info.current_status != "STOPPED_AT":
                             predicted = (
                                 pred_lookup.get(
                                     (vehicle_info.trip_id, vehicle_info.stop)
