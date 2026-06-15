@@ -510,7 +510,6 @@ async def get_vehicle_features(
 
             if (
                 vehicle_info.stop
-                and vehicle_info.trip_id
                 and not vehicle_info.route.startswith("Amtrak")
                 and vehicle_info.speed is not None
                 and vehicle_info.speed >= 10
