@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -181,8 +181,7 @@ async def test_calculate_stop_eta_uses_distance_and_speed(mock_dist: MagicMock) 
 
 @patch("geojson_utils.distance", return_value=10.0)
 def test_calculate_stop_eta_uses_predicted_arrival_when_provided(mock_dist: MagicMock) -> None:
-    future = datetime.now(UTC).replace(microsecond=0)
-    future = future.replace(hour=future.hour + 1)
+    future = datetime.now(UTC) + timedelta(hours=1)
     eta = calculate_stop_eta(
         Feature(geometry=Point((0, 0))),
         Feature(geometry=Point((1, 1))),

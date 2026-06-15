@@ -203,8 +203,9 @@ def calculate_stop_eta(
     speed: float,
     predicted_arrival: datetime | None = None,
 ) -> str:
-    if predicted_arrival is not None and predicted_arrival > datetime.now(UTC):
-        return humanize.naturaldelta(predicted_arrival - datetime.now(UTC))
+    now = datetime.now(UTC)
+    if predicted_arrival is not None and predicted_arrival > now:
+        return humanize.naturaldelta(predicted_arrival - now)
     dis = distance(stop, vehicle, "mi")
     # mi / mph = hr
     elapsed = dis / speed
