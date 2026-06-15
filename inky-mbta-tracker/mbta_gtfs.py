@@ -119,6 +119,7 @@ async def _process_gtfs_event(
         occupancy_status=fields.get("occupancy_status"),
         carriages=carriages,
         headsign=fields.get("headsign"),
+        trip_id=fields.get("trip_id"),
     )
     if await _should_replace_current_event(vehicle, r_client, fields["id"]):
         await send_stream.send(vehicle)

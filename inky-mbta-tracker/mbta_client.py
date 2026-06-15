@@ -756,6 +756,13 @@ class MBTAApi:
             headsign = None
             if trip_info and len(trip_info.data) > 0:
                 headsign = trip_info.data[0].attributes.headsign
+            trip_resource_id: str | None = None
+            if (
+                item.relationships
+                and item.relationships.trip
+                and item.relationships.trip.data
+            ):
+                trip_resource_id = item.relationships.trip.data.id
             event = VehicleRedisSchema(  # type: ignore
                 action=event_type,
                 id=trip_id,
@@ -769,6 +776,7 @@ class MBTAApi:
                 update_time=datetime.now().astimezone(UTC),
                 occupancy_status=occupancy,
                 headsign=headsign,
+                trip_id=trip_resource_id,
             )
             if (
                 item.relationships

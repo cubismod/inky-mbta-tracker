@@ -41,6 +41,7 @@ class VehicleRedisSchema(BaseModel):
     headsign: Optional[str] = None
     # OpenTelemetry trace context for distributed tracing
     trace_context: Optional[str] = None
+    trip_id: Optional[str] = None
 
 
 class TaskType(Enum):

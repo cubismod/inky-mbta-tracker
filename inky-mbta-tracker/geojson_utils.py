@@ -510,16 +510,13 @@ async def get_vehicle_features(
 
             if (
                 vehicle_info.stop
+                and vehicle_info.trip_id
                 and not vehicle_info.route.startswith("Amtrak")
                 and vehicle_info.speed is not None
                 and vehicle_info.speed >= 10
                 and vehicle_info.current_status != "STOPPED_AT"
             ):
-                try:
-                    trip_id = vk_bytes.decode().split(":", 1)[1]
-                    unique_trip_ids.add(trip_id)
-                except (IndexError, UnicodeDecodeError):
-                    continue
+                unique_trip_ids.add(vehicle_info.trip_id)
 
         if unique_trip_ids:
             try:
@@ -591,11 +588,7 @@ async def get_vehicle_features(
                             and vehicle_info.speed >= 10
                             and vehicle_info.current_status != "STOPPED_AT"
                         ):
-                            try:
-                                pkey = (vk_bytes.decode().split(":", 1)[1], vehicle_info.stop)
-                                predicted = pred_lookup.get(pkey)
-                            except (IndexError, UnicodeDecodeError):
-                                predicted = None
+                            predicted = pred_lookup.get((vehicle_info.trip_id, vehicle_info.stop)) if vehicle_info.trip_id else None  # type: ignore[arg-type]
                             stop_eta = calculate_stop_eta(
                                 Feature(geometry=stop_point),
                                 Feature(geometry=point),
