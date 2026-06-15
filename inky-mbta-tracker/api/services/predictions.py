@@ -126,7 +126,9 @@ async def batch_fetch_trip_predictions(
                     predictions = Predictions.model_validate_json(cached, strict=False)
                 except ValidationError:
                     logger.warning(
-                        "Failed to parse cached predictions for trip %s", trip_id
+                        "Failed to parse cached predictions for trip %s",
+                        trip_id,
+                        exc_info=True,
                     )
                 else:
                     for pred in predictions.data:
@@ -158,7 +160,11 @@ async def batch_fetch_trip_predictions(
                             body, strict=False
                         )
                 except ValidationError:
-                    logger.warning("Failed to parse predictions for trip %s", trip_id)
+                    logger.warning(
+                        "Failed to parse predictions for trip %s",
+                        trip_id,
+                        exc_info=True,
+                    )
                     return
                 except Exception:
                     logger.warning(
@@ -186,7 +192,7 @@ async def batch_fetch_trip_predictions(
             span,
             {
                 "predictions.fetched": len(results),
-                "predictions.fetch.status": "success",
+                "predictions.fetch.status": "success" if results else "empty",
             },
         )
 
