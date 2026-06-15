@@ -437,7 +437,11 @@ async def collect_alerts(
 
 @traced_function("geojson_utils.get_vehicle_features")
 async def get_vehicle_features(
-    r_client: Redis, config: Config, tg: TaskGroup, frequent_buses: bool = False
+    r_client: Redis,
+    config: Config,
+    tg: TaskGroup,
+    frequent_buses: bool = False,
+    session: ClientSession | None = None,
 ) -> dict[str, Feature]:
     """Extract vehicle features from Redis data"""
     add_current_span_attributes(
@@ -489,6 +493,44 @@ async def get_vehicle_features(
     stale_keys: list[bytes] = []
     validation_errors = 0
     filtered_count = 0
+
+    # Pre-scan: collect unique trip IDs for prediction lookup
+    unique_trip_ids: set[str] = set()
+    for vk_bytes, result in zip(vehicle_keys_list, results):
+        if not result:
+            continue
+        try:
+            vehicle_info: VehicleRedisSchema = VehicleRedisSchema.model_validate_json(
+                strict=False, json_data=result
+            )
+        except ValidationError:
+            continue
+
+        if (
+            vehicle_info.stop
+            and not vehicle_info.route.startswith("Amtrak")
+            and vehicle_info.speed is not None
+            and vehicle_info.speed >= 10
+            and vehicle_info.current_status != "STOPPED_AT"
+        ):
+            try:
+                trip_id = vk_bytes.decode().split(":", 1)[1]
+                unique_trip_ids.add(trip_id)
+            except (IndexError, UnicodeDecodeError):
+                continue
+
+    # Fetch predictions for eligible trips
+    pred_lookup: dict[tuple[str, str], datetime] = {}
+    if session is not None and unique_trip_ids:
+        try:
+            from api.services.predictions import batch_fetch_trip_predictions
+
+            predictions = await batch_fetch_trip_predictions(
+                session, r_client, list(unique_trip_ids)
+            )
+            pred_lookup = predictions
+        except Exception as exc:
+            logger.warning("Failed to batch-fetch predictions", exc_info=exc)
 
     for vk_bytes, result in zip(vehicle_keys_list, results):
         if not result:
@@ -550,10 +592,16 @@ async def get_vehicle_features(
                             and vehicle_info.speed >= 10
                             and vehicle_info.current_status != "STOPPED_AT"
                         ):
+                            try:
+                                pkey = (vk_bytes.decode().split(":", 1)[1], vehicle_info.stop)
+                                predicted = pred_lookup.get(pkey)
+                            except (IndexError, UnicodeDecodeError):
+                                predicted = None
                             stop_eta = calculate_stop_eta(
                                 Feature(geometry=stop_point),
                                 Feature(geometry=point),
                                 vehicle_info.speed,
+                                predicted_arrival=predicted,
                             )
             elif vehicle_info.stop:
                 route_icon = "rail_amtrak"
