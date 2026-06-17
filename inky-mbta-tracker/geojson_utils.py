@@ -100,7 +100,7 @@ async def _light_get_alerts_batch_impl(
     from mbta_client import MBTA_AUTH
     from mbta_responses import Alerts
 
-    endpoint = f"/alerts?filter[route]={routes_str}&api_key={MBTA_AUTH}&filter[lifecycle]=NEW,ONGOING,ONGOING_UPCOMING&filter[datetime]=NOW&filter[severity]=3,4,5,6,7,8,9,10"
+    endpoint = f"/alerts?filter[route]={routes_str}&api_key={MBTA_AUTH}&filter[lifecycle]=NEW,ONGOING,ONGOING_UPCOMING&filter[datetime]=NOW"
 
     logger.debug(f"Fetching alerts from endpoint: {endpoint}")
 

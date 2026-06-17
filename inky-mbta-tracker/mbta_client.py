@@ -73,6 +73,10 @@ logger = logging.getLogger(__name__)
 SHAPE_POLYLINES = set[str]()
 
 
+def occupancy_status_human_readable(occupancy: str) -> str:
+    return occupancy.replace("_", " ").capitalize()
+
+
 class MBTAApi:
     """
     MBTA API client
@@ -351,7 +355,7 @@ class MBTAApi:
         return hs
 
     async def _save_live_negative_cache(self, data: str, event_type: str):
-        ex_time = 30
+        ex_time = 5
         if self.watcher_type == TaskType.ALERTS:
             ex_time = HOUR
         h = f"{event_type}:{hashlib.sha512(data.encode('utf-8')).hexdigest()}"
@@ -620,10 +624,6 @@ class MBTAApi:
         return None
 
     @staticmethod
-    def occupancy_status_human_readable(occupancy: str) -> str:
-        return occupancy.replace("_", " ").capitalize()
-
-    @staticmethod
     def get_carriages(vehicle: VehicleResource) -> tuple[list[str], str]:
         carriages = list[str]()
         if vehicle.attributes.carriages:
@@ -727,7 +727,7 @@ class MBTAApi:
             if not occupancy:
                 carriage_ids, occupancy = self.get_carriages(item)
             if occupancy:
-                occupancy = self.occupancy_status_human_readable(occupancy)
+                occupancy = occupancy_status_human_readable(occupancy)
             route = ""
             trip_id = item.id
             trip_info = None

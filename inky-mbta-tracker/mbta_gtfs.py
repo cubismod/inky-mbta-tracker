@@ -10,7 +10,7 @@ from anyio.abc import TaskGroup
 from anyio.streams.memory import MemoryObjectSendStream
 from google.protobuf.json_format import MessageToDict
 from google.transit import gtfs_realtime_pb2
-from mbta_client import MBTAApi
+from mbta_client import MBTAApi, occupancy_status_human_readable
 from pydantic import ValidationError
 from redis.asyncio import Redis
 from redis_cache import get_cache
@@ -82,7 +82,7 @@ async def _process_gtfs_event(
         ("vehicle.occupancy_status", "occupancy_status"),
         ("vehicle.position.latitude", "latitude"),
         ("vehicle.position.longitude", "longitude"),
-        ("vehicle.id", "id"),
+        ("id", "id"),
         ("vehicle.current_status", "current_status"),
     ]
 
@@ -95,6 +95,11 @@ async def _process_gtfs_event(
     required_fields = ("id", "current_status", "direction_id", "latitude", "longitude")
     if not all(k in fields for k in required_fields):
         return
+
+    if fields.get("occupancy_status"):
+        fields["occupancy_status"] = occupancy_status_human_readable(
+            fields["occupancy_status"]
+        )
 
     carriages = _process_cariages(vehicle_entity)
 
@@ -136,10 +141,10 @@ async def gtfs_loop(
     tg: TaskGroup,
     config: Config,
 ):
-    vehicles_feed = gtfs_realtime_pb2.FeedMessage()  # type: ignore
     if config.vehicles_by_route:
         async with aiohttp.ClientSession(base_url=GTFS_BASE_URL) as session:
             while True:
+                vehicles_feed = gtfs_realtime_pb2.FeedMessage()  # type: ignore
                 response = await session.get("realtime/VehiclePositions.pb")
                 if response.status == 200:
                     vehicles_feed.ParseFromString(await response.read())
@@ -157,8 +162,7 @@ async def gtfs_loop(
                                         config.frequent_bus_lines
                                         and route_id in config.frequent_bus_lines
                                     ):
-                                        tg.start_soon(
-                                            _process_gtfs_event,
+                                        await _process_gtfs_event(
                                             entity_dict,
                                             r_client,
                                             send_stream,
@@ -166,4 +170,4 @@ async def gtfs_loop(
                                             tg,
                                             route_id,
                                         )
-                await sleep(randint(5, 30))
+                await sleep(10 + randint(0, 5))
