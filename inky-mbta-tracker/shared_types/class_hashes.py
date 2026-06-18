@@ -106,7 +106,7 @@ VEHICLEDOCUMENTLINKS_HASH = (
     "ef7be957388ae093042b57618f6dee7335980bc876f6891d3ff1973ac4ce5eb0"
 )
 VEHICLEREDISSCHEMA_HASH = (
-    "8128b707d9ecac3e9c17865224098d424897f301046d49a4c16cbce0ed0ae068"
+    "b065f5d0f94d7ab515eb2ee5b64c65778a0c169fffc10d95a26d8ccc57473e74"
 )
 VEHICLERELATIONSHIPS_HASH = (
     "078e29a43ecfa68fb47a3a8ff3e5a9ed5a340a3fed4da34896c4b84475a61a9d"
@@ -115,7 +115,7 @@ VEHICLERESOURCE_HASH = (
     "7e8aedebb8d5f16427dd6ab720b20eccd2ab3754b0e0cedafc3fd87a88f9ae35"
 )
 VEHICLESPEEDHISTORY_HASH = (
-    "50c0dbaf3fd593cf56ae2b4b47c14d37c4e875bc44cf9405f48c7d43110fc928"
+    "252a7c26611fe30fdf61bde80e903f845fa4522c9e71f1584a768f71affed3b5"
 )
 VEHICLES_HASH = "cf7ddcdceea75bc762fe2762da79e1741c7a8cc495fa785b86428a72fd92e7df"
 WEBHOOKREDISENTRY_HASH = (
@@ -177,10 +177,10 @@ CLASS_HASHES = {
     "Vehicle": "11c70fad89d12a37fd254242e810c8a10a2feaac2664e27384059a7aa73ce909",
     "VehicleAttributes": "a68d6a3cef5c270232b186c07da283095b6152152ef75ff2642470c54d7a44fd",
     "VehicleDocumentLinks": "ef7be957388ae093042b57618f6dee7335980bc876f6891d3ff1973ac4ce5eb0",
-    "VehicleRedisSchema": "8128b707d9ecac3e9c17865224098d424897f301046d49a4c16cbce0ed0ae068",
+    "VehicleRedisSchema": "b065f5d0f94d7ab515eb2ee5b64c65778a0c169fffc10d95a26d8ccc57473e74",
     "VehicleRelationships": "078e29a43ecfa68fb47a3a8ff3e5a9ed5a340a3fed4da34896c4b84475a61a9d",
     "VehicleResource": "7e8aedebb8d5f16427dd6ab720b20eccd2ab3754b0e0cedafc3fd87a88f9ae35",
-    "VehicleSpeedHistory": "50c0dbaf3fd593cf56ae2b4b47c14d37c4e875bc44cf9405f48c7d43110fc928",
+    "VehicleSpeedHistory": "252a7c26611fe30fdf61bde80e903f845fa4522c9e71f1584a768f71affed3b5",
     "Vehicles": "cf7ddcdceea75bc762fe2762da79e1741c7a8cc495fa785b86428a72fd92e7df",
     "WebhookRedisEntry": "08f839b3facddeaab83b99d17b87d3d26786a3c2ade5fb9b1ecd9771ddfe1d89",
 }

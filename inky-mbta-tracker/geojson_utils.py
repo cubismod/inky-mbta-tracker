@@ -1,6 +1,6 @@
 import hashlib
 import logging
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from math import cos, radians, sin, tau
 from typing import Optional
 
@@ -100,7 +100,7 @@ async def _light_get_alerts_batch_impl(
     from mbta_client import MBTA_AUTH
     from mbta_responses import Alerts
 
-    endpoint = f"/alerts?filter[route]={routes_str}&api_key={MBTA_AUTH}&filter[lifecycle]=NEW,ONGOING,ONGOING_UPCOMING&filter[datetime]=NOW&filter[severity]=3,4,5,6,7,8,9,10"
+    endpoint = f"/alerts?filter[route]={routes_str}&api_key={MBTA_AUTH}&filter[lifecycle]=NEW,ONGOING,ONGOING_UPCOMING&filter[datetime]=NOW"
 
     logger.debug(f"Fetching alerts from endpoint: {endpoint}")
 
@@ -197,11 +197,20 @@ def lookup_route_color(route: str) -> str:
     return ""
 
 
-def calculate_stop_eta(stop: Feature, vehicle: Feature, speed: float) -> str:
-    dis = distance(stop, vehicle, "mi")
-    # mi / mph = hr
-    elapsed = dis / speed
-    return humanize.naturaldelta(timedelta(hours=elapsed))
+def calculate_stop_eta(
+    stop: Feature,
+    vehicle: Feature,
+    speed: Optional[float],
+    predicted_arrival: datetime | None = None,
+) -> Optional[str]:
+    now = datetime.now(UTC)
+    if predicted_arrival is not None and predicted_arrival > now:
+        return humanize.naturaldelta(predicted_arrival - now)
+    if speed:
+        dis = distance(stop, vehicle, "mi")
+        # mi / mph = hr
+        elapsed = dis / speed
+        return humanize.naturaldelta(timedelta(hours=elapsed))
 
 
 def calculate_bearing(start: Point, end: Point) -> float:
@@ -429,7 +438,11 @@ async def collect_alerts(
 
 @traced_function("geojson_utils.get_vehicle_features")
 async def get_vehicle_features(
-    r_client: Redis, config: Config, tg: TaskGroup, frequent_buses: bool = False
+    r_client: Redis,
+    config: Config,
+    tg: TaskGroup,
+    frequent_buses: bool = False,
+    session: ClientSession | None = None,
 ) -> dict[str, Feature]:
     """Extract vehicle features from Redis data"""
     add_current_span_attributes(
@@ -481,6 +494,38 @@ async def get_vehicle_features(
     stale_keys: list[bytes] = []
     validation_errors = 0
     filtered_count = 0
+
+    # Pre-scan: collect unique stop IDs for prediction lookup
+    pred_lookup: dict[tuple[str, str], datetime] = {}
+    unique_stops: set[str] = set()
+    for vk_bytes, result in zip(vehicle_keys_list, results):
+        if not result:
+            continue
+        try:
+            vehicle_info = VehicleRedisSchema.model_validate_json(
+                strict=False, json_data=result
+            )
+        except ValidationError:
+            continue
+
+        if (
+            vehicle_info.stop
+            and not vehicle_info.route.startswith("Amtrak")
+            and vehicle_info.speed is not None
+            and vehicle_info.speed >= 10
+            and vehicle_info.current_status != "STOPPED_AT"
+        ):
+            unique_stops.add(vehicle_info.stop)
+
+    if unique_stops:
+        try:
+            from api.services.predictions import batch_fetch_trip_predictions
+
+            pred_lookup = await batch_fetch_trip_predictions(
+                session, r_client, list(unique_stops)
+            )
+        except Exception as exc:
+            logger.warning("Failed to batch-fetch predictions", exc_info=exc)
 
     for vk_bytes, result in zip(vehicle_keys_list, results):
         if not result:
@@ -537,15 +582,19 @@ async def get_vehicle_features(
                         lat = stop.lat
                         if not vehicle_bearing:
                             vehicle_bearing = calculate_bearing(point, stop_point)
-                        if (
-                            vehicle_info.speed
-                            and vehicle_info.speed >= 10
-                            and vehicle_info.current_status != "STOPPED_AT"
-                        ):
+                        if vehicle_info.current_status != "STOPPED_AT":
+                            predicted = (
+                                pred_lookup.get(
+                                    (vehicle_info.trip_id, vehicle_info.stop)
+                                )
+                                if vehicle_info.trip_id
+                                else None
+                            )  # type: ignore[arg-type]
                             stop_eta = calculate_stop_eta(
                                 Feature(geometry=stop_point),
                                 Feature(geometry=point),
                                 vehicle_info.speed,
+                                predicted_arrival=predicted,
                             )
             elif vehicle_info.stop:
                 route_icon = "rail_amtrak"

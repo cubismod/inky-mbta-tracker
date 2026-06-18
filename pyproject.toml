@@ -66,6 +66,7 @@ dependencies = [
     "opentelemetry-instrumentation-aiohttp-client>=0.49b0",
     "sentry-sdk[fastapi]>=2.0.0",
     "httptools>=0.7.1",
+    "gtfs-realtime-bindings>=2.0.0",
 ]
 
 [dependency-groups]

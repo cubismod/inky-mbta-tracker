@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -176,6 +176,52 @@ async def test_calculate_stop_eta_uses_distance_and_speed(mock_dist: MagicMock) 
         Feature(geometry=Point((0, 0))), Feature(geometry=Point((1, 1))), speed=60.0
     )
     # 10 miles at 60 mph -> 10 minutes
+    assert eta is not None
+    assert "10 minutes" in eta
+
+
+@patch("geojson_utils.distance", return_value=10.0)
+def test_calculate_stop_eta_uses_predicted_arrival_when_provided(
+    mock_dist: MagicMock,
+) -> None:
+    future = datetime.now(UTC) + timedelta(hours=1)
+    eta = calculate_stop_eta(
+        Feature(geometry=Point((0, 0))),
+        Feature(geometry=Point((1, 1))),
+        speed=60.0,
+        predicted_arrival=future,
+    )
+    # Should NOT call distance, should use predicted_arrival
+    mock_dist.assert_not_called()
+    assert eta is not None
+    assert "hour" in eta
+
+
+@patch("geojson_utils.distance", return_value=10.0)
+def test_calculate_stop_eta_falls_back_to_speed_when_no_prediction(
+    mock_dist: MagicMock,
+) -> None:
+    eta = calculate_stop_eta(
+        Feature(geometry=Point((0, 0))), Feature(geometry=Point((1, 1))), speed=60.0
+    )
+    mock_dist.assert_called_once()
+    assert eta is not None
+    assert "10 minutes" in eta
+
+
+@patch("geojson_utils.distance", return_value=10.0)
+def test_calculate_stop_eta_falls_back_when_prediction_is_past(
+    mock_dist: MagicMock,
+) -> None:
+    past = datetime(2020, 1, 1, tzinfo=UTC)
+    eta = calculate_stop_eta(
+        Feature(geometry=Point((0, 0))),
+        Feature(geometry=Point((1, 1))),
+        speed=60.0,
+        predicted_arrival=past,
+    )
+    mock_dist.assert_called_once()
+    assert eta is not None
     assert "10 minutes" in eta
 
 

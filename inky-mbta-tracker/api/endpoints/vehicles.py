@@ -50,7 +50,11 @@ async def get_vehicles(
             if commons.tg:
                 span.set_attribute("cache.hit", False)
                 features = await get_vehicle_features(
-                    commons.r_client, commons.config, commons.tg, frequent_buses
+                    commons.r_client,
+                    commons.config,
+                    commons.tg,
+                    frequent_buses,
+                    session=commons.session,
                 )
                 span.set_attribute("vehicles.count", len(features))
                 span.set_attribute("api.response.success", True)

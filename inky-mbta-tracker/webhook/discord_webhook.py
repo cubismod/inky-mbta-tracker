@@ -68,7 +68,7 @@ async def process_alert_event(
     routes = webhook_helpers.determine_alert_routes(alert)
     color = webhook_helpers.determine_alert_color(routes)
     route = ", ".join(routes)
-    if "CR" in route and alert.attributes.severity <= 5:
+    if route.startswith("CR") and alert.attributes.severity <= 5:
         # filter out low severity commuter rail alerts
         return
     updated_at = datetime.fromisoformat(alert.attributes.updated_at).astimezone(UTC)

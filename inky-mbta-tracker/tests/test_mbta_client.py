@@ -7,7 +7,11 @@ import anyio
 import pytest
 from aiohttp import ClientResponseError
 from exceptions import WatcherRefreshRequested
-from mbta_client import MBTAApi, silver_line_lookup
+from mbta_client import (
+    MBTAApi,
+    occupancy_status_human_readable,
+    silver_line_lookup,
+)
 from mbta_client_extended import (
     light_get_stop,
     watch_mbta_server_side_events,
@@ -284,10 +288,10 @@ class TestMBTAApi:
 
     def test_occupancy_status_human_readable(self) -> None:
         assert (
-            MBTAApi.occupancy_status_human_readable("MANY_SEATS_AVAILABLE")
+            occupancy_status_human_readable("MANY_SEATS_AVAILABLE")
             == "Many seats available"
         )
-        assert MBTAApi.occupancy_status_human_readable("FULL") == "Full"
+        assert occupancy_status_human_readable("FULL") == "Full"
 
     def test_abbreviate(self) -> None:
         assert MBTAApi.abbreviate("Massachusetts Avenue") == "Mass Ave"

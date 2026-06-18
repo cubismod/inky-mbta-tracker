@@ -73,6 +73,10 @@ logger = logging.getLogger(__name__)
 SHAPE_POLYLINES = set[str]()
 
 
+def occupancy_status_human_readable(occupancy: str) -> str:
+    return occupancy.replace("_", " ").capitalize()
+
+
 class MBTAApi:
     """
     MBTA API client
@@ -351,7 +355,7 @@ class MBTAApi:
         return hs
 
     async def _save_live_negative_cache(self, data: str, event_type: str):
-        ex_time = 3
+        ex_time = 5
         if self.watcher_type == TaskType.ALERTS:
             ex_time = HOUR
         h = f"{event_type}:{hashlib.sha512(data.encode('utf-8')).hexdigest()}"
@@ -578,7 +582,6 @@ class MBTAApi:
                             tg.start_soon(
                                 self._send_remove_event, type_and_id, send_stream
                             )
-
                 tg.start_soon(self._save_live_negative_cache, data, event_type)
             except ValidationError as err:
                 logger.error("Unable to parse schedule", exc_info=err)
@@ -619,10 +622,6 @@ class MBTAApi:
         if speed is not None:
             return speed * 2.23693629
         return None
-
-    @staticmethod
-    def occupancy_status_human_readable(occupancy: str) -> str:
-        return occupancy.replace("_", " ").capitalize()
 
     @staticmethod
     def get_carriages(vehicle: VehicleResource) -> tuple[list[str], str]:
@@ -728,7 +727,7 @@ class MBTAApi:
             if not occupancy:
                 carriage_ids, occupancy = self.get_carriages(item)
             if occupancy:
-                occupancy = self.occupancy_status_human_readable(occupancy)
+                occupancy = occupancy_status_human_readable(occupancy)
             route = ""
             trip_id = item.id
             trip_info = None
@@ -757,6 +756,13 @@ class MBTAApi:
             headsign = None
             if trip_info and len(trip_info.data) > 0:
                 headsign = trip_info.data[0].attributes.headsign
+            trip_resource_id: str | None = None
+            if (
+                item.relationships
+                and item.relationships.trip
+                and item.relationships.trip.data
+            ):
+                trip_resource_id = item.relationships.trip.data.id
             event = VehicleRedisSchema(  # type: ignore
                 action=event_type,
                 id=trip_id,
@@ -770,6 +776,7 @@ class MBTAApi:
                 update_time=datetime.now().astimezone(UTC),
                 occupancy_status=occupancy,
                 headsign=headsign,
+                trip_id=trip_resource_id,
             )
             if (
                 item.relationships
@@ -816,7 +823,9 @@ class MBTAApi:
                 span.set_attribute("session.closed", True)
             return None
         key = f"trip:{trip_id}:full"
+        trip_negative_cache = f"trip:{trip_id}:negative"
         cached = await get_cache(self.r_client, key)
+        cached_negative = await get_cache(self.r_client, trip_negative_cache)
         try:
             if cached:
                 if span:
@@ -824,6 +833,11 @@ class MBTAApi:
                 trip = Trips.model_validate_json(cached, strict=False)
                 add_span_attributes(span, {"trip.result": "cache_hit"})
                 return trip
+            elif cached_negative:
+                if span:
+                    add_span_attributes(span, {"cache.hit": True})
+                add_span_attributes(span, {"trip.result": "cache_hit"})
+                return None
             else:
                 if span:
                     add_span_attributes(span, {"cache.hit": False})
@@ -841,6 +855,12 @@ class MBTAApi:
                     )
                     if response.status == 429:
                         raise RateLimitExceeded()
+                    if response.status == 403:
+                        logger.warning(f"Received 403 for trip {trip_id}")
+                        await write_cache(
+                            self.r_client, trip_negative_cache, "negative", WEEK
+                        )
+                        return None
                     body = await response.text()
                     mbta_api_requests.labels("trips").inc()
 
