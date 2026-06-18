@@ -1,5 +1,6 @@
 import hashlib
 import logging
+import re
 from datetime import UTC, datetime, timedelta
 from math import cos, radians, sin, tau
 from typing import Optional
@@ -38,6 +39,12 @@ logger = logging.getLogger("geojson_utils")
 
 STOPPED_VEHICLE_OFFSET_METERS = 4.0
 METERS_PER_LATITUDE_DEGREE = 111_320.0
+
+_STOP_NAME_SEP = re.compile(r"\s*-\s*")
+
+
+def short_stop_name(stop_name: str | None) -> str | None:
+    return _STOP_NAME_SEP.split(stop_name, maxsplit=1)[0] if stop_name else stop_name
 
 
 def vehicle_display_point(
@@ -626,7 +633,7 @@ async def get_vehicle_features(
                     else None,
                     "direction": vehicle_info.direction_id,
                     "id": vehicle_info.id,
-                    "stop": stop_id,
+                    "stop": short_stop_name(stop_id),
                     "stop_eta": stop_eta,
                     "stop_id": mbta_stop_id,
                     "parent_stop_id": parent_stop_id,
