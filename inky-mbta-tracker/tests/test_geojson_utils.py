@@ -176,6 +176,7 @@ async def test_calculate_stop_eta_uses_distance_and_speed(mock_dist: MagicMock) 
         Feature(geometry=Point((0, 0))), Feature(geometry=Point((1, 1))), speed=60.0
     )
     # 10 miles at 60 mph -> 10 minutes
+    assert eta is not None
     assert "10 minutes" in eta
 
 
@@ -192,6 +193,7 @@ def test_calculate_stop_eta_uses_predicted_arrival_when_provided(
     )
     # Should NOT call distance, should use predicted_arrival
     mock_dist.assert_not_called()
+    assert eta is not None
     assert "hour" in eta
 
 
@@ -203,6 +205,7 @@ def test_calculate_stop_eta_falls_back_to_speed_when_no_prediction(
         Feature(geometry=Point((0, 0))), Feature(geometry=Point((1, 1))), speed=60.0
     )
     mock_dist.assert_called_once()
+    assert eta is not None
     assert "10 minutes" in eta
 
 
@@ -218,6 +221,7 @@ def test_calculate_stop_eta_falls_back_when_prediction_is_past(
         predicted_arrival=past,
     )
     mock_dist.assert_called_once()
+    assert eta is not None
     assert "10 minutes" in eta
 
 
