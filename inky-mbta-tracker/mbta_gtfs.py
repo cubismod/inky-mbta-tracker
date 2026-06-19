@@ -143,8 +143,8 @@ async def gtfs_loop(
 ):
     if config.vehicles_by_route:
         async with aiohttp.ClientSession(base_url=GTFS_BASE_URL) as session:
+            vehicles_feed = gtfs_realtime_pb2.FeedMessage()  # type: ignore
             while True:
-                vehicles_feed = gtfs_realtime_pb2.FeedMessage()  # type: ignore
                 response = await session.get("realtime/VehiclePositions.pb")
                 if response.status == 200:
                     vehicles_feed.ParseFromString(await response.read())
