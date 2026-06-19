@@ -145,29 +145,29 @@ async def gtfs_loop(
         async with aiohttp.ClientSession(base_url=GTFS_BASE_URL) as session:
             vehicles_feed = gtfs_realtime_pb2.FeedMessage()  # type: ignore
             while True:
-                response = await session.get("realtime/VehiclePositions.pb")
-                if response.status == 200:
-                    vehicles_feed.ParseFromString(await response.read())
-                    for entity in vehicles_feed.entity:
-                        entity_dict = MessageToDict(
-                            entity, preserving_proto_field_name=True
-                        )
-                        if "vehicle" in entity_dict:
-                            vehicle = entity_dict["vehicle"]
-                            if "trip" in vehicle:
-                                trip = vehicle["trip"]
-                                if "route_id" in trip:
-                                    route_id = trip["route_id"]
-                                    if route_id in config.vehicles_by_route or (
-                                        config.frequent_bus_lines
-                                        and route_id in config.frequent_bus_lines
-                                    ):
-                                        await _process_gtfs_event(
-                                            entity_dict,
-                                            r_client,
-                                            send_stream,
-                                            session,
-                                            tg,
-                                            route_id,
-                                        )
+                async with session.get("realtime/VehiclePositions.pb") as response:
+                    if response.status == 200:
+                        vehicles_feed.ParseFromString(await response.read())
+                        for entity in vehicles_feed.entity:
+                            entity_dict = MessageToDict(
+                                entity, preserving_proto_field_name=True
+                            )
+                            if "vehicle" in entity_dict:
+                                vehicle = entity_dict["vehicle"]
+                                if "trip" in vehicle:
+                                    trip = vehicle["trip"]
+                                    if "route_id" in trip:
+                                        route_id = trip["route_id"]
+                                        if route_id in config.vehicles_by_route or (
+                                            config.frequent_bus_lines
+                                            and route_id in config.frequent_bus_lines
+                                        ):
+                                            await _process_gtfs_event(
+                                                entity_dict,
+                                                r_client,
+                                                send_stream,
+                                                session,
+                                                tg,
+                                                route_id,
+                                            )
                 await sleep(10 + randint(0, 5))
