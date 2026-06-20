@@ -1,0 +1,70 @@
+{}
+
+# main IMT server
+:80 {
+	log
+
+	rate_limit {
+		zone by_ip {
+			key {remote_host}
+			events 300
+			window 1m
+			log_key
+		}
+		zone overall {
+			events 2500
+			key overall
+			window 1s
+			log_key
+		}
+	}
+
+	# Aggressive cache for shapes & stops endpoints
+	@shapes path /shapes /shapes.json /stops
+	header @shapes Cache-Control "public, max-age=600, s-maxage=600, stale-while-revalidate=1800, stale-if-error=600, immutable"
+
+	# Do not cache health/metrics/vehicles/SSE
+	@no_cache path /health /metrics /vehicles /vehicles.json
+	header @no_cache Cache-Control "no-store"
+
+	# Short-lived cache for fast-changing prediction data
+	@predictions path /predictions /chained-predictions
+	header @predictions Cache-Control "public, max-age=15, s-maxage=15, stale-while-revalidate=30, stale-if-error=30"
+
+	# Brief cache for alerts feeds only
+	@feeds path /alerts /alerts.json
+	header @feeds Cache-Control "public, max-age=30, s-maxage=30, stale-while-revalidate=60, stale-if-error=60"
+
+	# Longer cache for stats and historical endpoints
+	@stats path_regexp stats ^/stats/.+/.+$
+	header @stats Cache-Control "public, max-age=600, s-maxage=600, stale-while-revalidate=1800, stale-if-error=1800"
+
+	@historical path_regexp historical ^/historical/.+/.+$
+	header @historical Cache-Control "public, max-age=21600, s-maxage=21600, stale-while-revalidate=86400, stale-if-error=86400"
+
+	# SSE stream: no cache, no compression, immediate flushing, long-lived upstream reads
+	@vehicles_stream path /vehicles/stream
+	handle @vehicles_stream {
+		header {
+			Cache-Control "no-store"
+			X-Accel-Buffering "no"
+		}
+
+		reverse_proxy "http://localhost" {
+			flush_interval -1
+			transport http {
+				read_timeout 0
+				write_timeout 0
+				dial_timeout 10s
+			}
+		}
+	}
+
+	# Normal HTTP endpoints
+	handle {
+		cache
+		reverse_proxy "http://localhost" {
+		}
+		encode zstd gzip
+	}
+}
