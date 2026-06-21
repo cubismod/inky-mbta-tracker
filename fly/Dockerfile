@@ -15,8 +15,8 @@ RUN apt update && apt install -y build-essential cmake m4 wget && \
 
 FROM ghcr.io/cubismod/inky-mbta-tracker:latest
 
-COPY --from=dinit-builder /dinit-out/usr/local/bin/dinit /usr/local/bin/dinit
-COPY --from=dinit-builder /dinit-out/usr/local/bin/dinitctl /usr/local/bin/dinitctl
+COPY --from=dinit-builder /dinit-out/usr/bin/dinit /usr/local/bin/dinit
+COPY --from=dinit-builder /dinit-out/usr/bin/dinitctl /usr/local/bin/dinitctl
 
 RUN apt update && apt install -y valkey-server && rm -rf /var/lib/apt/lists/*
 
