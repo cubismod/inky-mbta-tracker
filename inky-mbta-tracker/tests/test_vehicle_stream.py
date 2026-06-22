@@ -252,3 +252,84 @@ async def test_vehicle_stream_manager_resets_started_after_producer_setup_error(
 
         await manager.aclose()
         tg.cancel_scope.cancel()
+
+
+async def _wait_for_producer_exit(
+    manager: VehicleStreamManager, frequent_buses: bool = False
+) -> None:
+    state = await manager._state_for(frequent_buses)
+    for _ in range(200):
+        async with state.lock:
+            if not state.started:
+                return
+        await sleep(0.01)
+    raise AssertionError("producer did not exit within timeout")
+
+
+@pytest.mark.anyio("asyncio")
+async def test_vehicle_stream_manager_clears_replay_cache_when_producer_exits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_get_vehicles_data(
+        *_args: object, **_kwargs: object
+    ) -> dict[str, Feature]:
+        return {"vehicle-1": _vehicle("vehicle-1", stale=True)}
+
+    monkeypatch.setattr(vehicle_stream, "DIParams", FakeDIParams)
+    monkeypatch.setattr(vehicle_stream, "get_vehicles_data", fake_get_vehicles_data)
+
+    async with create_task_group() as tg:
+        manager = VehicleStreamManager(object(), tg, interval_seconds=1)
+        async with manager.subscribe("full", frequent_buses=False) as sub:
+            await sub.receive()
+
+        await _wait_for_producer_exit(manager)
+
+        state = await manager._state_for(False)
+        async with state.lock:
+            assert state.started is False
+            assert state.latest_full_event is None
+            assert state.latest_delta_snapshot_event is None
+            assert state.last_raw_data == {}
+            assert state.empty_snapshot_skips == 0
+
+        await manager.aclose()
+        tg.cancel_scope.cancel()
+
+
+@pytest.mark.anyio("asyncio")
+async def test_vehicle_stream_manager_no_stale_replay_for_new_subscriber(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fetch_data: dict[str, Feature] = {
+        "vehicle-1": _vehicle("vehicle-1", generation="old"),
+    }
+
+    async def fake_get_vehicles_data(
+        *_args: object, **_kwargs: object
+    ) -> dict[str, Feature]:
+        return fetch_data
+
+    monkeypatch.setattr(vehicle_stream, "DIParams", FakeDIParams)
+    monkeypatch.setattr(vehicle_stream, "get_vehicles_data", fake_get_vehicles_data)
+
+    async with create_task_group() as tg:
+        manager = VehicleStreamManager(object(), tg, interval_seconds=1)
+
+        async with manager.subscribe("full", frequent_buses=False) as first:
+            first_event = await first.receive()
+            assert _sse_data(first_event)["features"][0]["id"] == "vehicle-1"
+
+        await _wait_for_producer_exit(manager)
+
+        fetch_data = {"vehicle-2": _vehicle("vehicle-2", generation="fresh")}
+
+        async with manager.subscribe("full", frequent_buses=False) as second:
+            second_event = await second.receive()
+            data = _sse_data(second_event)
+            vehicle_ids = [f["id"] for f in data["features"]]
+            assert "vehicle-2" in vehicle_ids
+            assert "vehicle-1" not in vehicle_ids
+
+        await manager.aclose()
+        tg.cancel_scope.cancel()

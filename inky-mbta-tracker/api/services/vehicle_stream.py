@@ -367,6 +367,10 @@ class VehicleStreamManager:
         finally:
             async with state.lock:
                 state.started = False
+                state.last_raw_data = {}
+                state.latest_full_event = None
+                state.latest_delta_snapshot_event = None
+                state.empty_snapshot_skips = 0
             vehicle_stream_active_producers.labels(label).set(0)
 
     async def _broadcast(
