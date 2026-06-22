@@ -5,6 +5,7 @@ import os
 import random
 import time
 from asyncio import CancelledError
+from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
 from typing import Callable, Optional, Tuple
 from zoneinfo import ZoneInfo
@@ -15,9 +16,7 @@ from anyio.abc import TaskGroup
 from config import Config
 from consts import DAY
 from exceptions import RateLimitExceeded
-from mbta_client_extended import silver_line_lookup
 from mbta_responses import AlertResource
-from opentelemetry.trace import Span
 from otel_config import get_tracer, is_otel_enabled
 from otel_utils import should_trace_operation
 from pydantic import ValidationError
@@ -49,12 +48,8 @@ logger = logging.getLogger(__name__)
 
 WEBHOOK_URL = os.getenv("IMT_DISCORD_URL")
 
-
-PendingWebhookEntry = webhook_helpers.PendingWebhookEntry
 PendingBatchItem = webhook_helpers.PendingBatchItem
 PendingBatchEntry = webhook_helpers.PendingBatchEntry
-PENDING_WEBHOOK_TTL = webhook_helpers.PENDING_WEBHOOK_TTL
-PENDING_WEBHOOK_DELAY_RANGE = webhook_helpers.PENDING_WEBHOOK_DELAY_RANGE
 BATCH_WINDOW_SECONDS = webhook_helpers.BATCH_WINDOW_SECONDS
 SHORT_BATCH_WINDOW_SECONDS = webhook_helpers.SHORT_BATCH_WINDOW_SECONDS
 PENDING_BATCH_TTL = webhook_helpers.PENDING_BATCH_TTL
@@ -67,10 +62,6 @@ async def process_alert_event(
 ):
     routes = webhook_helpers.determine_alert_routes(alert)
     color = webhook_helpers.determine_alert_color(routes)
-    route = ", ".join(routes)
-    if route.startswith("CR") and alert.attributes.severity <= 5:
-        # filter out low severity commuter rail alerts
-        return
     updated_at = datetime.fromisoformat(alert.attributes.updated_at).astimezone(UTC)
     if updated_at < (datetime.now(UTC) - timedelta(minutes=15)):
         logger.debug(
@@ -81,11 +72,7 @@ async def process_alert_event(
     if WEBHOOK_URL:
         webhook = create_webhook_object(alert, routes, color, config)
         scheduled, batch_id = await enqueue_pending_batch(
-            alert.id,
-            webhook,
-            routes,
-            alert.attributes.created_at,
-            r_client,
+            alert.id, webhook, routes, alert.attributes.created_at, r_client
         )
         if batch_id:
             tg.start_soon(send_batch_entry, batch_id, r_client, config)
@@ -100,7 +87,7 @@ def create_webhook_object(
         description=alert.attributes.header,
         timestamp=alert.attributes.updated_at,
         author=DiscordEmbedAuthor(
-            name=f"{format_route_names(', '.join(routes))} Alert",
+            name=f"{webhook_helpers.format_route_names(', '.join(routes))} Alert",
             url="https://bostontraintracker.com",
         ),
         color=color,
@@ -110,7 +97,9 @@ def create_webhook_object(
     if len(routes) > 1:
         embed.fields = [
             DiscordEmbedField(
-                name="Lines", value=format_route_names(", ".join(routes)), inline=False
+                name="Lines",
+                value=webhook_helpers.format_route_names(", ".join(routes)),
+                inline=False,
             )
         ]
     avatar_url = None
@@ -124,51 +113,33 @@ def create_webhook_object(
     return DiscordWebhook(avatar_url=avatar_url, embeds=[embed])
 
 
-def _validate_batch_entry(raw: str) -> Optional[PendingBatchEntry]:
-    try:
-        return PendingBatchEntry.model_validate_json(raw)
-    except ValidationError as err:
-        logger.error("Failed to parse pending batch cache", exc_info=err)
-        return None
-
-
-async def _get_pending_entry(
-    r_client: RedisClient, webhook_id: str
-) -> Optional[PendingWebhookEntry]:
-    raw = await r_client.get(webhook_helpers._pending_key(webhook_id))
-    if not raw:
-        return None
-    if isinstance(raw, bytes):
-        raw = raw.decode("utf-8")
-    try:
-        return PendingWebhookEntry.model_validate_json(raw)
-    except ValidationError as err:
-        logger.error(
-            f"Failed to parse pending webhook cache for {webhook_id}", exc_info=err
-        )
-        return None
-
-
 async def _get_pending_batch_entry(
     r_client: RedisClient,
 ) -> Optional[PendingBatchEntry]:
-    raw = await r_client.get(webhook_helpers._batch_key())
-    if not raw:
-        return None
-    if isinstance(raw, bytes):
-        raw = raw.decode("utf-8")
-    return _validate_batch_entry(raw)
+    return await _get_batch_entry_by_key(r_client, webhook_helpers.PENDING_BATCH_KEY)
 
 
 async def _get_batch_entry(
     r_client: RedisClient, batch_id: str
 ) -> Optional[PendingBatchEntry]:
-    raw = await r_client.get(webhook_helpers._batch_entry_key(batch_id))
+    return await _get_batch_entry_by_key(
+        r_client, webhook_helpers._batch_entry_key(batch_id)
+    )
+
+
+async def _get_batch_entry_by_key(
+    r_client: RedisClient, key: str
+) -> Optional[PendingBatchEntry]:
+    raw = await r_client.get(key)
     if not raw:
         return None
     if isinstance(raw, bytes):
         raw = raw.decode("utf-8")
-    return _validate_batch_entry(raw)
+    try:
+        return PendingBatchEntry.model_validate_json(raw)
+    except ValidationError as err:
+        logger.error("Failed to parse pending batch cache", exc_info=err)
+        return None
 
 
 async def enqueue_pending_batch(
@@ -203,88 +174,54 @@ async def enqueue_pending_batch(
                 existing_batch_id = existing_batch_id.decode("utf-8")
             batch_entry = await _get_batch_entry(r_client, existing_batch_id)
             if batch_entry:
-                updated_items = webhook_helpers._upsert_batch_items(
-                    batch_entry.items, item
-                )
-                updated_entry = batch_entry.model_copy(update={"items": updated_items})
                 await r_client.set(
                     webhook_helpers._batch_entry_key(existing_batch_id),
-                    updated_entry.model_dump_json(),
+                    batch_entry.model_copy(
+                        update={
+                            "items": webhook_helpers._upsert_batch_items(
+                                batch_entry.items, item
+                            )
+                        }
+                    ).model_dump_json(),
                     ex=BATCH_ENTRY_TTL,
                 )
                 return False, existing_batch_id
 
         pending = await _get_pending_batch_entry(r_client)
         if pending:
-            ready_at = pending.ready_at
-            extended = pending.extended
             first_seen = pending.first_seen
             if first_seen is None:
                 first_seen = pending.ready_at - BATCH_WINDOW_SECONDS
-            if not pending.extended:
-                ready_at = first_seen + BATCH_WINDOW_SECONDS
-                extended = True
+            ready_at = (
+                pending.ready_at
+                if pending.extended
+                else first_seen + BATCH_WINDOW_SECONDS
+            )
             updated_entry = pending.model_copy(
                 update={
                     "items": webhook_helpers._upsert_batch_items(pending.items, item),
                     "ready_at": ready_at,
                     "first_seen": first_seen,
-                    "extended": extended,
+                    "extended": True,
                 }
             )
             await r_client.set(
-                webhook_helpers._batch_key(),
+                webhook_helpers.PENDING_BATCH_KEY,
                 updated_entry.model_dump_json(),
                 ex=PENDING_BATCH_TTL,
             )
             return updated_entry.ready_at <= now, None
 
         batch_id = f"{int(now * 1000)}-{random.randint(0, 9999):04d}"
-        first_seen = now
-        ready_at = now + SHORT_BATCH_WINDOW_SECONDS
         entry = PendingBatchEntry(
             batch_id=batch_id,
-            ready_at=ready_at,
+            ready_at=now + SHORT_BATCH_WINDOW_SECONDS,
             items=[item],
-            first_seen=first_seen,
+            first_seen=now,
             extended=False,
         )
-        created = await r_client.set(
-            webhook_helpers._batch_key(),
-            entry.model_dump_json(),
-            ex=PENDING_BATCH_TTL,
-            nx=True,
-        )
-        if created:
-            return True, None
-
-        pending = await _get_pending_batch_entry(r_client)
-        if pending:
-            ready_at = pending.ready_at
-            extended = pending.extended
-            first_seen = pending.first_seen
-            if first_seen is None:
-                first_seen = pending.ready_at - BATCH_WINDOW_SECONDS
-            if not pending.extended:
-                ready_at = first_seen + BATCH_WINDOW_SECONDS
-                extended = True
-            updated_entry = pending.model_copy(
-                update={
-                    "items": webhook_helpers._upsert_batch_items(pending.items, item),
-                    "ready_at": ready_at,
-                    "first_seen": first_seen,
-                    "extended": extended,
-                }
-            )
-            await r_client.set(
-                webhook_helpers._batch_key(),
-                updated_entry.model_dump_json(),
-                ex=PENDING_BATCH_TTL,
-            )
-            return updated_entry.ready_at <= now, None
-
         await r_client.set(
-            webhook_helpers._batch_key(),
+            webhook_helpers.PENDING_BATCH_KEY,
             entry.model_dump_json(),
             ex=PENDING_BATCH_TTL,
         )
@@ -293,28 +230,42 @@ async def enqueue_pending_batch(
 
 async def _delayed_send_batch(r_client: RedisClient, config: Config) -> None:
     if not await r_client.set(
-        webhook_helpers._batch_sender_key(), "1", nx=True, ex=PENDING_BATCH_TTL
+        webhook_helpers.PENDING_BATCH_SENDER_KEY, "1", nx=True, ex=PENDING_BATCH_TTL
     ):
         return
     try:
-        pending = await _get_pending_batch_entry(r_client)
-        if not pending:
-            return
-        delay = pending.ready_at - time.time()
-        if delay > 0:
-            await anyio.sleep(delay)
         while True:
-            await send_pending_batch(r_client, config)
-            next_pending = await _get_pending_batch_entry(r_client)
-            if not next_pending:
+            pending = await _get_pending_batch_entry(r_client)
+            if not pending:
                 return
-            delay = next_pending.ready_at - time.time()
+            delay = pending.ready_at - time.time()
             if delay > 0:
                 await anyio.sleep(delay)
-            else:
-                await anyio.sleep(0)
+            await send_pending_batch(r_client, config)
     finally:
-        await r_client.delete(webhook_helpers._batch_sender_key())
+        await r_client.delete(webhook_helpers.PENDING_BATCH_SENDER_KEY)
+
+
+async def _send_items(
+    items: list[PendingBatchItem],
+    batch_id: str,
+    config: Config,
+    r_client: RedisClient,
+) -> None:
+    if len(items) == 1:
+        item = items[0]
+        try:
+            webhook = DiscordWebhook.model_validate_json(item.webhook_json)
+        except ValidationError as err:
+            logger.error(
+                f"Failed to parse pending batch payload for {item.webhook_id}",
+                exc_info=err,
+            )
+            return
+        await _send_webhook_payload(item.webhook_id, webhook, r_client)
+    elif len(items) > 1:
+        grouped = webhook_helpers.build_grouped_webhook(items, config)
+        await _send_webhook_payload(f"{BATCH_WEBHOOK_ID}:{batch_id}", grouped, r_client)
 
 
 @retry(
@@ -339,59 +290,9 @@ async def send_batch_entry(
         batch_entry = await _get_batch_entry(r_client, batch_id)
         if not batch_entry:
             return
-        items = batch_entry.items
-        if not items:
+        if not batch_entry.items:
             return
-        if len(items) == 1:
-            item = items[0]
-            try:
-                webhook = DiscordWebhook.model_validate_json(item.webhook_json)
-            except ValidationError as err:
-                logger.error(
-                    f"Failed to parse pending batch payload for {item.webhook_id}",
-                    exc_info=err,
-                )
-                return
-            await _send_webhook_payload(item.webhook_id, webhook, r_client)
-            return
-        grouped = webhook_helpers.build_grouped_webhook(items, config)
-        batch_message_id = f"{BATCH_WEBHOOK_ID}:{batch_id}"
-        await _send_webhook_payload(batch_message_id, grouped, r_client)
-
-
-def format_route_names(payload: str) -> str:
-    new_payload: list[str] = []
-    for i in payload.split():
-        if i.startswith("CR-"):
-            i = f"{i.replace('CR-', '')} Line"
-        new_payload.append(silver_line_lookup(i))
-    return " ".join(new_payload)
-
-
-async def _send_webhook_payload(
-    webhook_id: str, webhook: DiscordWebhook, r_client: RedisClient
-) -> None:
-    if WEBHOOK_URL:
-        async with aiohttp.ClientSession() as session:
-            existing = await get_cache(r_client, f"webhook:{webhook_id}")
-            if existing:
-                try:
-                    existing_val = WebhookRedisEntry.model_validate_json(existing)
-                    await patch_webhook(
-                        WEBHOOK_URL,
-                        webhook,
-                        webhook_id,
-                        existing_val.message_id,
-                        session,
-                        r_client,
-                    )
-                except ValidationError as err:
-                    logger.error(
-                        f"Failed to parse existing webhook cache for {webhook_id}",
-                        exc_info=err,
-                    )
-            else:
-                await post_webhook(WEBHOOK_URL, webhook_id, webhook, r_client, session)
+        await _send_items(batch_entry.items, batch_entry.batch_id, config, r_client)
 
 
 @retry(stop=stop_after_attempt(5), wait=wait_exponential(multiplier=1, min=4, max=10))
@@ -401,9 +302,7 @@ async def send_pending_batch(
     clock: Callable[[], float] = time.time,
 ) -> None:
     pending = await _get_pending_batch_entry(r_client)
-    if not pending:
-        return
-    if pending.ready_at > clock():
+    if not pending or pending.ready_at > clock():
         return
 
     async with RedisLock(
@@ -416,71 +315,60 @@ async def send_pending_batch(
         if not pending:
             logger.info("Pending batch missing after lock")
             return
-        items: list[PendingBatchItem] = []
-        for item in pending.items:
-            items.append(item)
+        items = pending.items
         if not items:
-            await r_client.delete(webhook_helpers._batch_key())
+            await r_client.delete(webhook_helpers.PENDING_BATCH_KEY)
             return
 
-        if len(items) == 1:
-            item = items[0]
-            try:
-                webhook = DiscordWebhook.model_validate_json(item.webhook_json)
-            except ValidationError as err:
-                logger.error(
-                    f"Failed to parse pending batch payload for {item.webhook_id}",
-                    exc_info=err,
-                )
-                await r_client.delete(webhook_helpers._batch_key())
-                return
-            await _send_webhook_payload(item.webhook_id, webhook, r_client)
-            individual_entry = PendingBatchEntry(
-                batch_id=item.webhook_id,
-                ready_at=0.0,
-                items=[item],
-            )
-            await r_client.set(
-                webhook_helpers._batch_entry_key(item.webhook_id),
-                individual_entry.model_dump_json(),
-                ex=BATCH_ENTRY_TTL,
-            )
-            await r_client.set(
-                webhook_helpers._alert_batch_key(item.webhook_id),
-                item.webhook_id,
-                ex=BATCH_ENTRY_TTL,
-            )
-            await r_client.delete(webhook_helpers._batch_key())
-            return
+        await _send_items(items, pending.batch_id, config, r_client)
 
-        grouped = webhook_helpers.build_grouped_webhook(items, config)
-        batch_id = f"{BATCH_WEBHOOK_ID}:{pending.batch_id}"
-        logger.debug(
-            "Sending batch",
-            extra={
-                "batch_id": batch_id,
-                "items": len(items),
-                "ready_at": pending.ready_at,
-            },
-        )
-        await _send_webhook_payload(batch_id, grouped, r_client)
+        storage_batch_id = items[0].webhook_id if len(items) == 1 else pending.batch_id
         batch_entry = PendingBatchEntry(
-            batch_id=pending.batch_id,
-            ready_at=pending.ready_at,
+            batch_id=storage_batch_id,
+            ready_at=pending.ready_at if len(items) > 1 else 0.0,
             items=items,
         )
         await r_client.set(
-            webhook_helpers._batch_entry_key(pending.batch_id),
+            webhook_helpers._batch_entry_key(storage_batch_id),
             batch_entry.model_dump_json(),
             ex=BATCH_ENTRY_TTL,
         )
         for item in items:
             await r_client.set(
                 webhook_helpers._alert_batch_key(item.webhook_id),
-                pending.batch_id,
+                storage_batch_id,
                 ex=BATCH_ENTRY_TTL,
             )
-        await r_client.delete(webhook_helpers._batch_key())
+        await r_client.delete(webhook_helpers.PENDING_BATCH_KEY)
+
+
+async def _send_webhook_payload(
+    webhook_id: str, webhook: DiscordWebhook, r_client: RedisClient
+) -> None:
+    if not WEBHOOK_URL:
+        return
+    existing = await get_cache(r_client, f"webhook:{webhook_id}")
+    async with aiohttp.ClientSession() as session:
+        if existing:
+            try:
+                existing_val = WebhookRedisEntry.model_validate_json(existing)
+            except ValidationError as err:
+                logger.error(
+                    f"Failed to parse existing webhook cache for {webhook_id}",
+                    exc_info=err,
+                )
+                return
+            await patch_webhook(
+                WEBHOOK_URL,
+                webhook,
+                webhook_id,
+                existing_val.message_id,
+                existing_val.message_hash,
+                session,
+                r_client,
+            )
+        else:
+            await post_webhook(WEBHOOK_URL, webhook_id, webhook, r_client, session)
 
 
 @retry(
@@ -494,63 +382,53 @@ async def post_webhook(
     webhook: DiscordWebhook,
     r_client: Redis,
     session: aiohttp.ClientSession,
-):
+) -> None:
     tracer = get_tracer(__name__) if is_otel_enabled() else None
-    if tracer and should_trace_operation("low_volume"):
-        with tracer.start_as_current_span(
+    with (
+        tracer.start_as_current_span(
             "discord_webhook.post_webhook", attributes={"webhook_id": webhook_id}
-        ) as span:
-            await _post_webhook_impl(url, webhook_id, webhook, r_client, session, span)
-    else:
-        await _post_webhook_impl(url, webhook_id, webhook, r_client, session, None)
-
-
-async def _post_webhook_impl(
-    url: str,
-    webhook_id: str,
-    webhook: DiscordWebhook,
-    r_client: Redis,
-    session: aiohttp.ClientSession,
-    span: Optional[Span],
-):
-    if await webhook_helpers.get_webhook_duplicate(r_client, webhook):
-        logger.debug(
-            f"Webhook {webhook_id} is a duplicate of an existing webhook, skipping post"
         )
-        return
-    async with session.post(
-        f"{url}?wait=true",
-        data=webhook.model_dump_json(),
-        headers={"Content-Type": "application/json"},
-    ) as response:
-        if response.status == 429:
-            raise RateLimitExceeded()
-        body = await response.text()
-        if response.status != 200 and response.status != 204:
-            logger.error(
-                f"Failed to post webhook {webhook_id}, status {response.status}, body: {body}"
+        if tracer and should_trace_operation("low_volume")
+        else nullcontext() as span
+    ):
+        if await webhook_helpers.get_webhook_duplicate(r_client, webhook):
+            logger.debug(
+                f"Webhook {webhook_id} is a duplicate of an existing webhook, skipping post"
             )
-            if span:
-                span.set_attribute("error", True)
-                span.set_attribute("error.type", "http_error")
-                span.set_attribute("http.status_code", response.status)
             return
-        if span:
-            span.set_attribute("http.status_code", response.status)
-        json_body = json.loads(body)
-        if "id" in json_body:
-            message_id = json_body["id"]
-            h = hashlib.sha512()
-            h.update(webhook.model_dump_json().encode("utf-8"))
-            await write_cache(
-                r_client,
-                f"webhook:{webhook_id}",
-                WebhookRedisEntry(
-                    message_id=message_id, message_hash=h.hexdigest()
-                ).model_dump_json(),
-                DAY,
-            )
-        await webhook_helpers.set_webhook_duplicate(r_client, webhook)
+        async with session.post(
+            f"{url}?wait=true",
+            data=webhook.model_dump_json(),
+            headers={"Content-Type": "application/json"},
+        ) as response:
+            if response.status == 429:
+                raise RateLimitExceeded()
+            body = await response.text()
+            if response.status not in (200, 204):
+                logger.error(
+                    f"Failed to post webhook {webhook_id}, status {response.status}, body: {body}"
+                )
+                if span:
+                    span.set_attribute("error", True)
+                    span.set_attribute("error.type", "http_error")
+                    span.set_attribute("http.status_code", response.status)
+                return
+            if span:
+                span.set_attribute("http.status_code", response.status)
+            json_body = json.loads(body)
+            if "id" in json_body:
+                message_id = json_body["id"]
+                h = hashlib.sha512()
+                h.update(webhook.model_dump_json().encode("utf-8"))
+                await write_cache(
+                    r_client,
+                    f"webhook:{webhook_id}",
+                    WebhookRedisEntry(
+                        message_id=message_id, message_hash=h.hexdigest()
+                    ).model_dump_json(),
+                    DAY,
+                )
+            await webhook_helpers.set_webhook_duplicate(r_client, webhook)
 
 
 @retry(
@@ -563,53 +441,46 @@ async def patch_webhook(
     webhook: DiscordWebhook,
     webhook_id: str,
     message_id: str,
+    existing_hash: str,
     session: aiohttp.ClientSession,
     r_client: Redis,
-):
-    existing = await get_cache(r_client, f"webhook:{webhook_id}")
-    if existing:
-        try:
-            existing_val = WebhookRedisEntry.model_validate_json(existing)
-            h = hashlib.sha512()
-            h.update(webhook.model_dump_json().encode("utf-8"))
-            if existing_val.message_hash == h.hexdigest():
-                logger.debug(f"Webhook {webhook_id} unchanged, skipping patch")
-                return
-            if await webhook_helpers.get_webhook_duplicate(r_client, webhook):
-                logger.debug(
-                    f"Webhook {webhook_id} is a duplicate of an existing webhook, skipping patch"
-                )
-                return
-            async with session.patch(
-                f"{url}/messages/{message_id}",
-                data=webhook.model_dump_json(),
-                headers={"Content-Type": "application/json"},
-            ) as response:
-                if response.status == 429:
-                    raise RateLimitExceeded()
-                body = await response.text()
-                if response.status != 200 and response.status != 204:
-                    logger.error(
-                        f"Failed to patch webhook {webhook_id}, status {response.status}, body: {body}"
-                    )
-                    return
-
-                logger.debug(
-                    f"Patched webhook ID: {webhook_id}. Old SHA: {existing_val.message_hash}, New SHA: {h.hexdigest()}"
-                )
-                await write_cache(
-                    r_client,
-                    f"webhook:{webhook_id}",
-                    WebhookRedisEntry(
-                        message_id=message_id, message_hash=h.hexdigest()
-                    ).model_dump_json(),
-                    DAY,
-                )
-                await webhook_helpers.set_webhook_duplicate(r_client, webhook)
-        except ValidationError as err:
+) -> None:
+    h = hashlib.sha512()
+    h.update(webhook.model_dump_json().encode("utf-8"))
+    new_hash = h.hexdigest()
+    if existing_hash == new_hash:
+        logger.debug(f"Webhook {webhook_id} unchanged, skipping patch")
+        return
+    if await webhook_helpers.get_webhook_duplicate(r_client, webhook):
+        logger.debug(
+            f"Webhook {webhook_id} is a duplicate of an existing webhook, skipping patch"
+        )
+        return
+    async with session.patch(
+        f"{url}/messages/{message_id}",
+        data=webhook.model_dump_json(),
+        headers={"Content-Type": "application/json"},
+    ) as response:
+        if response.status == 429:
+            raise RateLimitExceeded()
+        body = await response.text()
+        if response.status not in (200, 204):
             logger.error(
-                f"Failed to parse existing webhook cache for {webhook_id}", exc_info=err
+                f"Failed to patch webhook {webhook_id}, status {response.status}, body: {body}"
             )
+            return
+        logger.debug(
+            f"Patched webhook ID: {webhook_id}. Old SHA: {existing_hash}, New SHA: {new_hash}"
+        )
+        await write_cache(
+            r_client,
+            f"webhook:{webhook_id}",
+            WebhookRedisEntry(
+                message_id=message_id, message_hash=new_hash
+            ).model_dump_json(),
+            DAY,
+        )
+        await webhook_helpers.set_webhook_duplicate(r_client, webhook)
 
 
 @retry(
@@ -618,30 +489,28 @@ async def patch_webhook(
     retry=retry_if_not_exception_type(CancelledError),
 )
 async def delete_webhook(webhook_id: str, r_client: Redis):
-    async with aiohttp.ClientSession() as session:
-        existing = await get_cache(r_client, f"webhook:{webhook_id}")
-        if existing and WEBHOOK_URL:
-            try:
-                existing_val = WebhookRedisEntry.model_validate_json(existing)
-            except ValidationError as err:
-                logger.error(
-                    f"Failed to parse existing webhook cache for {webhook_id}",
-                    exc_info=err,
-                )
-                return
-            await delete_cache(r_client, f"webhook:{webhook_id}")
-            try:
-                async with session.delete(
-                    f"{WEBHOOK_URL}/messages/{existing_val.message_id}"
-                ) as response:
-                    if response.status != 200 and response.status != 204:
-                        logger.error(
-                            f"Failed to delete webhook msg {existing_val.message_id}, status {response.status}"
-                        )
-                        return
-                logger.debug(f"Deleted webhook ID: {webhook_id}")
-            except aiohttp.ClientError as err:
-                logger.error(
-                    f"HTTP error deleting webhook {webhook_id}",
-                    exc_info=err,
-                )
+    existing = await get_cache(r_client, f"webhook:{webhook_id}")
+    if not existing or not WEBHOOK_URL:
+        return
+    try:
+        existing_val = WebhookRedisEntry.model_validate_json(existing)
+    except ValidationError as err:
+        logger.error(
+            f"Failed to parse existing webhook cache for {webhook_id}",
+            exc_info=err,
+        )
+        return
+    await delete_cache(r_client, f"webhook:{webhook_id}")
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.delete(
+                f"{WEBHOOK_URL}/messages/{existing_val.message_id}"
+            ) as response:
+                if response.status not in (200, 204):
+                    logger.error(
+                        f"Failed to delete webhook msg {existing_val.message_id}, status {response.status}"
+                    )
+                    return
+        logger.debug(f"Deleted webhook ID: {webhook_id}")
+    except aiohttp.ClientError as err:
+        logger.error(f"HTTP error deleting webhook {webhook_id}", exc_info=err)
