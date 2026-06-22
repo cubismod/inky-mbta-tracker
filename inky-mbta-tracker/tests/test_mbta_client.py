@@ -46,7 +46,7 @@ async def test_watch_mbta_server_side_events_records_rate_limit_hit() -> None:
         yield
 
     watcher = MagicMock()
-    watcher._monitor_health = monitor_health
+    watcher.monitor_health = monitor_health
 
     with (
         patch("mbta_client_extended.aiosseclient", new=fake_aiosseclient),
@@ -83,7 +83,7 @@ async def test_watch_mbta_server_side_events_reconnects_after_health_refresh() -
         yield
 
     watcher = MagicMock()
-    watcher._monitor_health = monitor_health
+    watcher.monitor_health = monitor_health
     watcher.gen_unique_id.return_value = "vehicle-red"
 
     with (

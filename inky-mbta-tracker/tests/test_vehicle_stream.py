@@ -203,7 +203,7 @@ async def test_vehicle_stream_manager_splits_frequent_bus_producers(
 async def test_vehicle_stream_manager_cleans_up_failed_replay() -> None:
     async with create_task_group() as tg:
         manager = VehicleStreamManager(object(), tg, subscriber_buffer_size=0)
-        state = await manager._state_for(False)
+        state = await manager.state_for(False)
         state.latest_delta_snapshot_event = 'data: {"updated": {}, "removed": []}\n\n'
 
         with pytest.raises(RuntimeError, match="initial vehicle stream replay"):
@@ -239,7 +239,7 @@ async def test_vehicle_stream_manager_resets_started_after_producer_setup_error(
     async with create_task_group() as tg:
         manager = VehicleStreamManager(object(), tg, interval_seconds=999)
         async with manager.subscribe("full", frequent_buses=False):
-            state = await manager._state_for(False)
+            state = await manager.state_for(False)
             for _ in range(10):
                 async with state.lock:
                     started = state.started

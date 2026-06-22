@@ -15,9 +15,9 @@ from webhook.discord_webhook import (
     SHORT_BATCH_WINDOW_SECONDS,
     PendingBatchEntry,
     PendingBatchItem,
-    _get_batch_entry,
-    _get_pending_batch_entry,
     enqueue_pending_batch,
+    get_batch_entry,
+    get_pending_batch_entry,
     send_batch_entry,
     send_pending_batch,
 )
@@ -68,13 +68,13 @@ class DummyLock:
 
 
 def test_line_color_emoji_mapping():
-    assert webhook_helpers._line_color_emoji(16395559) == "🔴"
-    assert webhook_helpers._line_color_emoji(16615939) == "🟠"
-    assert webhook_helpers._line_color_emoji(33104) == "🟢"
-    assert webhook_helpers._line_color_emoji(3104166) == "🔵"
-    assert webhook_helpers._line_color_emoji(8075404) == "🟣"
-    assert webhook_helpers._line_color_emoji(10132637) == "🩶"
-    assert webhook_helpers._line_color_emoji(0) == "⚪"
+    assert webhook_helpers.line_color_emoji(16395559) == "🔴"
+    assert webhook_helpers.line_color_emoji(16615939) == "🟠"
+    assert webhook_helpers.line_color_emoji(33104) == "🟢"
+    assert webhook_helpers.line_color_emoji(3104166) == "🔵"
+    assert webhook_helpers.line_color_emoji(8075404) == "🟣"
+    assert webhook_helpers.line_color_emoji(10132637) == "🩶"
+    assert webhook_helpers.line_color_emoji(0) == "⚪"
 
 
 def test_grouped_webhook_includes_timestamp_and_expired():
@@ -150,7 +150,7 @@ async def test_batch_short_circuit_extends_to_full_window():
         )
     assert scheduled is True
     assert batch_id is None
-    pending = await _get_pending_batch_entry(r_client)  # type: ignore[arg-type]
+    pending = await get_pending_batch_entry(r_client)  # type: ignore[arg-type]
     assert pending
     assert pending.ready_at == now + SHORT_BATCH_WINDOW_SECONDS
     assert pending.first_seen == now
@@ -168,7 +168,7 @@ async def test_batch_short_circuit_extends_to_full_window():
             clock=lambda: now,
         )
     assert batch_id is None
-    pending = await _get_pending_batch_entry(r_client)  # type: ignore[arg-type]
+    pending = await get_pending_batch_entry(r_client)  # type: ignore[arg-type]
     assert pending
     assert pending.first_seen is not None
     assert pending.ready_at == pending.first_seen + BATCH_WINDOW_SECONDS
@@ -195,22 +195,22 @@ async def test_send_pending_batch_single_item_sets_alert_batch_key():
 
     mock_send = AsyncMock()
     with (
-        patch("webhook.discord_webhook._send_webhook_payload", mock_send),
+        patch("webhook.discord_webhook.send_webhook_payload", mock_send),
         patch("webhook.discord_webhook.RedisLock", DummyLock),
     ):
         await send_pending_batch(r_client, Config(stops=[]), clock=lambda: now + 120)  # type: ignore[arg-type]
 
     # _alert_batch_key("alert-1") should now point to the alert's own id
-    alert_batch_id = await r_client.get(webhook_helpers._alert_batch_key("alert-1"))
+    alert_batch_id = await r_client.get(webhook_helpers.alert_batch_key("alert-1"))
     assert alert_batch_id == "alert-1"
 
     # batch entry should exist so future updates can update it
-    batch_entry = await _get_batch_entry(r_client, "alert-1")  # type: ignore[arg-type]
+    batch_entry = await get_batch_entry(r_client, "alert-1")  # type: ignore[arg-type]
     assert batch_entry is not None
     assert len(batch_entry.items) == 1
     assert batch_entry.items[0].webhook_id == "alert-1"
 
-    # _send_webhook_payload was called with the alert's own id (not "batch:…")
+    # send_webhook_payload was called with the alert's own id (not "batch:…")
     mock_send.assert_awaited_once()
     call_webhook_id = mock_send.call_args[0][0]
     assert call_webhook_id == "alert-1"
@@ -236,14 +236,14 @@ async def test_send_batch_entry_single_item_uses_individual_webhook_id():
         items=[item],
     )
     await r_client.set(
-        webhook_helpers._batch_entry_key("alert-1"),
+        webhook_helpers.batch_entry_key("alert-1"),
         entry.model_dump_json(),
         ex=BATCH_ENTRY_TTL,
     )
 
     mock_send = AsyncMock()
     with (
-        patch("webhook.discord_webhook._send_webhook_payload", mock_send),
+        patch("webhook.discord_webhook.send_webhook_payload", mock_send),
         patch("webhook.discord_webhook.RedisLock", DummyLock),
     ):
         await send_batch_entry("alert-1", r_client, Config(stops=[]))  # type: ignore[arg-type]
@@ -277,14 +277,14 @@ async def test_no_duplicate_on_single_item_batch_then_update_with_new_alert():
 
     mock_send = AsyncMock()
     with (
-        patch("webhook.discord_webhook._send_webhook_payload", mock_send),
+        patch("webhook.discord_webhook.send_webhook_payload", mock_send),
         patch("webhook.discord_webhook.RedisLock", DummyLock),
     ):
         await send_pending_batch(r_client, Config(stops=[]), clock=lambda: now + 120)  # type: ignore[arg-type]
 
     # Verify state after single-item send
-    assert await r_client.get(webhook_helpers._alert_batch_key("alert-a")) == "alert-a"
-    assert await _get_batch_entry(r_client, "alert-a") is not None  # type: ignore[arg-type]
+    assert await r_client.get(webhook_helpers.alert_batch_key("alert-a")) == "alert-a"
+    assert await get_batch_entry(r_client, "alert-a") is not None  # type: ignore[arg-type]
 
     # Step 2: alert A updated + new alert B arrives
     now += 300
@@ -317,7 +317,7 @@ async def test_no_duplicate_on_single_item_batch_then_update_with_new_alert():
         assert batch_id_b is None
 
     # A's update is routed to its own batch entry, not the pending batch
-    batch_entry_a = await _get_batch_entry(r_client, "alert-a")  # type: ignore[arg-type]
+    batch_entry_a = await get_batch_entry(r_client, "alert-a")  # type: ignore[arg-type]
     assert batch_entry_a is not None
     assert batch_entry_a.items[0].webhook_id == "alert-a"
     assert batch_entry_a.items[0].webhook_json == webhook_a2.model_dump_json()

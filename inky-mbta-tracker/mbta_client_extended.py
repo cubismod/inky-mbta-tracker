@@ -361,7 +361,7 @@ async def watch_mbta_server_side_events(
             try:
                 try:
                     async with create_task_group() as tg:
-                        tg.start_soon(watcher._monitor_health, tg)
+                        tg.start_soon(watcher.monitor_health, tg)
                         try:
                             async for event in aiosseclient(
                                 endpoint, headers=headers, raise_for_status=True

@@ -92,7 +92,7 @@ def create_webhook_object(
         ),
         color=color,
     )
-    if webhook_helpers._alert_is_expired(alert):
+    if webhook_helpers.alert_is_expired(alert):
         embed.footer = DiscordEmbedFooter(text="EXPIRED")
     if len(routes) > 1:
         embed.fields = [
@@ -113,17 +113,17 @@ def create_webhook_object(
     return DiscordWebhook(avatar_url=avatar_url, embeds=[embed])
 
 
-async def _get_pending_batch_entry(
+async def get_pending_batch_entry(
     r_client: RedisClient,
 ) -> Optional[PendingBatchEntry]:
     return await _get_batch_entry_by_key(r_client, webhook_helpers.PENDING_BATCH_KEY)
 
 
-async def _get_batch_entry(
+async def get_batch_entry(
     r_client: RedisClient, batch_id: str
 ) -> Optional[PendingBatchEntry]:
     return await _get_batch_entry_by_key(
-        r_client, webhook_helpers._batch_entry_key(batch_id)
+        r_client, webhook_helpers.batch_entry_key(batch_id)
     )
 
 
@@ -154,31 +154,31 @@ async def enqueue_pending_batch(
     item = PendingBatchItem(
         webhook_id=webhook_id,
         webhook_json=webhook.model_dump_json(),
-        message_hash=webhook_helpers._webhook_hash(webhook),
-        updated_at=webhook_helpers._webhook_updated_at(webhook, clock),
+        message_hash=webhook_helpers.webhook_hash(webhook),
+        updated_at=webhook_helpers.webhook_updated_at(webhook, clock),
         created_at=created_at,
         routes=routes,
     )
 
     async with RedisLock(
         r_client,
-        webhook_helpers._batch_lock_key(),
+        webhook_helpers.batch_lock_key(),
         blocking_timeout=15,
         expire_timeout=60,
     ):
         existing_batch_id = await r_client.get(
-            webhook_helpers._alert_batch_key(webhook_id)
+            webhook_helpers.alert_batch_key(webhook_id)
         )
         if existing_batch_id:
             if isinstance(existing_batch_id, bytes):
                 existing_batch_id = existing_batch_id.decode("utf-8")
-            batch_entry = await _get_batch_entry(r_client, existing_batch_id)
+            batch_entry = await get_batch_entry(r_client, existing_batch_id)
             if batch_entry:
                 await r_client.set(
-                    webhook_helpers._batch_entry_key(existing_batch_id),
+                    webhook_helpers.batch_entry_key(existing_batch_id),
                     batch_entry.model_copy(
                         update={
-                            "items": webhook_helpers._upsert_batch_items(
+                            "items": webhook_helpers.upsert_batch_items(
                                 batch_entry.items, item
                             )
                         }
@@ -187,7 +187,7 @@ async def enqueue_pending_batch(
                 )
                 return False, existing_batch_id
 
-        pending = await _get_pending_batch_entry(r_client)
+        pending = await get_pending_batch_entry(r_client)
         if pending:
             first_seen = pending.first_seen
             if first_seen is None:
@@ -199,7 +199,7 @@ async def enqueue_pending_batch(
             )
             updated_entry = pending.model_copy(
                 update={
-                    "items": webhook_helpers._upsert_batch_items(pending.items, item),
+                    "items": webhook_helpers.upsert_batch_items(pending.items, item),
                     "ready_at": ready_at,
                     "first_seen": first_seen,
                     "extended": True,
@@ -235,7 +235,7 @@ async def _delayed_send_batch(r_client: RedisClient, config: Config) -> None:
         return
     try:
         while True:
-            pending = await _get_pending_batch_entry(r_client)
+            pending = await get_pending_batch_entry(r_client)
             if not pending:
                 return
             delay = pending.ready_at - time.time()
@@ -262,10 +262,10 @@ async def _send_items(
                 exc_info=err,
             )
             return
-        await _send_webhook_payload(item.webhook_id, webhook, r_client)
+        await send_webhook_payload(item.webhook_id, webhook, r_client)
     elif len(items) > 1:
         grouped = webhook_helpers.build_grouped_webhook(items, config)
-        await _send_webhook_payload(f"{BATCH_WEBHOOK_ID}:{batch_id}", grouped, r_client)
+        await send_webhook_payload(f"{BATCH_WEBHOOK_ID}:{batch_id}", grouped, r_client)
 
 
 @retry(
@@ -278,16 +278,16 @@ async def send_batch_entry(
     r_client: RedisClient,
     config: Config,
 ) -> None:
-    batch_entry = await _get_batch_entry(r_client, batch_id)
+    batch_entry = await get_batch_entry(r_client, batch_id)
     if not batch_entry:
         return
     async with RedisLock(
         r_client,
-        webhook_helpers._batch_entry_lock_key(batch_id),
+        webhook_helpers.batch_entry_lock_key(batch_id),
         blocking_timeout=15,
         expire_timeout=60,
     ):
-        batch_entry = await _get_batch_entry(r_client, batch_id)
+        batch_entry = await get_batch_entry(r_client, batch_id)
         if not batch_entry:
             return
         if not batch_entry.items:
@@ -301,19 +301,19 @@ async def send_pending_batch(
     config: Config,
     clock: Callable[[], float] = time.time,
 ) -> None:
-    pending = await _get_pending_batch_entry(r_client)
+    pending = await get_pending_batch_entry(r_client)
     if not pending or pending.ready_at > clock():
         return
 
     async with RedisLock(
         r_client,
-        webhook_helpers._batch_lock_key(),
+        webhook_helpers.batch_lock_key(),
         blocking_timeout=15,
         expire_timeout=60,
     ):
-        pending = await _get_pending_batch_entry(r_client)
+        pending = await get_pending_batch_entry(r_client)
         if not pending:
-            logger.info("Pending batch missing after lock")
+            logger.debug("Pending batch missing after lock")
             return
         items = pending.items
         if not items:
@@ -329,20 +329,20 @@ async def send_pending_batch(
             items=items,
         )
         await r_client.set(
-            webhook_helpers._batch_entry_key(storage_batch_id),
+            webhook_helpers.batch_entry_key(storage_batch_id),
             batch_entry.model_dump_json(),
             ex=BATCH_ENTRY_TTL,
         )
         for item in items:
             await r_client.set(
-                webhook_helpers._alert_batch_key(item.webhook_id),
+                webhook_helpers.alert_batch_key(item.webhook_id),
                 storage_batch_id,
                 ex=BATCH_ENTRY_TTL,
             )
         await r_client.delete(webhook_helpers.PENDING_BATCH_KEY)
 
 
-async def _send_webhook_payload(
+async def send_webhook_payload(
     webhook_id: str, webhook: DiscordWebhook, r_client: RedisClient
 ) -> None:
     if not WEBHOOK_URL:

@@ -24,7 +24,7 @@ from shared_types.shared_types import (
 
 logger = logging.getLogger(__name__)
 
-BATCH_WINDOW_SECONDS = 4 * MINUTE
+BATCH_WINDOW_SECONDS = 5 * MINUTE
 SHORT_BATCH_WINDOW_SECONDS = MINUTE
 BATCH_ENTRY_PREFIX = "webhook:batch:entry"
 ALERT_BATCH_PREFIX = "webhook:batch:alert"
@@ -132,23 +132,23 @@ def format_route_names(payload: str) -> str:
     return " ".join(new_payload)
 
 
-def _batch_lock_key() -> str:
+def batch_lock_key() -> str:
     return f"{PENDING_BATCH_LOCK_PREFIX}:pending"
 
 
-def _batch_entry_key(batch_id: str) -> str:
+def batch_entry_key(batch_id: str) -> str:
     return f"{BATCH_ENTRY_PREFIX}:{batch_id}"
 
 
-def _batch_entry_lock_key(batch_id: str) -> str:
+def batch_entry_lock_key(batch_id: str) -> str:
     return f"{PENDING_BATCH_LOCK_PREFIX}:{batch_id}"
 
 
-def _alert_batch_key(alert_id: str) -> str:
+def alert_batch_key(alert_id: str) -> str:
     return f"{ALERT_BATCH_PREFIX}:{alert_id}"
 
 
-def _webhook_hash(webhook: DiscordWebhook) -> str:
+def webhook_hash(webhook: DiscordWebhook) -> str:
     return _sha512(webhook.model_dump_json())
 
 
@@ -178,7 +178,7 @@ def _truncate(text: str, limit: int) -> str:
     return f"{text[: max(0, limit - 1)]}…"
 
 
-def _upsert_batch_items(
+def upsert_batch_items(
     items: list[PendingBatchItem], new_item: PendingBatchItem
 ) -> list[PendingBatchItem]:
     by_id = {item.webhook_id: item for item in items}
@@ -186,7 +186,7 @@ def _upsert_batch_items(
     return list(by_id.values())
 
 
-def _alert_is_expired(
+def alert_is_expired(
     alert: AlertResource, clock: Callable[[], float] = time.time
 ) -> bool:
     now = datetime.fromtimestamp(clock(), tz=timezone.utc)
@@ -201,7 +201,7 @@ def _alert_is_expired(
     return True
 
 
-def _webhook_updated_at(
+def webhook_updated_at(
     webhook: DiscordWebhook, clock: Callable[[], float] = time.time
 ) -> float:
     if webhook.embeds:
@@ -221,7 +221,7 @@ _LINE_COLOR_EMOJI_MAP = {
 }
 
 
-def _line_color_emoji(color: Optional[int]) -> str:
+def line_color_emoji(color: Optional[int]) -> str:
     # Import locally to avoid circular import at module import time
     from utils import hex_color_to_int
 
@@ -276,13 +276,12 @@ def build_grouped_webhook(
                 if field.name == "Lines":
                     route_label = field.value
                     break
-        prefix = f"{route_label} — " if route_label else ""
-        emoji = _line_color_emoji(embed.color)
+        emoji = line_color_emoji(embed.color)
         updated_at = _to_unix_timestamp(embed.timestamp)
         updated_text = (
             f"Updated: <t:{updated_at}:R>" if updated_at is not None else "Updated"
         )
-        field_header = _truncate(f"{prefix}{header}", 256)
+        field_header = _truncate(f"{header}", 256)
         if _webhook_is_expired(webhook):
             name = _truncate(f"{emoji} EXPIRED: ~~{field_header}~~", 256)
             value = _truncate(f"~~{updated_text}~~", 1024)

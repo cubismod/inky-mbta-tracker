@@ -238,7 +238,7 @@ class MBTAApi:
             return True
         return False
 
-    async def _monitor_health(self, tg: TaskGroup) -> None:
+    async def monitor_health(self, tg: TaskGroup) -> None:
         hc_fail_threshold = 5 * MINUTE
         ny_tz = ZoneInfo("America/New_York")
         failtime: Optional[datetime] = None

@@ -82,7 +82,7 @@ class VehicleStreamManager:
         if self._closed:
             raise RuntimeError("Vehicle stream manager is closed")
 
-        state = await self._state_for(frequent_buses)
+        state = await self.state_for(frequent_buses)
         send_stream, receive_stream = create_memory_object_stream[str](
             self._subscriber_buffer_size
         )
@@ -165,7 +165,7 @@ class VehicleStreamManager:
             for subscriber in subscribers:
                 await subscriber.aclose()
 
-    async def _state_for(self, frequent_buses: bool) -> _VehicleProducerState:
+    async def state_for(self, frequent_buses: bool) -> _VehicleProducerState:
         async with self._states_lock:
             if frequent_buses not in self._states:
                 self._states[frequent_buses] = _VehicleProducerState(
