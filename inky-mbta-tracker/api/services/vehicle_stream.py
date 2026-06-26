@@ -274,6 +274,7 @@ class VehicleStreamManager:
                                 not delta_response.updated
                                 and not delta_response.removed
                             ):
+                                await sleep(self._interval_seconds)
                                 continue
                             delta_event = (
                                 f"data: {delta_response.model_dump_json()}\n\n"
