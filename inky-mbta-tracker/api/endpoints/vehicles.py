@@ -4,13 +4,13 @@ from datetime import datetime
 from typing import AsyncGenerator, Optional
 
 from api.middleware.cache_middleware import cache_ttl
+from api.services.vehicle_counts import get_vehicle_route_counts
 from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import RedirectResponse
 from geojson_utils import get_vehicle_features
 from opentelemetry import trace
 from otel_utils import add_span_attributes, add_transaction_ids_to_span, set_span_error
 from starlette.responses import StreamingResponse
-from utils import get_vehicles_data
 
 from ..core import GET_DI, SSE_ENABLED
 from ..limits import limiter
@@ -159,202 +159,28 @@ async def get_vehicles_counts(
 
         try:
             if commons.tg:
-                data = await get_vehicles_data(
-                    commons.r_client, commons.config, commons.tg
+                counts, totals_by_line = await get_vehicle_route_counts(
+                    commons.r_client, commons.config
                 )
 
-                # Initialize counts
-                counts = {
-                    "light_rail": {
-                        "RL": 0,
-                        "GL": 0,
-                        "BL": 0,
-                        "OL": 0,
-                        "SL": 0,
-                        "CR": 0,
-                        "total": 0,
-                    },
-                    "heavy_rail": {
-                        "RL": 0,
-                        "GL": 0,
-                        "BL": 0,
-                        "OL": 0,
-                        "SL": 0,
-                        "CR": 0,
-                        "total": 0,
-                    },
-                    "regional_rail": {
-                        "RL": 0,
-                        "GL": 0,
-                        "BL": 0,
-                        "OL": 0,
-                        "SL": 0,
-                        "CR": 0,
-                        "total": 0,
-                    },
-                    "bus": {
-                        "RL": 0,
-                        "GL": 0,
-                        "BL": 0,
-                        "OL": 0,
-                        "SL": 0,
-                        "CR": 0,
-                        "total": 0,
-                    },
-                }
-
-                # Helper to increment
-                def inc(vtype: str, line: str) -> None:
-                    counts[vtype][line] += 1
-                    counts[vtype]["total"] += 1
-
-                # Map features to our line buckets and types
-                for feat in data.values():
-                    try:
-                        props = getattr(feat, "properties", None) or (
-                            feat.get("properties") if isinstance(feat, dict) else {}
-                        )
-                    except Exception:
-                        props = {}
-                    route = (
-                        (props.get("route") or "").strip()
-                        if isinstance(props, dict)
-                        else ""
-                    )
-                    route_lower = str(route).lower()
-
-                    # determine line group (RL, GL, BL, OL, SL, CR)
-                    # Map Mattapan explicitly to the Red Line column (RL). Do not conflate Mattapan with Green Line.
-                    if route_lower.startswith("mattapan") or route_lower.startswith(
-                        "red"
-                    ):
-                        line = "RL"
-                    elif route_lower.startswith("green"):
-                        line = "GL"
-                    elif route_lower.startswith("blue"):
-                        line = "BL"
-                    elif route_lower.startswith("orange"):
-                        line = "OL"
-                    # silver line may be labeled SL1/SL2/... or 'silver line' or numeric codes - accept 'sl' prefix
-                    elif (
-                        route_lower.startswith("sl")
-                        or "silver" in route_lower
-                        or route_lower.startswith("741")
-                        or route_lower.startswith("742")
-                        or route_lower.startswith("743")
-                        or route_lower.startswith("746")
-                        or route_lower.startswith("749")
-                        or route_lower.startswith("751")
-                    ):
-                        line = "SL"
-                    elif (
-                        route_lower.startswith("cr")
-                        or route_lower.startswith("commuter")
-                        or route_lower == "commuter rail"
-                    ):
-                        line = "CR"
-                    else:
-                        # not one of the tracked lines - ignore
-                        continue
-
-                    # determine vehicle type independently so each line may contain multiple vehicle types
-                    # (e.g., Mattapan PCC cars are light rail but sit in the Red Line column)
-                    vtype = None
-
-                    # explicit rules from route string
-                    if route_lower.startswith("mattapan"):
-                        vtype = "light_rail"
-                    elif route_lower.startswith("green"):
-                        vtype = "light_rail"
-                    elif route_lower.startswith("cr"):
-                        vtype = "regional_rail"
-                    elif (
-                        route_lower.startswith("sl")
-                        or "silver" in route_lower
-                        or route_lower.startswith("741")
-                        or route_lower.startswith("742")
-                        or route_lower.startswith("743")
-                        or route_lower.startswith("746")
-                        or route_lower.startswith("749")
-                        or route_lower.startswith("751")
-                    ):
-                        vtype = "bus"
-                    elif route_lower.isdecimal() or route_lower.startswith("7"):
-                        # numeric routes are buses
-                        vtype = "bus"
-                    else:
-                        # default heuristics for subway lines: Red/Blue/Orange -> heavy rail
-                        if line in ("RL", "BL", "OL"):
-                            vtype = "heavy_rail"
-
-                    # fallback to marker-symbol if route-based heuristics are inconclusive
-                    if vtype is None:
-                        marker = (
-                            props.get("marker-symbol")
-                            if isinstance(props, dict)
-                            else None
-                        )
-                        if marker == "bus":
-                            vtype = "bus"
-                        elif marker == "rail_amtrak":
-                            vtype = "regional_rail"
-                        elif marker == "rail":
-                            if route_lower.startswith(
-                                "mattapan"
-                            ) or route_lower.startswith("green"):
-                                vtype = "light_rail"
-                            elif route_lower.startswith("cr"):
-                                vtype = "regional_rail"
-                            else:
-                                vtype = "heavy_rail"
-
-                    # increment counts for the determined type and the determined line column
-                    if vtype and line:
-                        inc(vtype, line)
-
-                # compute totals by line
-                totals_by_line = {
-                    "RL": 0,
-                    "GL": 0,
-                    "BL": 0,
-                    "OL": 0,
-                    "SL": 0,
-                    "CR": 0,
-                    "total": 0,
-                }
-                for vtype, row in counts.items():
-                    for col in ("RL", "GL", "BL", "OL", "SL", "CR"):
-                        totals_by_line[col] += row[col]
-                    totals_by_line["total"] += row["total"]
-
-                span.set_attribute("vehicles.total", totals_by_line["total"])
+                span.set_attribute("vehicles.total", totals_by_line.total)
                 add_span_attributes(
                     span,
                     {
-                        "vehicles.light_rail.total": counts["light_rail"]["total"],
-                        "vehicles.heavy_rail.total": counts["heavy_rail"]["total"],
-                        "vehicles.regional_rail.total": counts["regional_rail"][
-                            "total"
-                        ],
-                        "vehicles.bus.total": counts["bus"]["total"],
+                        "vehicles.light_rail.total": counts.light_rail.total,
+                        "vehicles.heavy_rail.total": counts.heavy_rail.total,
+                        "vehicles.regional_rail.total": counts.regional_rail.total,
+                        "vehicles.bus.total": counts.bus.total,
                         "api.response.success": True,
                     },
                 )
 
-                # Construct response payload (pydantic will validate/serialize)
-                response_payload = {
-                    "success": True,
-                    "counts": {
-                        "light_rail": counts["light_rail"],
-                        "heavy_rail": counts["heavy_rail"],
-                        "regional_rail": counts["regional_rail"],
-                        "bus": counts["bus"],
-                    },
-                    "totals_by_line": totals_by_line,
-                    "generated_at": datetime.now(),
-                }
-
-                resp_model = VehiclesCountResponse(**response_payload)
+                resp_model = VehiclesCountResponse(
+                    success=True,
+                    counts=counts,
+                    totals_by_line=totals_by_line,
+                    generated_at=datetime.now(),
+                )
 
                 return resp_model
             add_span_attributes(
