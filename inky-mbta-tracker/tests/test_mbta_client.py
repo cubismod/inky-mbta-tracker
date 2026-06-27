@@ -1,6 +1,6 @@
 from asyncio import CancelledError
 from datetime import UTC
-from typing import cast
+from typing import Optional, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import anyio
@@ -14,6 +14,7 @@ from mbta_client import (
 )
 from mbta_client_extended import (
     light_get_stop,
+    light_get_stops,
     watch_mbta_server_side_events,
 )
 from mbta_responses import (
@@ -431,6 +432,63 @@ class TestLightGetStop:
 
         assert result is None
         mock_get_cache.assert_called_once()
+
+
+@pytest.mark.anyio("asyncio")
+class TestLightGetStops:
+    @patch("mbta_client_extended.fetch_light_stop", new_callable=AsyncMock)
+    async def test_light_get_stops_batches_pipeline_and_backfills_misses(
+        self, mock_fetch_light_stop: AsyncMock
+    ) -> None:
+        hit = LightStop(
+            stop_id="Davis",
+            mbta_stop_id="place-davis",
+            parent_stop_id=None,
+            long=-71.1218,
+            lat=42.3967,
+        )
+        redis = MagicMock()
+        pipeline = MagicMock()
+        queued: list[str] = []
+
+        async def fake_get(key: str) -> None:
+            queued.append(key)
+
+        async def fake_execute() -> list[Optional[bytes]]:
+            return [
+                hit.model_dump_json().encode()
+                if key == "stop:place-davis:light"
+                else None
+                for key in queued
+            ]
+
+        pipeline.get = AsyncMock(side_effect=fake_get)
+        pipeline.execute = AsyncMock(side_effect=fake_execute)
+        redis.pipeline.return_value = pipeline
+
+        async with anyio.create_task_group() as tg:
+            result = await light_get_stops(redis, {"place-davis", "place-cold"}, tg)
+            tg.cancel_scope.cancel()
+
+        assert set(result) == {"place-davis"}
+        assert result["place-davis"].stop_id == "Davis"
+        assert pipeline.get.await_count == 2
+        assert pipeline.execute.await_count == 1
+        mock_fetch_light_stop.assert_awaited_once()
+        assert mock_fetch_light_stop.call_args.args[1] == "place-cold"
+
+    @patch("mbta_client_extended.fetch_light_stop", new_callable=AsyncMock)
+    async def test_light_get_stops_empty_returns_empty_dict(
+        self, mock_fetch_light_stop: AsyncMock
+    ) -> None:
+        redis = MagicMock()
+        async with anyio.create_task_group() as tg:
+            result = await light_get_stops(redis, set(), tg)
+            tg.cancel_scope.cancel()
+
+        assert result == {}
+        redis.pipeline.assert_not_called()
+        mock_fetch_light_stop.assert_not_awaited()
 
 
 if __name__ == "__main__":

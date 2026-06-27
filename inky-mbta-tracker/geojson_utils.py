@@ -16,7 +16,7 @@ from geojson import Feature, LineString, Point
 from mbta_client import (
     silver_line_lookup,
 )
-from mbta_client_extended import get_shapes, light_get_stop
+from mbta_client_extended import get_shapes, light_get_stops
 from mbta_rate_limiter import rate_limited_get
 from mbta_responses import AlertResource
 from opentelemetry.trace import Span
@@ -34,6 +34,7 @@ from pydantic import ValidationError
 from redis.asyncio import Redis
 from schedule_tracker import VehicleRedisSchema
 from shapely.geometry import LineString as ShapelyLineString
+from shared_types.shared_types import LightStop
 
 logger = logging.getLogger("geojson_utils")
 
@@ -504,6 +505,7 @@ async def get_vehicle_features(
 
     pred_lookup: dict[tuple[str, str], datetime] = {}
     unique_stops: set[str] = set()
+    stop_lookup_ids: set[str] = set()
     validated: list[VehicleRedisSchema] = []
     for vk_bytes, result in zip(vehicle_keys_list, results):
         if not result:
@@ -525,6 +527,8 @@ async def get_vehicle_features(
             and vehicle_info.current_status != "STOPPED_AT"
         ):
             unique_stops.add(vehicle_info.stop)
+        if vehicle_info.stop and not vehicle_info.route.startswith("Amtrak"):
+            stop_lookup_ids.add(vehicle_info.stop)
 
     if unique_stops:
         try:
@@ -535,6 +539,13 @@ async def get_vehicle_features(
             )
         except Exception as exc:
             logger.warning("Failed to batch-fetch predictions", exc_info=exc)
+
+    stops_lookup: dict[str, LightStop] = {}
+    if stop_lookup_ids:
+        try:
+            stops_lookup = await light_get_stops(r_client, stop_lookup_ids, tg)
+        except Exception as exc:
+            logger.warning("Failed to batch-fetch stops", exc_info=exc)
 
     for vehicle_info in validated:
         vehicle_bearing = None
@@ -568,7 +579,7 @@ async def get_vehicle_features(
             vehicle_bearing = vehicle_info.bearing
         if vehicle_info.route:
             if vehicle_info.stop and not vehicle_info.route.startswith("Amtrak"):
-                stop = await light_get_stop(r_client, vehicle_info.stop, tg)
+                stop = stops_lookup.get(vehicle_info.stop)
                 if stop:
                     mbta_stop_id = stop.mbta_stop_id
                     stop_id = stop.stop_id
