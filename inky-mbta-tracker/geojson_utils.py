@@ -502,19 +502,21 @@ async def get_vehicle_features(
     validation_errors = 0
     filtered_count = 0
 
-    # Pre-scan: collect unique stop IDs for prediction lookup
     pred_lookup: dict[tuple[str, str], datetime] = {}
     unique_stops: set[str] = set()
+    validated: list[VehicleRedisSchema] = []
     for vk_bytes, result in zip(vehicle_keys_list, results):
         if not result:
+            stale_keys.append(vk_bytes)
             continue
         try:
             vehicle_info = VehicleRedisSchema.model_validate_json(
                 strict=False, json_data=result
             )
         except ValidationError:
+            validation_errors += 1
             continue
-
+        validated.append(vehicle_info)
         if (
             vehicle_info.stop
             and not vehicle_info.route.startswith("Amtrak")
@@ -534,20 +536,9 @@ async def get_vehicle_features(
         except Exception as exc:
             logger.warning("Failed to batch-fetch predictions", exc_info=exc)
 
-    for vk_bytes, result in zip(vehicle_keys_list, results):
-        if not result:
-            stale_keys.append(vk_bytes)
-            continue
-
+    for vehicle_info in validated:
         vehicle_bearing = None
         platform_prediction = None
-        try:
-            vehicle_info: VehicleRedisSchema = VehicleRedisSchema.model_validate_json(
-                strict=False, json_data=result
-            )
-        except ValidationError:
-            validation_errors += 1
-            continue
 
         if (
             frequent_buses
