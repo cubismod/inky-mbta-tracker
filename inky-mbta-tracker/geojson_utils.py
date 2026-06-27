@@ -1,9 +1,10 @@
 import hashlib
+import json
 import logging
 import re
 from datetime import UTC, datetime, timedelta
 from math import cos, radians, sin, tau
-from typing import Optional
+from typing import Any, Optional
 
 import aiohttp
 import humanize
@@ -18,7 +19,6 @@ from mbta_client import (
 )
 from mbta_client_extended import get_shapes, light_get_stops
 from mbta_rate_limiter import rate_limited_get
-from mbta_responses import AlertResource
 from opentelemetry.trace import Span
 from otel_config import get_tracer, is_otel_enabled
 from otel_utils import (
@@ -83,7 +83,7 @@ def vehicle_display_point(
 
 async def light_get_alerts_batch(
     routes_str: str, session: ClientSession, r_client: Redis
-) -> Optional[list[AlertResource]]:
+) -> Optional[list[dict[str, Any]]]:
     """Get alerts for multiple routes in a single API call"""
 
     tracer = get_tracer(__name__) if is_otel_enabled() else None
@@ -104,7 +104,7 @@ async def light_get_alerts_batch(
 
 async def _light_get_alerts_batch_impl(
     routes_str: str, session: ClientSession, r_client: Redis, span: Optional[Span]
-) -> Optional[list[AlertResource]]:
+) -> Optional[list[dict[str, Any]]]:
     from mbta_client import MBTA_AUTH
     from mbta_responses import Alerts
 
@@ -160,12 +160,14 @@ async def _light_get_alerts_batch_impl(
                     span.set_attribute("error.type", "invalid_data_type")
                 return None
 
+            # Validate the response structure for safety; reuse the raw MBTA
+            # dicts for output so callers skip a second pydantic serialization pass.
             alerts_response = Alerts.model_validate(data)
             alerts_count = len(alerts_response.data) if alerts_response.data else 0
             logger.debug(f"Parsed {alerts_count} alerts from response")
             if span:
                 span.set_attribute("alerts.count", alerts_count)
-            return alerts_response.data if alerts_response.data else []
+            return list(data["data"])
     except ValidationError as err:
         logger.error("Unable to validate alerts response", exc_info=err)
         if span:
@@ -225,10 +227,50 @@ def calculate_bearing(start: Point, end: Point) -> float:
     return bearing(start, end)
 
 
+def _merge_alert_batch(
+    alerts: dict[str, dict[str, Any]],
+    batch: list[dict[str, Any]],
+    batch_num: int,
+    span: Optional[Span],
+) -> None:
+    """Merge a batch of raw MBTA alert dicts into ``alerts`` keyed by id."""
+    for a in batch:
+        try:
+            a_id = a.get("id") if isinstance(a, dict) else None
+            if not a_id:
+                logger.warning("Alert missing ID in batch %s: %s", batch_num, a)
+                continue
+            attrs = a.get("attributes")
+            if not isinstance(attrs, dict) or "header" not in attrs:
+                logger.warning(
+                    "Alert %s missing attributes/header in batch %s: %s",
+                    a_id,
+                    batch_num,
+                    a,
+                )
+                continue
+            alerts[a_id] = a
+            logger.debug(
+                "Alert: %s (ID: %s, Severity: %s)",
+                attrs.get("header"),
+                a_id,
+                attrs.get("severity"),
+            )
+        except (AttributeError, TypeError, ValueError) as e:
+            logger.error("Error processing alert in batch %s", batch_num, exc_info=e)
+            continue
+
+
 async def collect_alerts(
     config: Config, session: ClientSession, r_client: Redis
-) -> list[AlertResource]:
-    """Collect alerts for the routes specified in the config"""
+) -> tuple[int, str]:
+    """Collect alerts for the configured routes.
+
+    Returns ``(count, json_body)`` where ``json_body`` is the serialized
+    ``{"data": [...]}`` document built from the raw MBTA alert dicts. Reusing
+    the raw dicts avoids a second pydantic validation/serialization pass in the
+    caller (see issue #1040, C9).
+    """
     tracer = get_tracer(__name__) if is_otel_enabled() else None
     if tracer and should_trace_operation("medium_volume"):
         with tracer.start_as_current_span(
@@ -240,208 +282,101 @@ async def collect_alerts(
             },
         ) as span:
             add_transaction_ids_to_span(span)
-            logger.debug(f"Collecting alerts for routes: {config.vehicles_by_route}")
+            return await _collect_alerts_impl(config, session, r_client, span)
+    else:
+        return await _collect_alerts_impl(config, session, r_client, None)
 
-            alerts = dict[str, AlertResource]()
-            if config.vehicles_by_route:
-                # Split routes into batches to avoid MBTA API limitations
-                # MBTA API might have limits on query string length or number of routes
-                batch_size = 10  # Process 10 routes at a time
-                route_batches = [
-                    config.vehicles_by_route[i : i + batch_size]
-                    for i in range(0, len(config.vehicles_by_route), batch_size)
-                ]
 
-                span.set_attribute("batches.count", len(route_batches))
-                logger.debug(
-                    f"Processing {len(config.vehicles_by_route)} routes in {len(route_batches)} batches"
+async def _collect_alerts_impl(
+    config: Config,
+    session: ClientSession,
+    r_client: Redis,
+    span: Optional[Span],
+) -> tuple[int, str]:
+    logger.debug("Collecting alerts for routes: %s", config.vehicles_by_route)
+
+    alerts: dict[str, dict[str, Any]] = {}
+    if config.vehicles_by_route:
+        # Split routes into batches to respect MBTA API query-length limits.
+        batch_size = 10
+        route_batches = [
+            config.vehicles_by_route[i : i + batch_size]
+            for i in range(0, len(config.vehicles_by_route), batch_size)
+        ]
+
+        if span:
+            span.set_attribute("batches.count", len(route_batches))
+        logger.debug(
+            "Processing %s routes in %s batches",
+            len(config.vehicles_by_route),
+            len(route_batches),
+        )
+
+        for batch_num, route_batch in enumerate(route_batches, 1):
+            routes_str = ",".join(route_batch)
+            if span:
+                add_span_attributes(
+                    span,
+                    {
+                        "alerts.current_batch": batch_num,
+                        "alerts.current_batch.route_count": len(route_batch),
+                    },
                 )
+            logger.debug(
+                "Fetching alerts for batch %s/%s: %s",
+                batch_num,
+                len(route_batches),
+                routes_str,
+            )
 
-                for batch_num, route_batch in enumerate(route_batches, 1):
-                    routes_str = ",".join(route_batch)
-                    add_span_attributes(
-                        span,
+            al = await light_get_alerts_batch(routes_str, session, r_client)
+            if al:
+                if span:
+                    span.add_event(
+                        "alerts_batch_received",
                         {
-                            "alerts.current_batch": batch_num,
-                            "alerts.current_batch.route_count": len(route_batch),
+                            "batch.number": batch_num,
+                            "alerts.count": len(al),
+                            "routes.count": len(route_batch),
                         },
                     )
-                    logger.debug(
-                        f"Fetching alerts for batch {batch_num}/{len(route_batches)}: {routes_str}"
-                    )
-
-                    al = await light_get_alerts_batch(routes_str, session, r_client)
-                    if al:
-                        span.add_event(
-                            "alerts_batch_received",
-                            {
-                                "batch.number": batch_num,
-                                "alerts.count": len(al),
-                                "routes.count": len(route_batch),
-                            },
-                        )
-                        logger.debug(
-                            f"Batch {batch_num}: Received {len(al)} alerts from MBTA API"
-                        )
-                        for a in al:
-                            try:
-                                # Validate alert structure before adding
-                                if not hasattr(a, "id") or not a.id:
-                                    logger.warning(
-                                        f"Alert missing ID in batch {batch_num}: {a}"
-                                    )
-                                    continue
-
-                                if not hasattr(a, "attributes") or not a.attributes:
-                                    logger.warning(
-                                        f"Alert {a.id} missing attributes in batch {batch_num}: {a}"
-                                    )
-                                    continue
-
-                                if not hasattr(a.attributes, "header"):
-                                    logger.warning(
-                                        f"Alert {a.id} missing header in batch {batch_num}: {a}"
-                                    )
-                                    continue
-
-                                alerts[a.id] = a
-                                logger.debug(
-                                    f"Alert: {a.attributes.header} (ID: {a.id}, Severity: {a.attributes.severity})"
-                                )
-
-                                # Log the full alert structure for debugging
-                                logger.debug(f"Alert {a.id} full structure: {a}")
-                                logger.debug(f"Alert {a.id} attributes: {a.attributes}")
-                                logger.debug(
-                                    f"Alert {a.id} attributes dir: {dir(a.attributes)}"
-                                )
-
-                            except (AttributeError, TypeError, ValueError) as e:
-                                # Narrow to likely errors when inspecting/parsing alert objects
-                                logger.error(
-                                    f"Error processing alert in batch {batch_num}",
-                                    exc_info=e,
-                                )
-                                logger.debug(
-                                    "Problematic alert data", extra={"alert": a}
-                                )
-                                continue
-                    else:
-                        span.add_event(
-                            "alerts_batch_empty",
-                            {
-                                "batch.number": batch_num,
-                                "routes.count": len(route_batch),
-                            },
-                        )
-                        logger.debug(
-                            f"Batch {batch_num}: No alerts received from MBTA API"
-                        )
-
-                    # Small delay between batches to avoid rate limiting
-                    if batch_num < len(route_batches):
-                        await sleep(0.1)
-            else:
-                logger.warning("No vehicles_by_route configured, cannot collect alerts")
-
-            collected_alerts = list(alerts.values())
-            collected_alerts.sort(
-                key=lambda alert: (
-                    alert.attributes.updated_at or alert.attributes.created_at
-                ),
-                reverse=True,
-            )
-
-            span.set_attribute("alerts.collected", len(collected_alerts))
-            logger.info(
-                f"Total alerts collected: {len(collected_alerts)} from all route batches"
-            )
-            return collected_alerts
-    else:
-        # No tracing - original logic
-        logger.debug(f"Collecting alerts for routes: {config.vehicles_by_route}")
-
-        alerts = dict[str, AlertResource]()
-        if config.vehicles_by_route:
-            batch_size = 10
-            route_batches = [
-                config.vehicles_by_route[i : i + batch_size]
-                for i in range(0, len(config.vehicles_by_route), batch_size)
-            ]
-
-            logger.debug(
-                f"Processing {len(config.vehicles_by_route)} routes in {len(route_batches)} batches"
-            )
-
-            for batch_num, route_batch in enumerate(route_batches, 1):
-                routes_str = ",".join(route_batch)
                 logger.debug(
-                    f"Fetching alerts for batch {batch_num}/{len(route_batches)}: {routes_str}"
+                    "Batch %s: Received %s alerts from MBTA API", batch_num, len(al)
                 )
-
-                al = await light_get_alerts_batch(routes_str, session, r_client)
-                if al:
-                    logger.debug(
-                        f"Batch {batch_num}: Received {len(al)} alerts from MBTA API"
+                _merge_alert_batch(alerts, al, batch_num, span)
+            else:
+                if span:
+                    span.add_event(
+                        "alerts_batch_empty",
+                        {
+                            "batch.number": batch_num,
+                            "routes.count": len(route_batch),
+                        },
                     )
-                    for a in al:
-                        try:
-                            if not hasattr(a, "id") or not a.id:
-                                logger.warning(
-                                    f"Alert missing ID in batch {batch_num}: {a}"
-                                )
-                                continue
+                logger.debug("Batch %s: No alerts received from MBTA API", batch_num)
 
-                            if not hasattr(a, "attributes") or not a.attributes:
-                                logger.warning(
-                                    f"Alert {a.id} missing attributes in batch {batch_num}: {a}"
-                                )
-                                continue
+            # Small delay between batches to avoid rate limiting
+            if batch_num < len(route_batches):
+                await sleep(0.1)
+    else:
+        logger.warning("No vehicles_by_route configured, cannot collect alerts")
 
-                            if not hasattr(a.attributes, "header"):
-                                logger.warning(
-                                    f"Alert {a.id} missing header in batch {batch_num}: {a}"
-                                )
-                                continue
+    collected_alerts = list(alerts.values())
+    collected_alerts.sort(
+        key=lambda alert: (
+            (alert.get("attributes") or {}).get("updated_at")
+            or (alert.get("attributes") or {}).get("created_at")
+            or ""
+        ),
+        reverse=True,
+    )
 
-                            alerts[a.id] = a
-                            logger.debug(
-                                f"Alert: {a.attributes.header} (ID: {a.id}, Severity: {a.attributes.severity})"
-                            )
-
-                            logger.debug(f"Alert {a.id} full structure: {a}")
-                            logger.debug(f"Alert {a.id} attributes: {a.attributes}")
-                            logger.debug(
-                                f"Alert {a.id} attributes dir: {dir(a.attributes)}"
-                            )
-
-                        except (AttributeError, TypeError, ValueError) as e:
-                            logger.error(
-                                f"Error processing alert in batch {batch_num}",
-                                exc_info=e,
-                            )
-                            logger.debug("Problematic alert data", extra={"alert": a})
-                            continue
-                else:
-                    logger.debug(f"Batch {batch_num}: No alerts received from MBTA API")
-
-                if batch_num < len(route_batches):
-                    await sleep(0.1)
-        else:
-            logger.warning("No vehicles_by_route configured, cannot collect alerts")
-
-        collected_alerts = list(alerts.values())
-        collected_alerts.sort(
-            key=lambda alert: (
-                alert.attributes.updated_at or alert.attributes.created_at
-            ),
-            reverse=True,
-        )
-
-        logger.info(
-            f"Total alerts collected: {len(collected_alerts)} from all route batches"
-        )
-        return collected_alerts
+    if span:
+        span.set_attribute("alerts.collected", len(collected_alerts))
+    logger.info(
+        "Total alerts collected: %s from all route batches", len(collected_alerts)
+    )
+    return len(collected_alerts), json.dumps({"data": collected_alerts})
 
 
 @traced_function("geojson_utils.get_vehicle_features")
