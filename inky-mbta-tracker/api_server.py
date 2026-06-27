@@ -24,6 +24,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from logging_setup import setup_logging
 from otel_config import initialize_otel, is_otel_enabled, shutdown_otel
 from prometheus_fastapi_instrumentator import Instrumentator
+from redis.asyncio import Redis
 from sentry_config import initialize_sentry
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -42,9 +43,15 @@ def create_app() -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         app.state.session = aiohttp.ClientSession(base_url=MBTA_V3_ENDPOINT)
+        app.state.r_client = Redis().from_url(
+            f"redis://:{os.environ.get('IMT_REDIS_PASSWORD', '')}@{os.environ.get('IMT_REDIS_ENDPOINT', '')}:{int(os.environ.get('IMT_REDIS_PORT', '6379'))}"
+        )
         async with create_task_group() as tg:
             app.state.vehicle_stream_manager = VehicleStreamManager(
-                app.state.session, tg, interval_seconds=2
+                app.state.session,
+                tg,
+                r_client=app.state.r_client,
+                interval_seconds=2,
             )
             try:
                 yield
@@ -52,6 +59,7 @@ def create_app() -> FastAPI:
                 await app.state.vehicle_stream_manager.aclose()
                 tg.cancel_scope.cancel()
                 await app.state.session.close()
+                await app.state.r_client.aclose()
                 # Ensure OTEL spans are flushed before exit
                 if is_otel_enabled():
                     shutdown_otel()
