@@ -22,7 +22,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from logging_setup import setup_logging
-from otel_config import initialize_otel, is_otel_enabled, shutdown_otel
+from otel_config import initialize_otel, is_otel_enabled, setup_pyroscope, shutdown_otel
 from prometheus_fastapi_instrumentator import Instrumentator
 from redis.asyncio import Redis
 from sentry_config import initialize_sentry
@@ -33,6 +33,7 @@ from slowapi.errors import RateLimitExceeded
 def create_app() -> FastAPI:
     load_dotenv()
     setup_logging()
+    setup_pyroscope()
 
     # Initialize Sentry for error tracking (with FastAPI integration)
     initialize_sentry(include_fastapi=True)

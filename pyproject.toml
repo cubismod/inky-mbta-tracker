@@ -67,6 +67,7 @@ dependencies = [
     "sentry-sdk[fastapi]>=2.0.0",
     "httptools>=0.7.1",
     "gtfs-realtime-bindings>=2.0.0",
+    "pyroscope-io>=1.0.12",
 ]
 
 [dependency-groups]

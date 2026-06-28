@@ -9,6 +9,7 @@ import logging
 import os
 from typing import Any, Optional
 
+import pyroscope
 from opentelemetry import trace
 from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
 from opentelemetry.sdk.resources import Resource
@@ -428,3 +429,17 @@ def should_sample_background() -> bool:
 
     sample_rate = float(get_otel_config()["background_sample_rate"])
     return random.random() < sample_rate
+
+
+def setup_pyroscope() -> None:
+    if os.getenv("IMT_PYROSCOPE", "false") == "true":
+        pyroscope.configure(
+            application_name=os.getenv(
+                "IMT_OTEL_SERVICE_NAME", "inky-mbta-tracker-worker"
+            ),
+            server_address=os.getenv(
+                "IMT_PYROSCOPE_SERVER_ADDRESS", "http://localhost:4040"
+            ),
+            enable_logging=True,
+            sample_rate=int(os.getenv("IMT_PYROSCOPE_SAMPLE_RATE", "100")),
+        )
