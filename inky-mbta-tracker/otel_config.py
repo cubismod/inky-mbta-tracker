@@ -440,6 +440,5 @@ def setup_pyroscope() -> None:
             server_address=os.getenv(
                 "IMT_PYROSCOPE_SERVER_ADDRESS", "http://localhost:4040"
             ),
-            enable_logging=True,
             sample_rate=int(os.getenv("IMT_PYROSCOPE_SAMPLE_RATE", "100")),
         )
