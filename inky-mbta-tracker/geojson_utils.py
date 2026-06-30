@@ -1,5 +1,4 @@
 import hashlib
-import json
 import logging
 import re
 from datetime import UTC, datetime, timedelta
@@ -8,6 +7,7 @@ from typing import Any, Optional
 
 import aiohttp
 import humanize
+import orjson
 from aiohttp import ClientSession
 from anyio import sleep
 from anyio.abc import TaskGroup
@@ -377,7 +377,9 @@ async def _collect_alerts_impl(
     logger.info(
         "Total alerts collected: %s from all route batches", len(collected_alerts)
     )
-    return len(collected_alerts), json.dumps({"data": collected_alerts})
+    return len(collected_alerts), orjson.dumps({"data": collected_alerts}).decode(
+        "utf-8"
+    )
 
 
 @traced_function("geojson_utils.get_vehicle_features")

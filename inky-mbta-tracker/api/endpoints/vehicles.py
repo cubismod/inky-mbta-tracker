@@ -1,8 +1,8 @@
-import json
 import logging
 from datetime import datetime
 from typing import AsyncGenerator, Optional
 
+import orjson
 from api.middleware.cache_middleware import cache_ttl
 from api.services.vehicle_counts import get_vehicle_route_counts
 from fastapi import APIRouter, HTTPException, Request, Response
@@ -60,7 +60,7 @@ async def get_vehicles(
                 span.set_attribute("api.response.success", True)
                 result = {"type": "FeatureCollection", "features": features}
                 return Response(
-                    content=json.dumps(result), media_type="application/json"
+                    content=orjson.dumps(result), media_type="application/json"
                 )
             add_span_attributes(
                 span,

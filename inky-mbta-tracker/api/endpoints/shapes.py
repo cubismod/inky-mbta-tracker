@@ -1,6 +1,6 @@
-import json
 import logging
 
+import orjson
 from api.middleware.cache_middleware import cache_ttl
 from consts import WEEK
 from fastapi import APIRouter, HTTPException, Request, Response
@@ -58,7 +58,7 @@ async def get_shapes(
                     "response.feature_count": len(features),
                 },
             )
-            return Response(content=json.dumps(result), media_type="application/json")
+            return Response(content=orjson.dumps(result), media_type="application/json")
         except (ConnectionError, TimeoutError) as exc:
             logger.error("Error getting shapes due to connection issue", exc_info=True)
             set_span_error(span, exc)
