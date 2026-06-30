@@ -110,7 +110,7 @@ async def _light_get_alerts_batch_impl(
 
     endpoint = f"/alerts?filter[route]={routes_str}&api_key={MBTA_AUTH}&filter[lifecycle]=NEW,ONGOING,ONGOING_UPCOMING&filter[datetime]=NOW"
 
-    logger.debug(f"Fetching alerts from endpoint: {endpoint}")
+    logger.debug("Fetching alerts from endpoint: %s", endpoint)
 
     try:
         async with rate_limited_get(session, r_client, endpoint) as response:
@@ -133,7 +133,8 @@ async def _light_get_alerts_batch_impl(
 
             data = await response.json()
             logger.debug(
-                f"Raw response data keys: {list(data.keys()) if isinstance(data, dict) else 'Not a dict'}"
+                "Raw response data keys: %s",
+                list(data.keys()) if isinstance(data, dict) else "Not a dict",
             )
 
             # Validate the response structure
@@ -164,7 +165,7 @@ async def _light_get_alerts_batch_impl(
             # dicts for output so callers skip a second pydantic serialization pass.
             alerts_response = Alerts.model_validate(data)
             alerts_count = len(alerts_response.data) if alerts_response.data else 0
-            logger.debug(f"Parsed {alerts_count} alerts from response")
+            logger.debug("Parsed %s alerts from response", alerts_count)
             if span:
                 span.set_attribute("alerts.count", alerts_count)
             return list(data["data"])
