@@ -10,9 +10,9 @@ from shared_types.shared_types import DiffApiResponse
 
 
 class FakeDIParams:
-    def __init__(self, session: object) -> None:
+    def __init__(self, session: object, r_client: object) -> None:
         self.session = session
-        self.r_client = object()
+        self.r_client = r_client
         self.config = object()
         self.tg = object()
 
@@ -65,7 +65,9 @@ async def test_vehicle_stream_manager_fans_out_delta_work_once(
     monkeypatch.setattr(vehicle_stream, "calculate_diff", fake_calculate_diff)
 
     async with create_task_group() as tg:
-        manager = VehicleStreamManager(object(), tg, interval_seconds=999)
+        manager = VehicleStreamManager(
+            object(), tg, r_client=object(), interval_seconds=999
+        )
         async with (
             manager.subscribe("delta", frequent_buses=False) as first,
             manager.subscribe("delta", frequent_buses=False) as second,
@@ -107,7 +109,9 @@ async def test_vehicle_stream_manager_replays_delta_snapshot_to_late_subscriber(
     monkeypatch.setattr(vehicle_stream, "get_vehicles_data", fake_get_vehicles_data)
 
     async with create_task_group() as tg:
-        manager = VehicleStreamManager(object(), tg, interval_seconds=999)
+        manager = VehicleStreamManager(
+            object(), tg, r_client=object(), interval_seconds=999
+        )
         async with manager.subscribe("delta", frequent_buses=False) as first:
             first_event = await first.receive()
             assert (
@@ -146,7 +150,9 @@ async def test_vehicle_stream_manager_replays_full_snapshot_to_late_subscriber(
     monkeypatch.setattr(vehicle_stream, "get_vehicles_data", fake_get_vehicles_data)
 
     async with create_task_group() as tg:
-        manager = VehicleStreamManager(object(), tg, interval_seconds=999)
+        manager = VehicleStreamManager(
+            object(), tg, r_client=object(), interval_seconds=999
+        )
         async with manager.subscribe("full", frequent_buses=False) as first:
             first_event = await first.receive()
             assert _sse_data(first_event)["features"][0]["properties"]["fetch"] == 1
@@ -182,7 +188,9 @@ async def test_vehicle_stream_manager_splits_frequent_bus_producers(
     monkeypatch.setattr(vehicle_stream, "get_vehicles_data", fake_get_vehicles_data)
 
     async with create_task_group() as tg:
-        manager = VehicleStreamManager(object(), tg, interval_seconds=999)
+        manager = VehicleStreamManager(
+            object(), tg, r_client=object(), interval_seconds=999
+        )
         async with (
             manager.subscribe("full", frequent_buses=False) as regular,
             manager.subscribe("full", frequent_buses=True) as frequent,
@@ -202,7 +210,9 @@ async def test_vehicle_stream_manager_splits_frequent_bus_producers(
 @pytest.mark.anyio("asyncio")
 async def test_vehicle_stream_manager_cleans_up_failed_replay() -> None:
     async with create_task_group() as tg:
-        manager = VehicleStreamManager(object(), tg, subscriber_buffer_size=0)
+        manager = VehicleStreamManager(
+            object(), tg, r_client=object(), subscriber_buffer_size=0
+        )
         state = await manager._state_for(False)
         state.latest_delta_snapshot_event = 'data: {"updated": {}, "removed": []}\n\n'
 
@@ -220,7 +230,7 @@ async def test_vehicle_stream_manager_resets_started_after_producer_setup_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class FailingDIParams:
-        def __init__(self, session: object) -> None:
+        def __init__(self, session: object, r_client: object) -> None:
             self.session = session
 
         async def __aenter__(self) -> "FailingDIParams":
@@ -237,7 +247,9 @@ async def test_vehicle_stream_manager_resets_started_after_producer_setup_error(
     monkeypatch.setattr(vehicle_stream, "DIParams", FailingDIParams)
 
     async with create_task_group() as tg:
-        manager = VehicleStreamManager(object(), tg, interval_seconds=999)
+        manager = VehicleStreamManager(
+            object(), tg, r_client=object(), interval_seconds=999
+        )
         async with manager.subscribe("full", frequent_buses=False):
             state = await manager._state_for(False)
             for _ in range(10):
@@ -279,7 +291,9 @@ async def test_vehicle_stream_manager_clears_replay_cache_when_producer_exits(
     monkeypatch.setattr(vehicle_stream, "get_vehicles_data", fake_get_vehicles_data)
 
     async with create_task_group() as tg:
-        manager = VehicleStreamManager(object(), tg, interval_seconds=1)
+        manager = VehicleStreamManager(
+            object(), tg, r_client=object(), interval_seconds=1
+        )
         async with manager.subscribe("full", frequent_buses=False) as sub:
             await sub.receive()
 
@@ -314,7 +328,9 @@ async def test_vehicle_stream_manager_no_stale_replay_for_new_subscriber(
     monkeypatch.setattr(vehicle_stream, "get_vehicles_data", fake_get_vehicles_data)
 
     async with create_task_group() as tg:
-        manager = VehicleStreamManager(object(), tg, interval_seconds=1)
+        manager = VehicleStreamManager(
+            object(), tg, r_client=object(), interval_seconds=1
+        )
 
         async with manager.subscribe("full", frequent_buses=False) as first:
             first_event = await first.receive()

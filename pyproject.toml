@@ -31,6 +31,7 @@ dependencies = [
     "mdurl==0.1.2",
     "metaphone>=0.6",
     "multidict==6.7.1",
+    "orjson>=3.10.0",
     "packaging==26.2",
     "paho-mqtt==2.1.0",
     "polyline==2.0.4",
@@ -67,6 +68,7 @@ dependencies = [
     "sentry-sdk[fastapi]>=2.0.0",
     "httptools>=0.7.1",
     "gtfs-realtime-bindings>=2.0.0",
+    "pyroscope-io>=1.0.12",
 ]
 
 [dependency-groups]

@@ -63,10 +63,12 @@ class VehicleStreamManager:
         session: Any,
         task_group: TaskGroup,
         *,
+        r_client: Any,
         interval_seconds: int = 4,
         subscriber_buffer_size: int = 4,
     ) -> None:
         self._session = session
+        self._r_client = r_client
         self._task_group = task_group
         self._interval_seconds = interval_seconds
         self._subscriber_buffer_size = subscriber_buffer_size
@@ -177,7 +179,7 @@ class VehicleStreamManager:
         label = _bool_label(state.frequent_buses)
         vehicle_stream_active_producers.labels(label).set(1)
         try:
-            async with DIParams(self._session) as commons:
+            async with DIParams(self._session, self._r_client) as commons:
                 while not self._closed:
                     async with state.lock:
                         if state.subscriber_count() == 0:

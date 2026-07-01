@@ -270,9 +270,9 @@ def test_vehicle_display_point_offsets_vehicles_at_same_stop_differently() -> No
 
 
 @pytest.mark.anyio("asyncio")
-@patch("geojson_utils.light_get_stop")
+@patch("geojson_utils.light_get_stops")
 async def test_get_vehicle_features_places_stopped_vehicle_at_stop_coordinates(
-    mock_light_get_stop: AsyncMock,
+    mock_light_get_stops: AsyncMock,
 ) -> None:
     vehicle = VehicleRedisSchema(
         action="add",
@@ -293,18 +293,22 @@ async def test_get_vehicle_features_places_stopped_vehicle_at_stop_coordinates(
     pipeline.get = AsyncMock()
     pipeline.execute = AsyncMock(return_value=[vehicle.model_dump_json().encode()])
     redis.pipeline.return_value = pipeline
-    mock_light_get_stop.return_value = LightStop(
-        stop_id="Davis",
-        mbta_stop_id="place-davis",
-        parent_stop_id=None,
-        long=-71.1218,
-        lat=42.3967,
-    )
+    mock_light_get_stops.return_value = {
+        "place-davis": LightStop(
+            stop_id="Davis",
+            mbta_stop_id="place-davis",
+            parent_stop_id=None,
+            long=-71.1218,
+            lat=42.3967,
+        )
+    }
 
     features = await get_vehicle_features(
         redis, Config(vehicles_by_route=["Red"]), cast(Any, object())
     )
 
+    mock_light_get_stops.assert_awaited_once()
+    assert mock_light_get_stops.call_args.args[1] == {"place-davis"}
     display_point = Point(features["vehicle-123"]["geometry"]["coordinates"])
 
     assert display_point != Point((-71.1218, 42.3967))
@@ -316,9 +320,9 @@ async def test_get_vehicle_features_places_stopped_vehicle_at_stop_coordinates(
 
 
 @pytest.mark.anyio("asyncio")
-@patch("geojson_utils.light_get_stop")
+@patch("geojson_utils.light_get_stops")
 async def test_get_vehicle_features_keeps_in_transit_vehicle_coordinates(
-    mock_light_get_stop: AsyncMock,
+    mock_light_get_stops: AsyncMock,
 ) -> None:
     vehicle = VehicleRedisSchema(
         action="add",
@@ -339,13 +343,15 @@ async def test_get_vehicle_features_keeps_in_transit_vehicle_coordinates(
     pipeline.get = AsyncMock()
     pipeline.execute = AsyncMock(return_value=[vehicle.model_dump_json().encode()])
     redis.pipeline.return_value = pipeline
-    mock_light_get_stop.return_value = LightStop(
-        stop_id="Davis",
-        mbta_stop_id="place-davis",
-        parent_stop_id=None,
-        long=-71.1218,
-        lat=42.3967,
-    )
+    mock_light_get_stops.return_value = {
+        "place-davis": LightStop(
+            stop_id="Davis",
+            mbta_stop_id="place-davis",
+            parent_stop_id=None,
+            long=-71.1218,
+            lat=42.3967,
+        )
+    }
 
     features = await get_vehicle_features(
         redis, Config(vehicles_by_route=["Red"]), cast(Any, object())
@@ -356,3 +362,43 @@ async def test_get_vehicle_features_keeps_in_transit_vehicle_coordinates(
         -71.1218,
         42.3967,
     )
+
+
+@pytest.mark.anyio("asyncio")
+@patch("geojson_utils.light_get_stops")
+async def test_get_vehicle_features_missing_stop_omits_stop_coordinates(
+    mock_light_get_stops: AsyncMock,
+) -> None:
+    vehicle = VehicleRedisSchema(
+        action="add",
+        id="vehicle-789",
+        current_status="IN_TRANSIT_TO",
+        direction_id=0,
+        latitude=42.0,
+        longitude=-71.0,
+        speed=15,
+        bearing=0,
+        stop="place-cold",
+        route="Red",
+        update_time=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+    redis = MagicMock()
+    redis.smembers = AsyncMock(return_value={b"vehicle:vehicle-789"})
+    pipeline = MagicMock()
+    pipeline.get = AsyncMock()
+    pipeline.execute = AsyncMock(return_value=[vehicle.model_dump_json().encode()])
+    redis.pipeline.return_value = pipeline
+    mock_light_get_stops.return_value = {}
+
+    features = await get_vehicle_features(
+        redis, Config(vehicles_by_route=["Red"]), cast(Any, object())
+    )
+
+    mock_light_get_stops.assert_awaited_once()
+    assert mock_light_get_stops.call_args.args[1] == {"place-cold"}
+    props = features["vehicle-789"]["properties"]
+    assert props["stop_id"] == ""
+    assert props["parent_stop_id"] is None
+    assert props["stop-coordinates"] == (None, None)
+    assert props["stop"] is None
+    assert props["marker-symbol"] == "rail"
