@@ -22,14 +22,17 @@ logger = logging.getLogger(__name__)
 
 
 class DIParams(AsyncContextManagerMixin):
-    def __init__(self, session: aiohttp.ClientSession, r_client: Redis) -> None:
+    def __init__(self, session: aiohttp.ClientSession) -> None:
         self.session = session
-        self.r_client = r_client
 
     @asynccontextmanager
     async def __asynccontextmanager__(self) -> AsyncGenerator[Self, None]:
         async with create_task_group() as tg:
             self.tg = tg
+            r_client = Redis().from_url(
+                f"redis://:{os.environ.get('IMT_REDIS_PASSWORD', '')}@{os.environ.get('IMT_REDIS_ENDPOINT', '')}:{int(os.environ.get('IMT_REDIS_PORT', '6379'))}"
+            )
+            self.r_client = r_client
             self.config = load_config()
             try:
                 yield self
@@ -38,7 +41,7 @@ class DIParams(AsyncContextManagerMixin):
 
 
 async def get_di(request: Request):
-    async with DIParams(request.app.state.session, request.app.state.r_client) as di:
+    async with DIParams(request.app.state.session) as di:
         yield di
 
 

@@ -16,7 +16,6 @@ from urllib.error import URLError
 from urllib.request import urlopen
 from zoneinfo import ZoneInfo
 
-import orjson
 from redis import Redis
 from redis.exceptions import ConnectionError, TimeoutError
 
@@ -81,7 +80,7 @@ def check_vehicles_endpoint(url: str, now: datetime | None = None) -> bool:
         return False
 
     try:
-        payload = orjson.loads(raw)
+        payload = json.loads(raw)
     except json.JSONDecodeError as e:
         logger.error(f"Vehicles endpoint response is not JSON: {e}")
         return False

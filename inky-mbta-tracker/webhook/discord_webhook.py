@@ -1,4 +1,5 @@
 import hashlib
+import json
 import logging
 import os
 import random
@@ -10,7 +11,6 @@ from zoneinfo import ZoneInfo
 
 import aiohttp
 import anyio
-import orjson
 from anyio.abc import TaskGroup
 from config import Config
 from consts import DAY
@@ -537,7 +537,7 @@ async def _post_webhook_impl(
             return
         if span:
             span.set_attribute("http.status_code", response.status)
-        json_body = orjson.loads(body)
+        json_body = json.loads(body)
         if "id" in json_body:
             message_id = json_body["id"]
             h = hashlib.sha512()
