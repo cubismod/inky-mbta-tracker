@@ -1,11 +1,10 @@
 import logging
 from asyncio import CancelledError
-from typing import List
+from dataclasses import dataclass
 
 import aiohttp
 from config import Config
 from geojson_utils import collect_alerts
-from mbta_responses import AlertResource
 from opentelemetry import trace
 from otel_utils import add_span_attributes, add_transaction_ids_to_span, set_span_error
 from redis.asyncio import Redis
@@ -22,6 +21,12 @@ logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
 
 
+@dataclass(frozen=True)
+class AlertsResult:
+    body: str
+    count: int
+
+
 @retry(
     wait=wait_exponential_jitter(initial=5, jitter=20, max=60),
     stop=stop_after_attempt(3),
@@ -31,22 +36,22 @@ tracer = trace.get_tracer(__name__)
 )
 async def fetch_alerts_with_retry(
     config: Config, session: aiohttp.ClientSession, r_client: Redis
-) -> List[AlertResource]:
+) -> AlertsResult:
     """Fetch alerts with retry logic for rate limiting."""
     with tracer.start_as_current_span("api.services.fetch_alerts_with_retry") as span:
         # Add transaction IDs to the span
         add_transaction_ids_to_span(span)
 
         try:
-            result = await collect_alerts(config, session, r_client)
+            count, body = await collect_alerts(config, session, r_client)
             add_span_attributes(
                 span,
                 {
-                    "alerts.fetched": len(result),
+                    "alerts.fetched": count,
                     "alerts.fetch.status": "success",
                 },
             )
-            return result
+            return AlertsResult(body=body, count=count)
         except Exception as e:
             set_span_error(span, e)
             add_span_attributes(span, {"error.type": type(e).__name__})

@@ -8,13 +8,13 @@ for common tracing patterns, and business transaction ID management.
 
 import functools
 import hashlib
-import json
 import logging
 import time
 import uuid
 from contextvars import ContextVar
 from typing import Any, Callable, Optional, ParamSpec, TypeVar
 
+import orjson
 from opentelemetry import trace
 from opentelemetry.trace import Link, Span, SpanKind, Status, StatusCode
 
@@ -121,7 +121,7 @@ def create_span_link_from_context(context_json: Optional[str]) -> Optional[Link]
         return None
 
     try:
-        context_dict = json.loads(context_json)
+        context_dict = orjson.loads(context_json)
         trace_id = int(context_dict["trace_id"], 16)
         span_id = int(context_dict["span_id"], 16)
         trace_flags = context_dict["trace_flags"]

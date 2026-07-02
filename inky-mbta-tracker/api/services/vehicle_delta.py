@@ -40,8 +40,8 @@ def calculate_diff(
         )
 
         # Debug logging to understand what's happening
-        logger.debug(f"DeepDiff keys: {list(diff_response.keys())}")
-        logger.debug(f"Original vehicles: {len(original)}, New vehicles: {len(new)}")
+        logger.debug("DeepDiff keys: %s", list(diff_response.keys()))
+        logger.debug("Original vehicles: %s, New vehicles: %s", len(original), len(new))
 
         # Find vehicles that have been added or changed
         updated: dict[str, Feature] = {}
@@ -49,7 +49,7 @@ def calculate_diff(
         # Handle new vehicles (added)
         if "dictionary_item_added" in diff_response:
             logger.debug(
-                f"Added vehicles: {len(diff_response['dictionary_item_added'])}"
+                "Added vehicles: %s", len(diff_response["dictionary_item_added"])
             )
             for key_path in diff_response["dictionary_item_added"]:
                 # Extract the vehicle ID from the key path (e.g., "root['vehicle_id']")
@@ -62,7 +62,7 @@ def calculate_diff(
 
         if "values_changed" in diff_response:
             logger.debug(
-                f"Changed vehicle fields: {len(diff_response['values_changed'])}"
+                "Changed vehicle fields: %s", len(diff_response["values_changed"])
             )
             for key_path in diff_response["values_changed"]:
                 # Extract the vehicle ID from nested key paths
@@ -73,7 +73,7 @@ def calculate_diff(
         # Handle type changes (e.g., stop_eta changing from None to string or vice versa)
         if "type_changes" in diff_response:
             logger.debug(
-                f"Type changed vehicle fields: {len(diff_response['type_changes'])}"
+                "Type changed vehicle fields: %s", len(diff_response["type_changes"])
             )
             for key_path in diff_response["type_changes"]:
                 # Extract the vehicle ID from nested key paths
@@ -89,7 +89,7 @@ def calculate_diff(
         removed: set[str] = set()
         if "dictionary_item_removed" in diff_response:
             logger.debug(
-                f"Removed vehicles: {len(diff_response['dictionary_item_removed'])}"
+                "Removed vehicles: %s", len(diff_response["dictionary_item_removed"])
             )
             for key_path in diff_response["dictionary_item_removed"]:
                 # Extract the vehicle ID from the key path
@@ -101,6 +101,6 @@ def calculate_diff(
         span.set_attribute("diff.removed_count", len(removed))
 
         logger.debug(
-            f"Returning {len(updated)} updated, {len(removed)} removed vehicles"
+            "Returning %s updated, %s removed vehicles", len(updated), len(removed)
         )
         return DiffApiResponse(updated=updated, removed=removed)
