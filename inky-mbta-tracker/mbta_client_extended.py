@@ -35,7 +35,6 @@ from polyline import decode
 from prometheus import (
     mbta_api_requests,
     record_mbta_api_rate_limit_hit,
-    redis_commands,
     server_side_events,
     tracker_executions,
 )
@@ -228,169 +227,101 @@ async def _light_get_stop_impl(
             span.set_attribute("cache.hit", False)
             span.set_attribute("stop.fetch.scheduled", True)
 
-        tg.start_soon(fetch_light_stop, r_client, stop_id, tg)
-        return None
+        async def fetch_stop(stop_id: str, tg: TaskGroup):
+            import mbta_client
 
-
-async def fetch_light_stop(r_client: Redis, stop_id: str, tg: TaskGroup) -> None:
-    """Fetch a stop from the MBTA API in the background and cache it.
-
-    Extracted to module level so both the single-stop path (`_light_get_stop_impl`)
-    and the batched path (`_light_get_stops_impl`) can schedule it without a
-    redundant Redis GET for stops already known to be uncached.
-    """
-    key = f"stop:{stop_id}:light"
-    import mbta_client
-
-    tracer = get_tracer(__name__) if is_otel_enabled() else None
-    with (
-        tracer.start_as_current_span("mbta_client_extended.fetch_light_stop")
-        if tracer
-        else nullcontext()
-    ) as fetch_span:
-        add_transaction_ids_to_span(fetch_span)
-        add_entity_id_attribute(fetch_span, "stop.id", stop_id, entity_type="stop")
-        await sleep(randint(0, 60))
-        if await get_cache(r_client, key):
-            logger.debug(
-                "Stop data for %s was cached while waiting; skipping fetch",
-                stop_id,
-            )
-            add_span_attributes(fetch_span, {"cache.hit": True})
-            return
-
-        logger.debug("Fetching stop data for %s from MBTA API", stop_id)
-        MBTAApi = mbta_client.MBTAApi
-        ls: Optional[LightStop] = None
-
-        async with RedisLock(
-            r_client,
-            f"stop_fetch:{stop_id}",
-            blocking_timeout=60,
-            expire_timeout=30,
-        ):
-            if await get_cache(r_client, key):
-                logger.debug(
-                    "Stop data for %s was cached while waiting on lock; skipping fetch",
-                    stop_id,
+            tracer = get_tracer(__name__) if is_otel_enabled() else None
+            with (
+                tracer.start_as_current_span("mbta_client_extended.fetch_light_stop")
+                if tracer
+                else nullcontext() as fetch_span
+            ):
+                add_transaction_ids_to_span(fetch_span)
+                add_entity_id_attribute(
+                    fetch_span, "stop.id", stop_id, entity_type="stop"
                 )
-                add_span_attributes(fetch_span, {"cache.hit": True})
-                return
-
-            add_span_attributes(fetch_span, {"cache.hit": False})
-            async with aiohttp.ClientSession(base_url=MBTA_V3_ENDPOINT) as session:
-                async with MBTAApi(
-                    r_client,
-                    stop_id=stop_id,
-                    watcher_type=TaskType.LIGHT_STOP,
-                ) as watcher:
-                    stop = await watcher.get_stop(
-                        session, stop_id, tg, include_facilities=False
+                await sleep(randint(0, 60))
+                if await get_cache(r_client, key):
+                    logger.debug(
+                        f"Stop data for {stop_id} was cached while waiting; skipping fetch"
                     )
-                    mbta_stop_id = stop_id
-                    if stop and stop[0]:
-                        parent_stop_id = None
-                        stop_name = stop_id
-                        if stop[0].data.attributes.description:
-                            stop_name = stop[0].data.attributes.description
-                        elif stop[0].data.attributes.name:
-                            stop_name = stop[0].data.attributes.name
+                    add_span_attributes(fetch_span, {"cache.hit": True})
+                    return
 
-                        if (
-                            stop[0].data.relationships
-                            and stop[0].data.relationships.parent_station.data
-                        ):
-                            parent_stop_id = stop[
-                                0
-                            ].data.relationships.parent_station.data.id
-                            tg.start_soon(light_get_stop, r_client, parent_stop_id, tg)
-                        ls = LightStop(
-                            stop_id=stop_name,
-                            long=stop[0].data.attributes.longitude,
-                            lat=stop[0].data.attributes.latitude,
-                            mbta_stop_id=mbta_stop_id,
-                            parent_stop_id=parent_stop_id,
+                logger.debug(f"Fetching stop data for {stop_id} from MBTA API")
+                MBTAApi = mbta_client.MBTAApi
+                ls = None
+
+                async with RedisLock(
+                    r_client,
+                    f"stop_fetch:{stop_id}",
+                    blocking_timeout=60,
+                    expire_timeout=30,
+                ):
+                    if await get_cache(r_client, key):
+                        logger.debug(
+                            f"Stop data for {stop_id} was cached while waiting on lock; skipping fetch"
                         )
-                    if ls:
-                        await write_cache(
+                        add_span_attributes(fetch_span, {"cache.hit": True})
+                        return
+
+                    add_span_attributes(fetch_span, {"cache.hit": False})
+                    async with aiohttp.ClientSession(
+                        base_url=MBTA_V3_ENDPOINT
+                    ) as session:
+                        async with MBTAApi(
                             r_client,
-                            key,
-                            ls.model_dump_json(),
-                            randint(TWO_MONTHS, YEAR),
-                        )
-                        add_span_attributes(fetch_span, {"stop.fetch.result": "cached"})
-                    else:
-                        add_span_attributes(
-                            fetch_span, {"stop.fetch.result": "not_found"}
-                        )
+                            stop_id=stop_id,
+                            watcher_type=TaskType.LIGHT_STOP,
+                        ) as watcher:
+                            stop = await watcher.get_stop(
+                                session, stop_id, tg, include_facilities=False
+                            )
+                            mbta_stop_id = stop_id
+                            if stop and stop[0]:
+                                parent_stop_id = None
+                                if stop[0].data.attributes.description:
+                                    stop_id = stop[0].data.attributes.description
+                                elif stop[0].data.attributes.name:
+                                    stop_id = stop[0].data.attributes.name
 
+                                if (
+                                    stop[0].data.relationships
+                                    and stop[0].data.relationships.parent_station.data
+                                ):
+                                    parent_stop_id = stop[
+                                        0
+                                    ].data.relationships.parent_station.data.id
+                                    tg.start_soon(
+                                        light_get_stop,
+                                        r_client,
+                                        parent_stop_id,
+                                        tg,
+                                    )
+                                ls = LightStop(
+                                    stop_id=stop_id,
+                                    long=stop[0].data.attributes.longitude,
+                                    lat=stop[0].data.attributes.latitude,
+                                    mbta_stop_id=mbta_stop_id,
+                                    parent_stop_id=parent_stop_id,
+                                )
+                            if ls:
+                                await write_cache(
+                                    r_client,
+                                    key,
+                                    ls.model_dump_json(),
+                                    randint(TWO_MONTHS, YEAR),
+                                )
+                                add_span_attributes(
+                                    fetch_span, {"stop.fetch.result": "cached"}
+                                )
+                            else:
+                                add_span_attributes(
+                                    fetch_span, {"stop.fetch.result": "not_found"}
+                                )
 
-async def light_get_stops(
-    r_client: Redis,
-    stop_ids: set[str],
-    tg: TaskGroup,
-) -> dict[str, LightStop]:
-    """Batch-fetch light stops via a single Redis pipeline.
-
-    Replaces N sequential `light_get_stop` round trips with one pipelined GET.
-    Returns a mapping keyed by the requested stop_id for cache hits. Cache misses
-    are backfilled by scheduling `fetch_light_stop` on the task group, preserving
-    the existing background-fetch behavior without a redundant per-miss GET.
-    """
-    tracer = get_tracer(__name__) if is_otel_enabled() else None
-    if tracer:
-        with tracer.start_as_current_span(
-            "mbta_client_extended.light_get_stops"
-        ) as span:
-            add_transaction_ids_to_span(span)
-            return await _light_get_stops_impl(r_client, stop_ids, tg, span)
-    return await _light_get_stops_impl(r_client, stop_ids, tg, None)
-
-
-async def _light_get_stops_impl(
-    r_client: Redis,
-    stop_ids: set[str],
-    tg: TaskGroup,
-    span: Optional[Span],
-) -> dict[str, LightStop]:
-    if not stop_ids:
-        return {}
-    stop_list = list(stop_ids)
-    pl = r_client.pipeline()
-    for stop_id in stop_list:
-        await pl.get(f"stop:{stop_id}:light")
-        redis_commands.labels("get").inc()
-    results = await pl.execute()
-    redis_commands.labels("execute").inc()
-
-    hits: dict[str, LightStop] = {}
-    misses: list[str] = []
-    for stop_id, raw in zip(stop_list, results):
-        if not raw:
-            misses.append(stop_id)
-            continue
-        try:
-            hits[stop_id] = LightStop.model_validate_json(raw)
-        except ValidationError as err:
-            logger.error("unable to validate json", exc_info=err)
-            if span:
-                span.set_attribute("error", True)
-                span.set_attribute("error.type", "validation_error")
-            misses.append(stop_id)
-
-    if span:
-        add_span_attributes(
-            span,
-            {
-                "stops.requested": len(stop_list),
-                "stops.hits": len(hits),
-                "stops.misses": len(misses),
-            },
-        )
-
-    for stop_id in misses:
-        tg.start_soon(fetch_light_stop, r_client, stop_id, tg)
-    return hits
+        tg.start_soon(fetch_stop, stop_id, tg)
+        return None
 
 
 @retry(

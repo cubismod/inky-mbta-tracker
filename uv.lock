@@ -791,7 +791,6 @@ dependencies = [
     { name = "opentelemetry-instrumentation-fastapi" },
     { name = "opentelemetry-instrumentation-redis" },
     { name = "opentelemetry-sdk" },
-    { name = "orjson" },
     { name = "packaging" },
     { name = "paho-mqtt" },
     { name = "polyline" },
@@ -802,7 +801,6 @@ dependencies = [
     { name = "pycparser" },
     { name = "pydantic" },
     { name = "pydantic-core" },
-    { name = "pyroscope-io" },
     { name = "python-dotenv" },
     { name = "redis" },
     { name = "redis-lock-py" },
@@ -867,7 +865,6 @@ requires-dist = [
     { name = "opentelemetry-instrumentation-fastapi", specifier = ">=0.49b0" },
     { name = "opentelemetry-instrumentation-redis", specifier = ">=0.49b0" },
     { name = "opentelemetry-sdk", specifier = ">=1.28.0" },
-    { name = "orjson", specifier = ">=3.10.0" },
     { name = "packaging", specifier = "==26.2" },
     { name = "paho-mqtt", specifier = "==2.1.0" },
     { name = "polyline", specifier = "==2.0.4" },
@@ -878,7 +875,6 @@ requires-dist = [
     { name = "pycparser", specifier = "==3.0" },
     { name = "pydantic", specifier = ">=2.11.7" },
     { name = "pydantic-core", specifier = ">=2.33.2" },
-    { name = "pyroscope-io", specifier = ">=1.0.12" },
     { name = "python-dotenv", specifier = "==1.2.2" },
     { name = "redis", specifier = "==7.4.1" },
     { name = "redis-lock-py", specifier = ">=1.1.1" },
@@ -1623,23 +1619,6 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/c3/b2/bc9c9196916376152d655522fdcebac55e66de6603a76a02bca1b6414f6c/pygments-2.20.0.tar.gz", hash = "sha256:6757cd03768053ff99f3039c1a36d6c0aa0b263438fcab17520b30a303a82b5f", size = 4955991, upload-time = "2026-03-29T13:29:33.898Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/f4/7e/a72dd26f3b0f4f2bf1dd8923c85f7ceb43172af56d63c7383eb62b332364/pygments-2.20.0-py3-none-any.whl", hash = "sha256:81a9e26dd42fd28a23a2d169d86d7ac03b46e2f8b59ed4698fb4785f946d0176", size = 1231151, upload-time = "2026-03-29T13:29:30.038Z" },
-]
-
-[[package]]
-name = "pyroscope-io"
-version = "1.0.12"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "cffi" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/09/3e/2327b2ad3da54e083dcebe6d9c50650b4b01da3f69fb2a579a8b7ff4899b/pyroscope_io-1.0.12.tar.gz", hash = "sha256:86f379d79303d8564a50d0d8e6751e695522f38a7dd32e9182eacabda0038aeb", size = 48479, upload-time = "2026-06-16T06:30:27.119Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/2f/b6/57352cb92f87e29afedc790f4004f1ad5b335a1750a5174930074b1d1ba4/pyroscope_io-1.0.12-cp310-abi3-macosx_11_0_arm64.whl", hash = "sha256:335acfe40b367dc90d0b1e9caf4a38aa8efe1ff656ec2dcb9ac41fbff92e8522", size = 2074603, upload-time = "2026-06-16T06:30:17.492Z" },
-    { url = "https://files.pythonhosted.org/packages/86/a5/68d18b2958af8ee29399dd42a963d8d01815f7e94edace79eb3917129fbc/pyroscope_io-1.0.12-cp310-abi3-macosx_11_0_x86_64.whl", hash = "sha256:6197f4cac09ced7acaddbba57afad1e32dd490cdda1922f3ab3dc0255e6cd943", size = 2164153, upload-time = "2026-06-16T06:30:19.17Z" },
-    { url = "https://files.pythonhosted.org/packages/85/6f/ddb3656b38a36fc3555d0bea2407a3841f7cdedae6fb2d748decf10da47e/pyroscope_io-1.0.12-cp310-abi3-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:a9962bdf9b6b91784433513fb23cd22da26934ef707a9260b997a03f9ac66ba2", size = 5311432, upload-time = "2026-06-16T06:30:20.658Z" },
-    { url = "https://files.pythonhosted.org/packages/8b/d6/de8f817c256406721b774245edccecd33cdf4b59a9ab9f2eaa29bf7f7d3b/pyroscope_io-1.0.12-cp310-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:4cdc7cc219733f542f51207cebaa5d7e577b21b5a20f6525ca5c587b60ac6cba", size = 4882800, upload-time = "2026-06-16T06:30:22.328Z" },
-    { url = "https://files.pythonhosted.org/packages/58/7b/2579c11dfa63971006f5658070803023418811b71da45f6bbb215a0267de/pyroscope_io-1.0.12-cp310-abi3-musllinux_1_2_aarch64.whl", hash = "sha256:cc7828dc728e291416670d2d2e245939ea0d36bfd99e9bfbc51ae399b4ab6490", size = 5433000, upload-time = "2026-06-16T06:30:23.944Z" },
-    { url = "https://files.pythonhosted.org/packages/c1/34/6a87e7a54834532b1a71ca64e18287ae8ffdba857e8fe844c93fd7ef520b/pyroscope_io-1.0.12-cp310-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:a26fa5f61408e698db609c65299414def8de7c11fcfd2b863bdacd86c172dd00", size = 5163316, upload-time = "2026-06-16T06:30:25.567Z" },
 ]
 
 [[package]]

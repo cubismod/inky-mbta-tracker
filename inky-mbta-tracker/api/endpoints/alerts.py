@@ -4,6 +4,7 @@ from api.core import GET_DI
 from api.middleware.cache_middleware import cache_ttl
 from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import RedirectResponse
+from mbta_responses import Alerts
 from opentelemetry import trace
 from otel_utils import add_span_attributes, add_transaction_ids_to_span, set_span_error
 from pydantic import ValidationError
@@ -39,19 +40,21 @@ async def get_alerts(request: Request, commons: GET_DI) -> Response:
         )
 
         try:
-            result = await fetch_alerts_with_retry(
+            alerts = await fetch_alerts_with_retry(
                 commons.config, commons.session, commons.r_client
             )
 
-            span.set_attribute("alerts.count", result.count)
+            span.set_attribute("alerts.count", len(alerts))
+            alerts_data = Alerts(data=alerts)
+            alerts_json = alerts_data.model_dump_json(exclude_unset=True)
             add_span_attributes(
                 span,
                 {
                     "api.response.success": True,
-                    "response.body.bytes": len(result.body.encode("utf-8")),
+                    "response.body.bytes": len(alerts_json.encode("utf-8")),
                 },
             )
-            return Response(content=result.body, media_type="application/json")
+            return Response(content=alerts_json, media_type="application/json")
         except (ConnectionError, TimeoutError) as exc:
             logger.error("Error getting alerts due to connection issue", exc_info=True)
             set_span_error(span, exc)

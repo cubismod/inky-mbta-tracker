@@ -23,7 +23,7 @@ from mbta_client_extended import (
 )
 from mbta_gtfs import gtfs_loop
 from opentelemetry import trace
-from otel_config import initialize_otel, is_otel_enabled, setup_pyroscope, shutdown_otel
+from otel_config import initialize_otel, is_otel_enabled, shutdown_otel
 from otel_utils import add_span_attributes, set_span_error
 from prometheus import watch_running_tasks
 from prometheus_client import start_http_server
@@ -56,8 +56,6 @@ initialize_otel(
 
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
-
-setup_pyroscope()
 
 MIN_TASK_RESTART_MINS = 45
 MAX_TASK_RESTART_MINS = 120
