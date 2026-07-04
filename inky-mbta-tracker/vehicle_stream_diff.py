@@ -8,7 +8,7 @@ from deepdiff import DeepDiff
 from geojson import Feature
 from geojson_utils import get_vehicle_features
 from opentelemetry import trace
-from otel_utils import add_transaction_ids_to_span
+from otel_utils import add_current_span_attributes, add_transaction_ids_to_span
 from redis.asyncio import Redis
 from redis.exceptions import RedisError
 from shared_types.shared_types import DiffApiResponse
@@ -44,12 +44,6 @@ class VehicleStreamDiff:
 
     def _save_snapshot(self, features: dict[str, Feature]) -> None:
         self.current_snapshot = features
-
-    async def get_reset(self, frequent_buses: bool = False) -> DiffApiResponse:
-        features = await get_vehicle_features(
-            self.r_client, self.config, self.tg, frequent_buses
-        )
-        return DiffApiResponse(updated=features, removed=set())
 
     @staticmethod
     def _calculate_diff(
@@ -151,31 +145,48 @@ class VehicleStreamDiff:
     async def watch(self, frequent_buses: bool = False) -> None:
         key = f"{VEHICLE_STREAM_KEY}:{'buses' if frequent_buses else 'rapid'}"
         while True:
-            features = await get_vehicle_features(
-                self.r_client, self.config, self.tg, frequent_buses
-            )
-            try:
-                if len(features) == 0:
-                    if self.empty_count > 3:
-                        await self.r_client.publish(
-                            key,
-                            DiffApiResponse(
-                                updated={}, removed=set()
-                            ).model_dump_json(),
+            with tracer.start_as_current_span(
+                "vehicle_stream_diff.watch_iteration"
+            ) as span:
+                span.set_attribute("vehicle_stream.frequent_buses", frequent_buses)
+                span.set_attribute("vehicle_stream.empty_count", self.empty_count)
+                add_transaction_ids_to_span(span)
+
+                features = await get_vehicle_features(
+                    self.r_client, self.config, self.tg, frequent_buses
+                )
+                span.set_attribute("vehicles.current_count", len(features))
+
+                try:
+                    if len(features) == 0:
+                        if self.empty_count > 3:
+                            await self.r_client.publish(
+                                key,
+                                DiffApiResponse(
+                                    updated={}, removed=set()
+                                ).model_dump_json(),
+                            )
+                            span.set_attribute("vehicle_stream.published_empty", True)
+                            # note that this is intentionally added to the sleep at the end of the method
+                            await sleep(5)
+                        self.empty_count += 1
+                    else:
+                        self.empty_count = 0
+                        diff = self._calculate_diff(self.current_snapshot, features)
+                        await self.r_client.publish(key, diff.model_dump_json())
+                        span.set_attribute("vehicle_stream.published_diff", True)
+                        span.set_attribute(
+                            "vehicle_stream.diff_updated_count", len(diff.updated)
                         )
-                        # note that this is intentionally added to the sleep at the end of the method
-                        await sleep(5)
-                    self.empty_count += 1
-                else:
-                    self.empty_count = 0
-                    await self.r_client.publish(
-                        key,
-                        self._calculate_diff(
-                            self.current_snapshot, features
-                        ).model_dump_json(),
-                    )
-            except RedisError:
-                logger.error("Unable to publish predictions update", exc_info=True)
+                        span.set_attribute(
+                            "vehicle_stream.diff_removed_count", len(diff.removed)
+                        )
+                except RedisError:
+                    span.set_attribute("vehicle_stream.redis_error", True)
+                    logger.error("Unable to publish predictions update", exc_info=True)
+
+                add_current_span_attributes({"vehicle_stream.iteration_complete": True})
+
             await sleep(SLEEP_DURATION)
             self._save_snapshot(features)
 
