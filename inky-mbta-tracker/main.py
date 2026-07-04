@@ -13,7 +13,6 @@ from anyio.streams.memory import MemoryObjectSendStream
 from config import Config, StopSetup, load_config
 from consts import MBTA_V3_ENDPOINT
 from dotenv import load_dotenv
-from geojson_utils import background_refresh
 from logging_setup import setup_logging
 from mbta_client_extended import (
     watch_alerts,
@@ -39,6 +38,7 @@ from sentry_config import initialize_sentry
 from shared_types.schema_versioner import schema_versioner
 from shared_types.shared_types import TaskType
 from utils import get_redis
+from vehicle_stream_diff import run_vehicle_stream_diff
 from webhook.ntfy import notify_startup
 
 load_dotenv()
@@ -260,6 +260,9 @@ async def __main__() -> None:
                     tg.start_soon(
                         watch_alerts, get_redis(redis_pool), route_id, session, config
                     )
+                tg.start_soon(
+                    run_vehicle_stream_diff, get_redis(redis_pool), config, tg
+                )
             if config.frequent_bus_lines:
                 for route_id in config.frequent_bus_lines:
                     start_task(
@@ -272,11 +275,14 @@ async def __main__() -> None:
                         None,
                         route_id,
                     )
+                tg.start_soon(
+                    run_vehicle_stream_diff, get_redis(redis_pool), config, tg, True
+                )
 
             # consumer
             tg.start_soon(process_queue_async, receive_stream, tg)
 
-            tg.start_soon(background_refresh, get_redis(redis_pool), config, tg)
+            # tg.start_soon(background_refresh, get_redis(redis_pool), config, tg)
 
             # Start heartbeat task for healthcheck monitoring
             tg.start_soon(heartbeat_task, get_redis(redis_pool))

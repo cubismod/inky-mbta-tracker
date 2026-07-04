@@ -1,15 +1,17 @@
 import logging
 
+import orjson
 from anyio import sleep
 from anyio.abc import TaskGroup
-from anyio.streams.memory import MemoryObjectSendStream
 from config import Config
+from consts import VEHICLE_STREAM_KEY
 from deepdiff import DeepDiff
 from geojson import Feature
 from geojson_utils import get_vehicle_features
 from opentelemetry import trace
 from otel_utils import add_transaction_ids_to_span
 from redis.asyncio import Redis
+from redis.exceptions import RedisError
 from shared_types.shared_types import DiffApiResponse
 
 SLEEP_DURATION = 2
@@ -21,10 +23,11 @@ tracer = trace.get_tracer(__name__)
 class VehicleStreamDiff:
     """
     Implements a differ for use with SSE real-time vehicle updates.
+
+    Uses Redis pub/sub to send diff updates to connected clients.
     """
 
     r_client: Redis
-    send_stream: MemoryObjectSendStream[DiffApiResponse]
     config: Config
     tg: TaskGroup
     current_snapshot: dict[str, Feature] = {}
@@ -33,12 +36,10 @@ class VehicleStreamDiff:
     def __init__(
         self,
         r_client: Redis,
-        send_stream: MemoryObjectSendStream[DiffApiResponse],
         config: Config,
         tg: TaskGroup,
     ) -> None:
         self.r_client = r_client
-        self.send_stream = send_stream
         self.config = config
         self.tg = tg
 
@@ -149,22 +150,39 @@ class VehicleStreamDiff:
             return DiffApiResponse(updated=updated, removed=removed)
 
     async def watch(self, frequent_buses: bool = False) -> None:
+        key = f"{VEHICLE_STREAM_KEY}:{'buses' if frequent_buses else 'rapid'}"
         while True:
             features = await get_vehicle_features(
                 self.r_client, self.config, self.tg, frequent_buses
             )
-            if len(features) == 0:
-                if self.empty_count > 3:
-                    await self.send_stream.send(
-                        DiffApiResponse(updated={}, removed=set())
+            try:
+                if len(features) == 0:
+                    if self.empty_count > 3:
+                        await self.r_client.publish(
+                            key,
+                            orjson.dumps(
+                                DiffApiResponse(updated={}, removed=set())
+                            ).decode("utf-8"),
+                        )
+                        # note that this is intentionally added to the sleep at the end of the method
+                        await sleep(5)
+                    self.empty_count += 1
+                else:
+                    self.empty_count = 0
+                    await self.r_client.publish(
+                        key,
+                        orjson.dumps(
+                            self._calculate_diff(self.current_snapshot, features)
+                        ).decode("utf-8"),
                     )
-                    # note that this is intentionally added to the sleep at the end of the method
-                    await sleep(5)
-                self.empty_count += 1
-            else:
-                self.empty_count = 0
-                await self.send_stream.send(
-                    self._calculate_diff(self.current_snapshot, features)
-                )
+            except RedisError:
+                logger.error("Unable to publish predictions update", exc_info=True)
             await sleep(SLEEP_DURATION)
             self._save_snapshot(features)
+
+
+async def run_vehicle_stream_diff(
+    r_client: Redis, config: Config, tg: TaskGroup, frequent_buses: bool = False
+) -> None:
+    vse = VehicleStreamDiff(r_client, config, tg)
+    await vse.watch(frequent_buses)
