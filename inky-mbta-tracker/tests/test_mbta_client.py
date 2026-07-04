@@ -1,3 +1,4 @@
+import json
 from asyncio import CancelledError
 from datetime import UTC
 from typing import Any, Optional, cast
@@ -13,6 +14,7 @@ from mbta_client import (
     silver_line_lookup,
 )
 from mbta_client_extended import (
+    fetch_route_stops,
     light_get_stop,
     light_get_stops,
     watch_mbta_server_side_events,
@@ -442,9 +444,9 @@ class TestLightGetStop:
 
 @pytest.mark.anyio("asyncio")
 class TestLightGetStops:
-    @patch("mbta_client_extended.fetch_light_stop", new_callable=AsyncMock)
+    @patch("mbta_client_extended.fetch_route_stops", new_callable=AsyncMock)
     async def test_light_get_stops_batches_pipeline_and_backfills_misses(
-        self, mock_fetch_light_stop: AsyncMock
+        self, mock_fetch_route_stops: AsyncMock
     ) -> None:
         hit = LightStop(
             stop_id="Davis",
@@ -452,6 +454,13 @@ class TestLightGetStops:
             parent_stop_id=None,
             long=-71.1218,
             lat=42.3967,
+        )
+        miss = LightStop(
+            stop_id="Cold",
+            mbta_stop_id="place-cold",
+            parent_stop_id=None,
+            long=-71.13,
+            lat=42.40,
         )
         redis = MagicMock()
         pipeline = MagicMock()
@@ -472,20 +481,30 @@ class TestLightGetStops:
         pipeline.execute = AsyncMock(side_effect=fake_execute)
         redis.pipeline.return_value = pipeline
 
+        mock_fetch_route_stops.return_value = {
+            "place-cold": miss,
+        }
+
         async with anyio.create_task_group() as tg:
-            result = await light_get_stops(redis, {"place-davis", "place-cold"}, tg)
+            result = await light_get_stops(
+                redis,
+                {"place-davis", "place-cold"},
+                tg,
+                routes={"place-davis": "Red", "place-cold": "Red"},
+            )
             tg.cancel_scope.cancel()
 
-        assert set(result) == {"place-davis"}
+        assert set(result) == {"place-davis", "place-cold"}
         assert result["place-davis"].stop_id == "Davis"
+        assert result["place-cold"].stop_id == "Cold"
         assert pipeline.get.await_count == 2
         assert pipeline.execute.await_count == 1
-        mock_fetch_light_stop.assert_awaited_once()
-        assert mock_fetch_light_stop.call_args.args[1] == "place-cold"
+        mock_fetch_route_stops.assert_awaited_once()
+        assert mock_fetch_route_stops.call_args.args[1] == "Red"
 
-    @patch("mbta_client_extended.fetch_light_stop", new_callable=AsyncMock)
+    @patch("mbta_client_extended.fetch_route_stops", new_callable=AsyncMock)
     async def test_light_get_stops_empty_returns_empty_dict(
-        self, mock_fetch_light_stop: AsyncMock
+        self, mock_fetch_route_stops: AsyncMock
     ) -> None:
         redis = MagicMock()
         async with anyio.create_task_group() as tg:
@@ -494,7 +513,180 @@ class TestLightGetStops:
 
         assert result == {}
         redis.pipeline.assert_not_called()
-        mock_fetch_light_stop.assert_not_awaited()
+        mock_fetch_route_stops.assert_not_awaited()
+
+
+@pytest.mark.anyio("asyncio")
+class TestFetchRouteStops:
+    @patch("mbta_client_extended.get_cache", new_callable=AsyncMock)
+    @patch("mbta_client_extended.write_cache", new_callable=AsyncMock)
+    @patch("mbta_client_extended.rate_limited_get")
+    async def test_fetch_route_stops_caches_all_stops(
+        self,
+        mock_rate_limited_get: MagicMock,
+        mock_write_cache: AsyncMock,
+        mock_get_cache: AsyncMock,
+    ) -> None:
+        mock_get_cache.return_value = None
+        stops_response = json.dumps(
+            {
+                "data": [
+                    {
+                        "type": "stop",
+                        "id": "place-davis",
+                        "attributes": {
+                            "name": "Davis",
+                            "description": "Davis",
+                            "latitude": 42.3967,
+                            "longitude": -71.1218,
+                            "location_type": 1,
+                            "wheelchair_boarding": 1,
+                        },
+                        "relationships": {"parent_station": {"data": None}},
+                    },
+                    {
+                        "type": "stop",
+                        "id": "place-porter",
+                        "attributes": {
+                            "name": "Porter",
+                            "description": "Porter",
+                            "latitude": 42.3884,
+                            "longitude": -71.1193,
+                            "location_type": 1,
+                            "wheelchair_boarding": 1,
+                        },
+                        "relationships": {"parent_station": {"data": None}},
+                    },
+                ]
+            }
+        )
+        mock_response = AsyncMock()
+        mock_response.status = 200
+        mock_response.text = AsyncMock(return_value=stops_response)
+
+        mock_ctx = AsyncMock()
+        mock_ctx.__aenter__ = AsyncMock(return_value=mock_response)
+        mock_ctx.__aexit__ = AsyncMock(return_value=False)
+        mock_rate_limited_get.return_value = mock_ctx
+
+        mock_redis = AsyncMock()
+
+        result = await fetch_route_stops(mock_redis, "Red")
+
+        assert len(result) == 2
+        assert "place-davis" in result
+        assert "place-porter" in result
+        assert result["place-davis"].stop_id == "Davis"
+        assert result["place-davis"].lat == 42.3967
+        assert result["place-davis"].long == -71.1218
+        assert result["place-davis"].mbta_stop_id == "place-davis"
+        assert result["place-porter"].stop_id == "Porter"
+        assert mock_write_cache.await_count >= 3
+
+    @patch("mbta_client_extended.get_cache", new_callable=AsyncMock)
+    @patch("mbta_client_extended.write_cache", new_callable=AsyncMock)
+    @patch("mbta_client_extended.rate_limited_get")
+    async def test_fetch_route_stops_caches_child_platform_stops(
+        self,
+        mock_rate_limited_get: MagicMock,
+        mock_write_cache: AsyncMock,
+        mock_get_cache: AsyncMock,
+    ) -> None:
+        mock_get_cache.return_value = None
+        stops_response = json.dumps(
+            {
+                "data": [
+                    {
+                        "type": "stop",
+                        "id": "place-alfcl",
+                        "attributes": {
+                            "name": "Alewife",
+                            "description": None,
+                            "latitude": 42.39583,
+                            "longitude": -71.141287,
+                            "location_type": 1,
+                            "wheelchair_boarding": 1,
+                        },
+                        "relationships": {"parent_station": {"data": None}},
+                    }
+                ],
+                "included": [
+                    {
+                        "type": "stop",
+                        "id": "70061",
+                        "attributes": {
+                            "name": "Alewife",
+                            "description": "Alewife - Red Line",
+                            "latitude": 42.396148,
+                            "longitude": -71.140698,
+                            "location_type": 0,
+                            "wheelchair_boarding": 1,
+                        },
+                        "relationships": {
+                            "parent_station": {
+                                "data": {"type": "stop", "id": "place-alfcl"}
+                            }
+                        },
+                    },
+                    {
+                        "type": "stop",
+                        "id": "place-alfcl-entrance",
+                        "attributes": {
+                            "name": "Alewife Entrance",
+                            "description": None,
+                            "latitude": 42.396,
+                            "longitude": -71.141,
+                            "location_type": 2,
+                            "wheelchair_boarding": 0,
+                        },
+                        "relationships": {
+                            "parent_station": {
+                                "data": {"type": "stop", "id": "place-alfcl"}
+                            }
+                        },
+                    },
+                ],
+            }
+        )
+        mock_response = AsyncMock()
+        mock_response.status = 200
+        mock_response.text = AsyncMock(return_value=stops_response)
+
+        mock_ctx = AsyncMock()
+        mock_ctx.__aenter__ = AsyncMock(return_value=mock_response)
+        mock_ctx.__aexit__ = AsyncMock(return_value=False)
+        mock_rate_limited_get.return_value = mock_ctx
+
+        mock_redis = AsyncMock()
+
+        result = await fetch_route_stops(mock_redis, "Red")
+
+        assert set(result) == {"place-alfcl", "70061"}
+        assert result["70061"].stop_id == "Alewife - Red Line"
+        assert result["70061"].mbta_stop_id == "70061"
+        assert result["70061"].parent_stop_id == "place-alfcl"
+        assert result["70061"].lat == 42.396148
+        assert result["70061"].long == -71.140698
+        cached_ids = [
+            call.args[1]
+            for call in mock_write_cache.call_args_list
+            if call.args[1].startswith("stop:")
+        ]
+        assert "stop:70061:light" in cached_ids
+        assert "stop:place-alfcl:light" in cached_ids
+        assert "stop:place-alfcl-entrance:light" not in cached_ids
+
+    @patch("mbta_client_extended.get_cache", new_callable=AsyncMock)
+    async def test_fetch_route_stops_skips_when_already_fetched(
+        self,
+        mock_get_cache: AsyncMock,
+    ) -> None:
+        mock_get_cache.return_value = "1"
+        mock_redis = AsyncMock()
+
+        result = await fetch_route_stops(mock_redis, "Red")
+
+        assert result == {}
 
 
 @pytest.mark.anyio("asyncio")

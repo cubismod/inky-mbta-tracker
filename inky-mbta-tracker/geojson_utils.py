@@ -450,6 +450,7 @@ async def get_vehicle_features(
     pred_lookup: dict[tuple[str, str], datetime] = {}
     unique_stops: set[str] = set()
     stop_lookup_ids: set[str] = set()
+    stop_route_map: dict[str, str] = {}
     validated: list[VehicleRedisSchema] = []
     for vk_bytes, result in zip(vehicle_keys_list, results):
         if not result:
@@ -473,6 +474,7 @@ async def get_vehicle_features(
             unique_stops.add(vehicle_info.stop)
         if vehicle_info.stop and not vehicle_info.route.startswith("Amtrak"):
             stop_lookup_ids.add(vehicle_info.stop)
+            stop_route_map[vehicle_info.stop] = vehicle_info.route
 
     if unique_stops:
         try:
@@ -487,7 +489,9 @@ async def get_vehicle_features(
     stops_lookup: dict[str, LightStop] = {}
     if stop_lookup_ids:
         try:
-            stops_lookup = await light_get_stops(r_client, stop_lookup_ids, tg)
+            stops_lookup = await light_get_stops(
+                r_client, stop_lookup_ids, tg, stop_route_map
+            )
         except Exception as exc:
             logger.warning("Failed to batch-fetch stops", exc_info=exc)
 
