@@ -55,7 +55,7 @@ class TestCalculateDiff:
         result = VehicleStreamDiff._calculate_diff(original, {})
 
         assert result.updated == {}
-        assert result.removed == set()
+        assert result.removed == {"v1", "v2"}
 
     def test_add_and_remove_in_same_diff(self) -> None:
         original = _make_features("v1", "v2")
