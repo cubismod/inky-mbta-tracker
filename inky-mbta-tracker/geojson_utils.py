@@ -32,6 +32,7 @@ from otel_utils import (
 from prometheus import redis_commands
 from pydantic import ValidationError
 from redis.asyncio import Redis
+from redis_cache import get_cache, write_cache
 from schedule_tracker import VehicleRedisSchema
 from shapely.geometry import LineString as ShapelyLineString
 from shared_types.shared_types import LightStop
@@ -397,6 +398,11 @@ async def get_vehicle_features(
             "task.type": "geojson_vehicle_features",
         }
     )
+    cache_key = f"geojson_vehicle_features:{'buses' if frequent_buses else 'rapid'}"
+    cached = await get_cache(r_client, cache_key)
+    if cached:
+        return orjson.loads(cached)
+
     features = dict[str, Feature]()
 
     vehicle_keys_bytes: set[bytes] = await r_client.smembers("pos-data")  # type: ignore[misc]
@@ -606,6 +612,9 @@ async def get_vehicle_features(
             "vehicles.validation_errors": validation_errors,
             "redis.stale_keys": len(stale_keys),
         }
+    )
+    tg.start_soon(
+        write_cache, r_client, cache_key, orjson.dumps(features).decode("utf-8"), 1
     )
     return features
 
