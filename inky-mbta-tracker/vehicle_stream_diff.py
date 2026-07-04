@@ -29,8 +29,8 @@ class VehicleStreamDiff:
     r_client: Redis
     config: Config
     tg: TaskGroup
-    current_snapshot: dict[str, Feature] = {}
-    empty_count = 0
+    current_snapshot: dict[str, Feature]
+    empty_count: int
 
     def __init__(
         self,
@@ -41,7 +41,8 @@ class VehicleStreamDiff:
         self.r_client = r_client
         self.config = config
         self.tg = tg
-
+        self.current_snapshot = {}
+        self.empty_count = 0
     def _save_snapshot(self, features: dict[str, Feature]) -> None:
         self.current_snapshot = features
 
