@@ -729,7 +729,7 @@ class MBTAApi:
             if occupancy:
                 occupancy = occupancy_status_human_readable(occupancy)
             route = ""
-            trip_id = item.id
+            vehicle_id = item.id
             trip_info = None
             if (
                 item.relationships
@@ -742,17 +742,20 @@ class MBTAApi:
                 and item.relationships.trip
                 and item.relationships.trip.data
             ):
-                # save the trip name as this is what the T uses to refer to specific trains on commuter rail
+                # CR trains are referred to by the trip's short name; keep it on a
+                # dedicated display field so the storage/dedup key stays the
+                # vehicle id, matching the GTFS-rt VehiclePositions feed.
                 trip_info = await self.get_trip(
                     item.relationships.trip.data.id, session, tg
                 )
-                if (
-                    trip_info
-                    and "CR" in route
-                    and len(trip_info.data) > 0
-                    and trip_info.data[0].attributes.name != ""
-                ):
-                    trip_id = trip_info.data[0].attributes.name
+            short_name: str | None = None
+            if (
+                trip_info
+                and "CR" in route
+                and len(trip_info.data) > 0
+                and trip_info.data[0].attributes.name != ""
+            ):
+                short_name = trip_info.data[0].attributes.name
             headsign = None
             if trip_info and len(trip_info.data) > 0:
                 headsign = trip_info.data[0].attributes.headsign
@@ -765,7 +768,7 @@ class MBTAApi:
                 trip_resource_id = item.relationships.trip.data.id
             event = VehicleRedisSchema(  # type: ignore
                 action=event_type,
-                id=trip_id,
+                id=vehicle_id,
                 current_status=item.attributes.current_status,
                 direction_id=item.attributes.direction_id,
                 latitude=item.attributes.latitude,
@@ -777,6 +780,7 @@ class MBTAApi:
                 occupancy_status=occupancy,
                 headsign=headsign,
                 trip_id=trip_resource_id,
+                short_name=short_name,
             )
             if (
                 item.relationships
@@ -786,7 +790,7 @@ class MBTAApi:
                 event.stop = item.relationships.stop.data.id
             if len(carriage_ids) > 0 and isinstance(event, VehicleRedisSchema):
                 event.carriages = carriage_ids
-            redis_vehicle_id = f"vehicle:{trip_id}"
+            redis_vehicle_id = f"vehicle:{vehicle_id}"
             tg.start_soon(
                 write_cache,
                 self.r_client,

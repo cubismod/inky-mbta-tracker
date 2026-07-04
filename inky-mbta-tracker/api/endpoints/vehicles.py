@@ -5,11 +5,13 @@ from typing import AsyncGenerator, Optional
 import orjson
 from api.middleware.cache_middleware import cache_ttl
 from api.services.vehicle_counts import get_vehicle_route_counts
+from consts import VEHICLE_STREAM_KEY
 from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import RedirectResponse
 from geojson_utils import get_vehicle_features
 from opentelemetry import trace
 from otel_utils import add_span_attributes, add_transaction_ids_to_span, set_span_error
+from shared_types.shared_types import DiffApiResponse
 from starlette.responses import StreamingResponse
 
 from ..core import GET_DI, SSE_ENABLED
@@ -83,25 +85,55 @@ async def get_vehicles(
 @router.get(
     "/vehicles/stream",
     summary="Stream Vehicle Positions",
-    description="Server-sent events stream of vehicle positions",
+    description="Server-sent events stream of vehicle position deltas",
 )
 @limiter.limit("70/minute")
 async def get_vehicles_sse(
-    request: Request, delta: bool = False, frequent_buses: bool = False
+    request: Request, commons: GET_DI, frequent_buses: bool = False
 ) -> StreamingResponse:
     if not SSE_ENABLED:
         raise HTTPException(status_code=503, detail="SSE streaming disabled")
+    if not commons.tg:
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+    tg = commons.tg
+    r_client = commons.r_client
+    config = commons.config
+    session = commons.session
+    channel = f"{VEHICLE_STREAM_KEY}:{'buses' if frequent_buses else 'rapid'}"
 
     async def event_generator() -> AsyncGenerator[str, None]:
-        # send an initial comment to establish the stream quickly
         yield ": stream-start\n\n"
-        manager = request.app.state.vehicle_stream_manager
-        mode = "delta" if delta else "full"
-        async with manager.subscribe(mode, frequent_buses) as events:
-            async for event in events:
-                if await request.is_disconnected():
-                    break
-                yield event
+        try:
+            features = await get_vehicle_features(
+                r_client,
+                config,
+                tg,
+                frequent_buses,
+                session=session,
+            )
+            reset = DiffApiResponse(updated=features, removed=set())
+            yield f"data: {reset.model_dump_json()}\n\n"
+        except (ConnectionError, TimeoutError) as exc:
+            logger.error("Error fetching initial vehicle snapshot", exc_info=exc)
+            yield ": error initial-load\n\n"
+
+        pubsub = r_client.pubsub()
+        await pubsub.subscribe(channel)
+        try:
+            while not await request.is_disconnected():
+                message = await pubsub.get_message(
+                    ignore_subscribe_messages=True, timeout=1.0
+                )
+                if message is None or message.get("type") != "message":
+                    continue
+                payload = message["data"]
+                if isinstance(payload, bytes):
+                    payload = payload.decode("utf-8")
+                yield f"data: {payload}\n\n"
+        finally:
+            await pubsub.unsubscribe(channel)
+            await pubsub.aclose()
 
     headers = {
         "Cache-Control": "no-cache",
@@ -114,7 +146,6 @@ async def get_vehicles_sse(
         span,
         {
             "api.endpoint": "vehicles_stream",
-            "vehicle_stream.mode": "delta" if delta else "full",
             "vehicle_stream.frequent_buses": frequent_buses,
             "vehicle_stream.enabled": True,
         },

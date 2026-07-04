@@ -1,6 +1,5 @@
 import logging
 
-import orjson
 from anyio import sleep
 from anyio.abc import TaskGroup
 from config import Config
@@ -160,9 +159,9 @@ class VehicleStreamDiff:
                     if self.empty_count > 3:
                         await self.r_client.publish(
                             key,
-                            orjson.dumps(
-                                DiffApiResponse(updated={}, removed=set())
-                            ).decode("utf-8"),
+                            DiffApiResponse(
+                                updated={}, removed=set()
+                            ).model_dump_json(),
                         )
                         # note that this is intentionally added to the sleep at the end of the method
                         await sleep(5)
@@ -171,9 +170,9 @@ class VehicleStreamDiff:
                     self.empty_count = 0
                     await self.r_client.publish(
                         key,
-                        orjson.dumps(
-                            self._calculate_diff(self.current_snapshot, features)
-                        ).decode("utf-8"),
+                        self._calculate_diff(
+                            self.current_snapshot, features
+                        ).model_dump_json(),
                     )
             except RedisError:
                 logger.error("Unable to publish predictions update", exc_info=True)

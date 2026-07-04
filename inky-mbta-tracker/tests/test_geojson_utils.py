@@ -288,6 +288,7 @@ async def test_get_vehicle_features_places_stopped_vehicle_at_stop_coordinates(
         update_time=datetime(2026, 1, 1, tzinfo=UTC),
     )
     redis = MagicMock()
+    redis.get = AsyncMock(return_value=None)
     redis.smembers = AsyncMock(return_value={b"vehicle:vehicle-123"})
     pipeline = MagicMock()
     pipeline.get = AsyncMock()
@@ -304,7 +305,9 @@ async def test_get_vehicle_features_places_stopped_vehicle_at_stop_coordinates(
     }
 
     features = await get_vehicle_features(
-        redis, Config(vehicles_by_route=["Red"]), cast(Any, object())
+        redis,
+        Config(vehicles_by_route=["Red"]),
+        cast(Any, MagicMock(start_soon=lambda *_a, **_kw: None)),
     )
 
     mock_light_get_stops.assert_awaited_once()
@@ -338,6 +341,7 @@ async def test_get_vehicle_features_keeps_in_transit_vehicle_coordinates(
         update_time=datetime(2026, 1, 1, tzinfo=UTC),
     )
     redis = MagicMock()
+    redis.get = AsyncMock(return_value=None)
     redis.smembers = AsyncMock(return_value={b"vehicle:vehicle-456"})
     pipeline = MagicMock()
     pipeline.get = AsyncMock()
@@ -354,7 +358,9 @@ async def test_get_vehicle_features_keeps_in_transit_vehicle_coordinates(
     }
 
     features = await get_vehicle_features(
-        redis, Config(vehicles_by_route=["Red"]), cast(Any, object())
+        redis,
+        Config(vehicles_by_route=["Red"]),
+        cast(Any, MagicMock(start_soon=lambda *_a, **_kw: None)),
     )
 
     assert features["vehicle-456"]["geometry"]["coordinates"] == [-71.0, 42.0]
@@ -383,6 +389,7 @@ async def test_get_vehicle_features_missing_stop_omits_stop_coordinates(
         update_time=datetime(2026, 1, 1, tzinfo=UTC),
     )
     redis = MagicMock()
+    redis.get = AsyncMock(return_value=None)
     redis.smembers = AsyncMock(return_value={b"vehicle:vehicle-789"})
     pipeline = MagicMock()
     pipeline.get = AsyncMock()
@@ -391,7 +398,9 @@ async def test_get_vehicle_features_missing_stop_omits_stop_coordinates(
     mock_light_get_stops.return_value = {}
 
     features = await get_vehicle_features(
-        redis, Config(vehicles_by_route=["Red"]), cast(Any, object())
+        redis,
+        Config(vehicles_by_route=["Red"]),
+        cast(Any, MagicMock(start_soon=lambda *_a, **_kw: None)),
     )
 
     mock_light_get_stops.assert_awaited_once()
@@ -402,3 +411,43 @@ async def test_get_vehicle_features_missing_stop_omits_stop_coordinates(
     assert props["stop-coordinates"] == (None, None)
     assert props["stop"] is None
     assert props["marker-symbol"] == "rail"
+
+
+@pytest.mark.anyio("asyncio")
+@patch("geojson_utils.light_get_stops")
+async def test_get_vehicle_features_surfaces_commuter_rail_short_name(
+    mock_light_get_stops: AsyncMock,
+) -> None:
+    vehicle = VehicleRedisSchema(
+        action="add",
+        id="y1817",
+        current_status="IN_TRANSIT_TO",
+        direction_id=0,
+        latitude=42.0,
+        longitude=-71.0,
+        speed=15,
+        bearing=0,
+        stop="place-cold",
+        route="CR-Worcester",
+        update_time=datetime(2026, 1, 1, tzinfo=UTC),
+        short_name="503",
+    )
+    redis = MagicMock()
+    redis.get = AsyncMock(return_value=None)
+    redis.smembers = AsyncMock(return_value={b"vehicle:y1817"})
+    pipeline = MagicMock()
+    pipeline.get = AsyncMock()
+    pipeline.execute = AsyncMock(return_value=[vehicle.model_dump_json().encode()])
+    redis.pipeline.return_value = pipeline
+    mock_light_get_stops.return_value = {}
+
+    features = await get_vehicle_features(
+        redis,
+        Config(vehicles_by_route=["CR-Worcester"]),
+        cast(Any, MagicMock(start_soon=lambda *_a, **_kw: None)),
+    )
+
+    assert "y1817" in features
+    assert features["y1817"]["id"] == "y1817"
+    assert features["y1817"]["properties"]["id"] == "y1817"
+    assert features["y1817"]["properties"]["short_name"] == "503"

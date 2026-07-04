@@ -83,36 +83,6 @@ server_side_events = Counter(
     "imt_server_side_events", "Number of server-side events", ["id"]
 )
 
-vehicle_stream_connected_clients = Gauge(
-    "imt_vehicle_stream_connected_clients",
-    "Current connected vehicle SSE clients",
-    ["mode", "frequent_buses"],
-)
-
-vehicle_stream_active_producers = Gauge(
-    "imt_vehicle_stream_active_producers",
-    "Current active vehicle SSE producers",
-    ["frequent_buses"],
-)
-
-vehicle_stream_stale_clients = Counter(
-    "imt_vehicle_stream_stale_clients_total",
-    "Vehicle SSE clients dropped while broadcasting",
-    ["mode", "frequent_buses", "reason"],
-)
-
-vehicle_stream_producer_iterations = Counter(
-    "imt_vehicle_stream_producer_iterations_total",
-    "Vehicle SSE producer loop iterations by outcome",
-    ["frequent_buses", "outcome"],
-)
-
-vehicle_stream_payload_vehicles = Gauge(
-    "imt_vehicle_stream_payload_vehicles",
-    "Vehicles included in the latest vehicle SSE payload",
-    ["frequent_buses"],
-)
-
 vehicle_batch_items = Gauge(
     "imt_vehicle_batch_items", "Vehicles processed in last batch", ["name"]
 )

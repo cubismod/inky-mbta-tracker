@@ -1,6 +1,6 @@
 from asyncio import CancelledError
 from datetime import UTC
-from typing import Optional, cast
+from typing import Any, Optional, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import anyio
@@ -20,12 +20,18 @@ from mbta_client_extended import (
 from mbta_responses import (
     CarriageStatus,
     PredictionAttributes,
+    TripAttributes,
+    TripResource,
+    Trips,
+    TypeAndID,
+    TypeAndIDinData,
     Vehicle,
     VehicleAttributes,
+    VehicleRelationships,
     VehicleResource,
 )
 from redis.asyncio.client import Redis as RedisClient
-from shared_types.shared_types import LightStop, TaskType
+from shared_types.shared_types import LightStop, TaskType, VehicleRedisSchema
 
 
 @pytest.mark.anyio("asyncio")
@@ -489,6 +495,133 @@ class TestLightGetStops:
         assert result == {}
         redis.pipeline.assert_not_called()
         mock_fetch_light_stop.assert_not_awaited()
+
+
+@pytest.mark.anyio("asyncio")
+class TestQueueEventCommuterRailId:
+    async def _build_cr_vehicle(self) -> VehicleResource:
+        return VehicleResource(
+            id="y1817",
+            type="vehicle",
+            attributes=VehicleAttributes(
+                current_status="IN_TRANSIT_TO",
+                direction_id=0,
+                latitude=42.0,
+                longitude=-71.0,
+                speed=10.0,
+                occupancy_status="FEW_SEATS_AVAILABLE",
+                bearing=180,
+            ),
+            relationships=VehicleRelationships(
+                route=TypeAndIDinData(data=TypeAndID(type="route", id="CR-Worcester")),
+                trip=TypeAndIDinData(
+                    data=TypeAndID(
+                        type="trip",
+                        id="CR-Worcester-CR-Weekday-Jul14-25-Express-503",
+                    )
+                ),
+            ),
+        )
+
+    async def test_cr_vehicle_uses_vehicle_id_as_dedup_key(self) -> None:
+        vehicle = await self._build_cr_vehicle()
+        trips = Trips(
+            data=[
+                TripResource(
+                    type="trip",
+                    relationships={},
+                    attributes=TripAttributes(
+                        wheelchair_accessible=0,
+                        name="503",
+                        headsign="Worcester",
+                        direction_id=0,
+                    ),
+                )
+            ]
+        )
+
+        send_stream = MagicMock()
+        sent: list = []
+        send_stream.send = AsyncMock(side_effect=lambda ev: sent.append(ev))
+
+        api = MBTAApi(
+            cast(RedisClient, AsyncMock()),
+            watcher_type=TaskType.VEHICLES,
+        )
+        api.get_trip = AsyncMock(return_value=trips)
+
+        await api.queue_event(
+            vehicle,
+            "update",
+            send_stream,
+            cast(Any, MagicMock(closed=False)),
+            cast(Any, MagicMock(start_soon=lambda *_a, **_kw: None)),
+        )
+
+        assert len(sent) == 1
+        event = sent[0]
+        assert isinstance(event, VehicleRedisSchema)
+        assert event.id == "y1817"
+        assert event.short_name == "503"
+        assert event.trip_id == "CR-Worcester-CR-Weekday-Jul14-25-Express-503"
+        assert event.headsign == "Worcester"
+
+    async def test_non_cr_vehicle_has_no_short_name(self) -> None:
+        vehicle = VehicleResource(
+            id="y1817",
+            type="vehicle",
+            attributes=VehicleAttributes(
+                current_status="IN_TRANSIT_TO",
+                direction_id=0,
+                latitude=42.0,
+                longitude=-71.0,
+                speed=10.0,
+                occupancy_status="FEW_SEATS_AVAILABLE",
+            ),
+            relationships=VehicleRelationships(
+                route=TypeAndIDinData(data=TypeAndID(type="route", id="Red")),
+                trip=TypeAndIDinData(data=TypeAndID(type="trip", id="trip-1")),
+            ),
+        )
+
+        send_stream = MagicMock()
+        sent: list = []
+        send_stream.send = AsyncMock(side_effect=lambda ev: sent.append(ev))
+
+        api = MBTAApi(
+            cast(RedisClient, AsyncMock()),
+            watcher_type=TaskType.VEHICLES,
+        )
+        api.get_trip = AsyncMock(
+            return_value=Trips(
+                data=[
+                    TripResource(
+                        type="trip",
+                        relationships={},
+                        attributes=TripAttributes(
+                            wheelchair_accessible=0,
+                            name="",
+                            headsign="Ashmont/Braintree",
+                            direction_id=0,
+                        ),
+                    )
+                ]
+            )
+        )
+
+        await api.queue_event(
+            vehicle,
+            "update",
+            send_stream,
+            cast(Any, MagicMock(closed=False)),
+            cast(Any, MagicMock(start_soon=lambda *_a, **_kw: None)),
+        )
+
+        assert len(sent) == 1
+        event = sent[0]
+        assert isinstance(event, VehicleRedisSchema)
+        assert event.id == "y1817"
+        assert event.short_name is None
 
 
 if __name__ == "__main__":

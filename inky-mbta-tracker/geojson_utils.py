@@ -596,6 +596,7 @@ async def get_vehicle_features(
                     "carriages": vehicle_info.carriages,
                     "platform_prediction": platform_prediction,
                     "headsign": vehicle_info.headsign,
+                    "short_name": vehicle_info.short_name,
                 },
             )
             features[vehicle_info.id] = feature

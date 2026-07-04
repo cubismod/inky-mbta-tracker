@@ -2,7 +2,6 @@ import os
 from contextlib import asynccontextmanager
 
 import aiohttp
-from anyio import create_task_group
 from api.core import RATE_LIMITING_ENABLED
 from api.endpoints.alerts import router as alerts_router
 
@@ -16,7 +15,6 @@ from api.limits import limiter
 from api.middleware.cache_middleware import create_cache_middleware
 from api.middleware.header_middleware import HeaderLoggingMiddleware
 from api.middleware.transaction_middleware import TransactionIDMiddleware
-from api.services.vehicle_stream import VehicleStreamManager
 from consts import MBTA_V3_ENDPOINT
 from dotenv import load_dotenv
 from fastapi import FastAPI
@@ -47,23 +45,14 @@ def create_app() -> FastAPI:
         app.state.r_client = Redis().from_url(
             f"redis://:{os.environ.get('IMT_REDIS_PASSWORD', '')}@{os.environ.get('IMT_REDIS_ENDPOINT', '')}:{int(os.environ.get('IMT_REDIS_PORT', '6379'))}"
         )
-        async with create_task_group() as tg:
-            app.state.vehicle_stream_manager = VehicleStreamManager(
-                app.state.session,
-                tg,
-                r_client=app.state.r_client,
-                interval_seconds=2,
-            )
-            try:
-                yield
-            finally:
-                await app.state.vehicle_stream_manager.aclose()
-                tg.cancel_scope.cancel()
-                await app.state.session.close()
-                await app.state.r_client.aclose()
-                # Ensure OTEL spans are flushed before exit
-                if is_otel_enabled():
-                    shutdown_otel()
+        try:
+            yield
+        finally:
+            await app.state.session.close()
+            await app.state.r_client.aclose()
+            # Ensure OTEL spans are flushed before exit
+            if is_otel_enabled():
+                shutdown_otel()
 
     app = FastAPI(
         title="MBTA Transit Data API",
