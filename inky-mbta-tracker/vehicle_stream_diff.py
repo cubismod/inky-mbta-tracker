@@ -184,7 +184,7 @@ class VehicleStreamDiff:
                         )
                 except RedisError:
                     span.set_attribute("vehicle_stream.redis_error", True)
-                    logger.error("Unable to publish predictions update", exc_info=True)
+                    logger.error("Unable to publish vehicle stream update", exc_info=True)
 
                 add_current_span_attributes({"vehicle_stream.iteration_complete": True})
 
