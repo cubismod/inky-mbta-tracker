@@ -189,7 +189,8 @@ class VehicleStreamDiff:
                 add_current_span_attributes({"vehicle_stream.iteration_complete": True})
 
             await sleep(SLEEP_DURATION)
-            self._save_snapshot(features)
+            if features:
+                self._save_snapshot(features)
 
 
 async def run_vehicle_stream_diff(
