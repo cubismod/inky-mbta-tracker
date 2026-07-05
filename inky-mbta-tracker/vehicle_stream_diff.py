@@ -4,7 +4,6 @@ from anyio import sleep
 from anyio.abc import TaskGroup
 from config import Config
 from consts import VEHICLE_STREAM_KEY
-from deepdiff import DeepDiff
 from geojson import Feature
 from geojson_utils import get_vehicle_features
 from opentelemetry import trace
@@ -69,63 +68,24 @@ class VehicleStreamDiff:
 
             span.set_attribute("diff.first_load", False)
 
-            diff_response = DeepDiff(
-                original,
-                new,
-                verbose_level=0,
-            )
+            original_keys = set(original)
+            new_keys = set(new)
 
-            logger.debug("DeepDiff keys: %s", list(diff_response.keys()))
+            added_keys = new_keys - original_keys
+            removed_keys = original_keys - new_keys
+            common_keys = original_keys & new_keys
+
+            updated: dict[str, Feature] = {k: new[k] for k in added_keys}
+            updated.update({k: new[k] for k in common_keys if original[k] != new[k]})
+
+            removed: set[str] = removed_keys
+
             logger.debug(
-                "Original vehicles: %s, New vehicles: %s", len(original), len(new)
+                "Vehicles: %d added, %d changed, %d removed",
+                len(added_keys),
+                len(updated) - len(added_keys),
+                len(removed_keys),
             )
-
-            updated: dict[str, Feature] = {}
-
-            if "dictionary_item_added" in diff_response:
-                logger.debug(
-                    "Added vehicles: %s", len(diff_response["dictionary_item_added"])
-                )
-                for key_path in diff_response["dictionary_item_added"]:
-                    if "root['" in key_path and "']" in key_path:
-                        vehicle_id = key_path.split("'")[1]
-                        updated[vehicle_id] = new[vehicle_id]
-
-            vehicle_ids_changed = set()
-
-            if "values_changed" in diff_response:
-                logger.debug(
-                    "Changed vehicle fields: %s", len(diff_response["values_changed"])
-                )
-                for key_path in diff_response["values_changed"]:
-                    if "root['" in key_path and "']" in key_path:
-                        vehicle_id = key_path.split("'")[1]
-                        vehicle_ids_changed.add(vehicle_id)
-
-            if "type_changes" in diff_response:
-                logger.debug(
-                    "Type changed vehicle fields: %s",
-                    len(diff_response["type_changes"]),
-                )
-                for key_path in diff_response["type_changes"]:
-                    if "root['" in key_path and "']" in key_path:
-                        vehicle_id = key_path.split("'")[1]
-                        vehicle_ids_changed.add(vehicle_id)
-
-            for vehicle_id in vehicle_ids_changed:
-                if vehicle_id in new:
-                    updated[vehicle_id] = new[vehicle_id]
-
-            removed: set[str] = set()
-            if "dictionary_item_removed" in diff_response:
-                logger.debug(
-                    "Removed vehicles: %s",
-                    len(diff_response["dictionary_item_removed"]),
-                )
-                for key_path in diff_response["dictionary_item_removed"]:
-                    if "root['" in key_path and "']" in key_path:
-                        vehicle_id = key_path.split("'")[1]
-                        removed.add(vehicle_id)
 
             span.set_attribute("diff.updated_count", len(updated))
             span.set_attribute("diff.removed_count", len(removed))
@@ -150,9 +110,7 @@ class VehicleStreamDiff:
                         self.r_client, self.config, self.tg, frequent_buses
                     )
                 except (RedisError, ConnectionError, TimeoutError):
-                    logger.error(
-                        "Failed to fetch vehicle features", exc_info=True
-                    )
+                    logger.error("Failed to fetch vehicle features", exc_info=True)
                     span.set_attribute("vehicle_stream.fetch_error", True)
                     await sleep(SLEEP_DURATION)
                     continue

@@ -425,7 +425,9 @@ class TestLightGetStop:
     @patch("mbta_client.get_cache")
     @pytest.mark.anyio("asyncio")
     async def test_light_get_stop_not_cached(
-        self, mock_get_cache: MagicMock, mock_rate_limited_get: MagicMock,
+        self,
+        mock_get_cache: MagicMock,
+        mock_rate_limited_get: MagicMock,
         mock_client_session: MagicMock,
     ) -> None:
         mock_redis = AsyncMock()
