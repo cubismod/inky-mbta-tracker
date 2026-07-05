@@ -132,8 +132,9 @@ async def _get_shapes_impl(
             body = cached
         else:
             cache_misses += 1
+            params = [("api_key", MBTA_AUTH), ("filter[route]", route)]
             async with rate_limited_get(
-                session, r_client, f"/shapes?filter[route]={route}&api_key={MBTA_AUTH}"
+                session, r_client, "/shapes", params=params
             ) as response:
                 add_span_attributes(
                     span,
@@ -216,10 +217,12 @@ async def light_get_stop(
         logger.debug("Cache miss for stop %s; fetching from MBTA API", stop_id)
 
         async with aiohttp.ClientSession(base_url=MBTA_V3_ENDPOINT) as session:
+            params = [("api_key", MBTA_AUTH)]
             async with rate_limited_get(
                 session,
                 r_client,
-                f"/stops/{stop_id}?api_key={MBTA_AUTH}",
+                "/stops",
+                params=params,
             ) as response:
                 if response.status != 200:
                     return None
@@ -294,10 +297,16 @@ async def fetch_route_stops(
         if span:
             span.set_attribute("route.id", route_id)
         async with aiohttp.ClientSession(base_url=MBTA_V3_ENDPOINT) as session:
+            params = [
+                ("api_key", MBTA_AUTH),
+                ("filter[route]", route_id),
+                ("include", "child_stops"),
+            ]
             async with rate_limited_get(
                 session,
                 r_client,
-                f"/stops?filter[route]={route_id}&include=child_stops&api_key={MBTA_AUTH}",
+                "/stops",
+                params=params,
             ) as response:
                 if response.status == 429:
                     raise RateLimitExceeded()

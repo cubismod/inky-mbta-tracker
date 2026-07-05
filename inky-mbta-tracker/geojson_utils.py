@@ -109,12 +109,17 @@ async def _light_get_alerts_batch_impl(
     from mbta_client import MBTA_AUTH
     from mbta_responses import Alerts
 
-    endpoint = f"/alerts?filter[route]={routes_str}&api_key={MBTA_AUTH}&filter[lifecycle]=NEW,ONGOING,ONGOING_UPCOMING&filter[datetime]=NOW"
-
-    logger.debug("Fetching alerts from endpoint: %s", endpoint)
-
+    params = [
+        ("api_key", MBTA_AUTH),
+        ("filter[route]", routes_str),
+        ("filter[lifecycle]", "NEW,ONGOING,ONGOING_UPCOMING"),
+        ("filter[datetime]", "NOW"),
+    ]
+    endpoint = "/alerts"
     try:
-        async with rate_limited_get(session, r_client, endpoint) as response:
+        async with rate_limited_get(
+            session, r_client, endpoint, params=params
+        ) as response:
             if span:
                 span.set_attribute("http.status_code", response.status)
 
