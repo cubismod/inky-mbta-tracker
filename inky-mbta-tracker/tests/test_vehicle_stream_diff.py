@@ -50,7 +50,7 @@ class TestCalculateDiff:
         assert result.updated == {}
         assert result.removed == set()
 
-    def test_new_empty_no_removals_detected(self) -> None:
+    def test_new_empty_returns_all_as_removed(self) -> None:
         original = _make_features("v1", "v2")
         result = VehicleStreamDiff._calculate_diff(original, {})
 

@@ -6,16 +6,6 @@ from redis import ResponseError
 from redis_cache import get_cache, write_cache
 
 
-@pytest.fixture(autouse=True)
-def clear_alru_cache() -> None:
-    # Ensure per-test isolation for alru_cache, including event loop binding
-    if hasattr(get_cache, "cache_clear"):
-        get_cache.cache_clear()  # type: ignore[attr-defined]
-    # Reset the loop reference so the next test's event loop can bind cleanly
-    if hasattr(get_cache, "_LRUCacheWrapper__first_loop"):
-        get_cache._LRUCacheWrapper__first_loop = None  # type: ignore[attr-defined]
-
-
 @pytest.mark.anyio("asyncio")
 async def test_get_cache_hit_decodes_bytes() -> None:
     mock_redis = AsyncMock()
@@ -46,7 +36,7 @@ async def test_get_cache_response_error_logged_and_none() -> None:
 
 
 @pytest.mark.anyio("asyncio")
-async def test_get_cache_ttl_prevents_duplicate_calls() -> None:
+async def test_get_cache_calls_redis_each_time() -> None:
     mock_redis = AsyncMock()
     mock_redis.get.return_value = b"cached"
 
@@ -55,8 +45,7 @@ async def test_get_cache_ttl_prevents_duplicate_calls() -> None:
 
     assert first == "cached"
     assert second == "cached"
-    # Due to alru_cache(ttl=5), only first call hits Redis
-    mock_redis.get.assert_called_once()
+    assert mock_redis.get.call_count == 2
 
 
 @pytest.mark.anyio("asyncio")

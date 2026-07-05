@@ -282,8 +282,6 @@ async def __main__() -> None:
             # consumer
             tg.start_soon(process_queue_async, receive_stream, tg)
 
-            # tg.start_soon(background_refresh, get_redis(redis_pool), config, tg)
-
             # Start heartbeat task for healthcheck monitoring
             tg.start_soon(heartbeat_task, get_redis(redis_pool))
 

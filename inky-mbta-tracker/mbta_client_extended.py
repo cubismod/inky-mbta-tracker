@@ -192,31 +192,81 @@ async def light_get_stop(
     import mbta_client
 
     tracer = get_tracer(__name__) if is_otel_enabled() else None
-    if tracer:
-        with tracer.start_as_current_span(
-            "mbta_client_extended.light_get_stop"
-        ) as span:
-            add_transaction_ids_to_span(span)
-            add_entity_id_attribute(span, "stop.id", stop_id, entity_type="stop")
-            cached = await mbta_client.get_cache(r_client, key)
-            if cached:
-                span.set_attribute("cache.hit", True)
-                try:
-                    return LightStop.model_validate_json(cached)
-                except ValidationError as err:
-                    logger.error("unable to validate json", exc_info=err)
-                    set_span_error(span, err)
-            else:
-                span.set_attribute("cache.hit", False)
-            return None
-    else:
+    span_cm = (
+        tracer.start_as_current_span("mbta_client_extended.light_get_stop")
+        if tracer
+        else nullcontext()
+    )
+    with span_cm as span:
         cached = await mbta_client.get_cache(r_client, key)
         if cached:
             try:
+                add_span_attributes(span, {"cache.hit": True})
                 return LightStop.model_validate_json(cached)
             except ValidationError as err:
                 logger.error("unable to validate json", exc_info=err)
-        return None
+                set_span_error(span, err)
+        else:
+            add_span_attributes(span, {"cache.hit": False})
+
+        add_span_attributes(span, {"stop.id": stop_id})
+        add_entity_id_attribute(span, "stop.id", stop_id, entity_type="stop")
+        add_transaction_ids_to_span(span)
+
+        logger.debug("Cache miss for stop %s; fetching from MBTA API", stop_id)
+
+        async with aiohttp.ClientSession(base_url=MBTA_V3_ENDPOINT) as session:
+            async with rate_limited_get(
+                session,
+                r_client,
+                f"/stops/{stop_id}?api_key={MBTA_AUTH}",
+            ) as response:
+                if response.status != 200:
+                    return None
+
+                body = await response.text()
+                mbta_api_requests.labels("stops").inc()
+
+                try:
+                    stop_response = Stops.model_validate_json(body)
+                except ValidationError as err:
+                    logger.error("Unable to parse stop response", exc_info=err)
+                    set_span_error(span, err)
+                    return None
+
+                if not stop_response.data:
+                    return None
+
+                stop_resource = stop_response.data[0]
+                stop_name = stop_resource.id
+                if stop_resource.attributes.description:
+                    stop_name = stop_resource.attributes.description
+                elif stop_resource.attributes.name:
+                    stop_name = stop_resource.attributes.name
+
+                parent_stop_id: Optional[str] = None
+                if (
+                    stop_resource.relationships
+                    and stop_resource.relationships.parent_station.data
+                ):
+                    parent_stop_id = stop_resource.relationships.parent_station.data.id
+
+                ls = LightStop(
+                    stop_id=stop_name,
+                    long=stop_resource.attributes.longitude,
+                    lat=stop_resource.attributes.latitude,
+                    mbta_stop_id=stop_resource.id,
+                    parent_stop_id=parent_stop_id,
+                )
+
+                await write_cache(
+                    r_client,
+                    key,
+                    ls.model_dump_json(),
+                    randint(TWO_MONTHS, YEAR),
+                )
+
+                return ls
 
 
 async def fetch_route_stops(

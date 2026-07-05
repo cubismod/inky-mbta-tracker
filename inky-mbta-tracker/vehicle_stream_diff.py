@@ -43,6 +43,7 @@ class VehicleStreamDiff:
         self.tg = tg
         self.current_snapshot = {}
         self.empty_count = 0
+
     def _save_snapshot(self, features: dict[str, Feature]) -> None:
         self.current_snapshot = features
 
@@ -56,44 +57,40 @@ class VehicleStreamDiff:
             span.set_attribute("vehicles.original_count", len(original))
             span.set_attribute("vehicles.new_count", len(new))
 
-            # Add transaction IDs to the span
             add_transaction_ids_to_span(span)
 
-            # Handle case where original is empty (first load)
             if not original:
                 span.set_attribute("diff.first_load", True)
                 return DiffApiResponse(updated=new, removed=set())
 
+            if not new:
+                span.set_attribute("diff.all_removed", True)
+                return DiffApiResponse(updated={}, removed=set(original.keys()))
+
             span.set_attribute("diff.first_load", False)
 
-            # Configure DeepDiff with minimal exclusions to start with
             diff_response = DeepDiff(
                 original,
                 new,
                 verbose_level=0,
             )
 
-            # Debug logging to understand what's happening
             logger.debug("DeepDiff keys: %s", list(diff_response.keys()))
             logger.debug(
                 "Original vehicles: %s, New vehicles: %s", len(original), len(new)
             )
 
-            # Find vehicles that have been added or changed
             updated: dict[str, Feature] = {}
 
-            # Handle new vehicles (added)
             if "dictionary_item_added" in diff_response:
                 logger.debug(
                     "Added vehicles: %s", len(diff_response["dictionary_item_added"])
                 )
                 for key_path in diff_response["dictionary_item_added"]:
-                    # Extract the vehicle ID from the key path (e.g., "root['vehicle_id']")
                     if "root['" in key_path and "']" in key_path:
                         vehicle_id = key_path.split("'")[1]
                         updated[vehicle_id] = new[vehicle_id]
 
-            # Handle modified vehicles (changed)
             vehicle_ids_changed = set()
 
             if "values_changed" in diff_response:
@@ -101,19 +98,16 @@ class VehicleStreamDiff:
                     "Changed vehicle fields: %s", len(diff_response["values_changed"])
                 )
                 for key_path in diff_response["values_changed"]:
-                    # Extract the vehicle ID from nested key paths
                     if "root['" in key_path and "']" in key_path:
                         vehicle_id = key_path.split("'")[1]
                         vehicle_ids_changed.add(vehicle_id)
 
-            # Handle type changes (e.g., stop_eta changing from None to string or vice versa)
             if "type_changes" in diff_response:
                 logger.debug(
                     "Type changed vehicle fields: %s",
                     len(diff_response["type_changes"]),
                 )
                 for key_path in diff_response["type_changes"]:
-                    # Extract the vehicle ID from nested key paths
                     if "root['" in key_path and "']" in key_path:
                         vehicle_id = key_path.split("'")[1]
                         vehicle_ids_changed.add(vehicle_id)
@@ -122,7 +116,6 @@ class VehicleStreamDiff:
                 if vehicle_id in new:
                     updated[vehicle_id] = new[vehicle_id]
 
-            # Handle removed vehicles
             removed: set[str] = set()
             if "dictionary_item_removed" in diff_response:
                 logger.debug(
@@ -130,7 +123,6 @@ class VehicleStreamDiff:
                     len(diff_response["dictionary_item_removed"]),
                 )
                 for key_path in diff_response["dictionary_item_removed"]:
-                    # Extract the vehicle ID from the key path
                     if "root['" in key_path and "']" in key_path:
                         vehicle_id = key_path.split("'")[1]
                         removed.add(vehicle_id)
@@ -153,9 +145,18 @@ class VehicleStreamDiff:
                 span.set_attribute("vehicle_stream.empty_count", self.empty_count)
                 add_transaction_ids_to_span(span)
 
-                features = await get_vehicle_features(
-                    self.r_client, self.config, self.tg, frequent_buses
-                )
+                try:
+                    features = await get_vehicle_features(
+                        self.r_client, self.config, self.tg, frequent_buses
+                    )
+                except (RedisError, ConnectionError, TimeoutError):
+                    logger.error(
+                        "Failed to fetch vehicle features", exc_info=True
+                    )
+                    span.set_attribute("vehicle_stream.fetch_error", True)
+                    await sleep(SLEEP_DURATION)
+                    continue
+
                 span.set_attribute("vehicles.current_count", len(features))
 
                 try:
@@ -168,7 +169,6 @@ class VehicleStreamDiff:
                                 ).model_dump_json(),
                             )
                             span.set_attribute("vehicle_stream.published_empty", True)
-                            # note that this is intentionally added to the sleep at the end of the method
                             await sleep(5)
                         self.empty_count += 1
                     else:
@@ -184,7 +184,9 @@ class VehicleStreamDiff:
                         )
                 except RedisError:
                     span.set_attribute("vehicle_stream.redis_error", True)
-                    logger.error("Unable to publish vehicle stream update", exc_info=True)
+                    logger.error(
+                        "Unable to publish vehicle stream update", exc_info=True
+                    )
 
                 add_current_span_attributes({"vehicle_stream.iteration_complete": True})
 

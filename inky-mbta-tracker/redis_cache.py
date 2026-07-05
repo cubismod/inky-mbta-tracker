@@ -1,7 +1,6 @@
 import logging
 from typing import Optional
 
-from async_lru import alru_cache
 from opentelemetry import trace
 from otel_utils import add_cache_key_attributes, add_span_attributes
 from prometheus import redis_commands
