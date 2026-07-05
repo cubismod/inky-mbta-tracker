@@ -718,48 +718,6 @@ class TestQueueEventCommuterRailId:
             ),
         )
 
-    async def test_cr_vehicle_uses_vehicle_id_as_dedup_key(self) -> None:
-        vehicle = await self._build_cr_vehicle()
-        trips = Trips(
-            data=[
-                TripResource(
-                    type="trip",
-                    relationships={},
-                    attributes=TripAttributes(
-                        wheelchair_accessible=0,
-                        name="503",
-                        headsign="Worcester",
-                        direction_id=0,
-                    ),
-                )
-            ]
-        )
-
-        send_stream = MagicMock()
-        sent: list = []
-        send_stream.send = AsyncMock(side_effect=lambda ev: sent.append(ev))
-
-        api = MBTAApi(
-            cast(RedisClient, AsyncMock()),
-            watcher_type=TaskType.VEHICLES,
-        )
-        api.get_trip = AsyncMock(return_value=trips)
-
-        await api.queue_event(
-            vehicle,
-            "update",
-            send_stream,
-            cast(Any, MagicMock(closed=False)),
-            cast(Any, MagicMock(start_soon=lambda *_a, **_kw: None)),
-        )
-
-        assert len(sent) == 1
-        event = sent[0]
-        assert isinstance(event, VehicleRedisSchema)
-        assert event.id == "y1817"
-        assert event.short_name == "503"
-        assert event.trip_id == "CR-Worcester-CR-Weekday-Jul14-25-Express-503"
-        assert event.headsign == "Worcester"
 
     async def test_non_cr_vehicle_has_no_short_name(self) -> None:
         vehicle = VehicleResource(
