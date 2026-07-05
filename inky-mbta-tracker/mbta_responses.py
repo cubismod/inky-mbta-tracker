@@ -66,6 +66,7 @@ class RouteAttributes(BaseModel):
     direction_destinations: Optional[list[str]] = None
     fare_class: str
     direction_names: Optional[list[str]] = None
+    listed_route: Optional[bool] = None
     sort_order: int
     short_name: str
     long_name: str
