@@ -290,10 +290,7 @@ async def test_get_vehicle_features_places_stopped_vehicle_at_stop_coordinates(
     redis = MagicMock()
     redis.get = AsyncMock(return_value=None)
     redis.smembers = AsyncMock(return_value={b"vehicle:vehicle-123"})
-    pipeline = MagicMock()
-    pipeline.get = AsyncMock()
-    pipeline.execute = AsyncMock(return_value=[vehicle.model_dump_json().encode()])
-    redis.pipeline.return_value = pipeline
+    redis.mget = AsyncMock(return_value=[vehicle.model_dump_json().encode()])
     mock_light_get_stops.return_value = {
         "place-davis": LightStop(
             stop_id="Davis",
@@ -343,10 +340,7 @@ async def test_get_vehicle_features_keeps_in_transit_vehicle_coordinates(
     redis = MagicMock()
     redis.get = AsyncMock(return_value=None)
     redis.smembers = AsyncMock(return_value={b"vehicle:vehicle-456"})
-    pipeline = MagicMock()
-    pipeline.get = AsyncMock()
-    pipeline.execute = AsyncMock(return_value=[vehicle.model_dump_json().encode()])
-    redis.pipeline.return_value = pipeline
+    redis.mget = AsyncMock(return_value=[vehicle.model_dump_json().encode()])
     mock_light_get_stops.return_value = {
         "place-davis": LightStop(
             stop_id="Davis",
@@ -391,10 +385,7 @@ async def test_get_vehicle_features_missing_stop_omits_stop_coordinates(
     redis = MagicMock()
     redis.get = AsyncMock(return_value=None)
     redis.smembers = AsyncMock(return_value={b"vehicle:vehicle-789"})
-    pipeline = MagicMock()
-    pipeline.get = AsyncMock()
-    pipeline.execute = AsyncMock(return_value=[vehicle.model_dump_json().encode()])
-    redis.pipeline.return_value = pipeline
+    redis.mget = AsyncMock(return_value=[vehicle.model_dump_json().encode()])
     mock_light_get_stops.return_value = {}
 
     features = await get_vehicle_features(
@@ -435,10 +426,7 @@ async def test_get_vehicle_features_surfaces_commuter_rail_short_name(
     redis = MagicMock()
     redis.get = AsyncMock(return_value=None)
     redis.smembers = AsyncMock(return_value={b"vehicle:y1817"})
-    pipeline = MagicMock()
-    pipeline.get = AsyncMock()
-    pipeline.execute = AsyncMock(return_value=[vehicle.model_dump_json().encode()])
-    redis.pipeline.return_value = pipeline
+    redis.mget = AsyncMock(return_value=[vehicle.model_dump_json().encode()])
     mock_light_get_stops.return_value = {}
 
     features = await get_vehicle_features(

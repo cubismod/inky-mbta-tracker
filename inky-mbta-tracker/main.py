@@ -201,6 +201,40 @@ async def heartbeat_task(redis: Redis) -> None:
         await sleep(HEARTBEAT_INTERVAL_SECONDS)
 
 
+async def stale_key_cleanup_task(r_client: Redis) -> None:
+    """Periodically prune expired keys from the pos-data set.
+
+    Vehicle keys in Redis have a TTL. When they expire, the key name lingers
+    in the pos-data set until cleaned up. This task scans the set every 60s
+    and removes members whose keys no longer exist.
+    """
+    INTERVAL_SECONDS = 60
+
+    logger.info("Starting stale key cleanup task")
+
+    while True:
+        await sleep(INTERVAL_SECONDS)
+        with tracer.start_as_current_span("main.stale_key_cleanup") as span:
+            try:
+                keys = list(await r_client.smembers("pos-data"))  # type: ignore[misc]
+                if not keys:
+                    continue
+                results = await r_client.mget(*keys)
+                stale = [k for k, v in zip(keys, results) if v is None]
+                if stale:
+                    await r_client.srem("pos-data", *stale)  # type: ignore[misc]
+                add_span_attributes(
+                    span,
+                    {
+                        "pos_data.total": len(keys),
+                        "pos_data.stale_removed": len(stale),
+                    },
+                )
+            except Exception as exc:
+                set_span_error(span, exc)
+                logger.error("Failed to prune stale pos-data keys", exc_info=exc)
+
+
 async def __main__() -> None:
     config = load_config()
 
@@ -284,6 +318,9 @@ async def __main__() -> None:
 
             # Start heartbeat task for healthcheck monitoring
             tg.start_soon(heartbeat_task, get_redis(redis_pool))
+
+            # Periodic stale key cleanup
+            tg.start_soon(stale_key_cleanup_task, get_redis(redis_pool))
 
             tg.start_soon(watch_running_tasks)
 

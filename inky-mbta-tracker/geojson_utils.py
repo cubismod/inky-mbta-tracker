@@ -405,45 +405,26 @@ async def get_vehicle_features(
 
     features = dict[str, Feature]()
 
-    vehicle_keys_bytes: set[bytes] = await r_client.smembers("pos-data")  # type: ignore[misc]
+    vehicle_keys: list[bytes] = list(await r_client.smembers("pos-data"))  # type: ignore[misc]
     redis_commands.labels("smembers").inc()
     add_current_span_attributes(
         {
-            "redis.pos_data.keys": len(vehicle_keys_bytes),
-            "redis.operation": "smembers",
+            "redis.pos_data.keys": len(vehicle_keys),
         }
     )
 
-    if not vehicle_keys_bytes:
+    if not vehicle_keys:
         add_current_span_attributes(
             {
                 "vehicles.count": 0,
                 "vehicles.filtered_count": 0,
-                "redis.stale_keys": 0,
             }
         )
         return features
 
-    vehicle_keys_list: list[bytes] = []
-    pl = r_client.pipeline()
-    for vk in vehicle_keys_bytes:
-        dec_v = vk.decode("utf-8")
-        if dec_v:
-            await pl.get(vk)
-            redis_commands.labels("get").inc()
-            vehicle_keys_list.append(vk)
+    results: list[bytes | None] = await r_client.mget(*vehicle_keys)
+    redis_commands.labels("mget").inc()
 
-    results: list[bytes | None] = await pl.execute()
-    redis_commands.labels("execute").inc()
-    add_current_span_attributes(
-        {
-            "redis.pipeline.commands": len(vehicle_keys_list),
-            "redis.pipeline.results": len(results),
-        }
-    )
-
-    # Identify stale pos-data entries (keys that have expired in Redis)
-    stale_keys: list[bytes] = []
     validation_errors = 0
     filtered_count = 0
 
@@ -452,17 +433,16 @@ async def get_vehicle_features(
     stop_lookup_ids: set[str] = set()
     stop_route_map: dict[str, str] = {}
     validated: list[VehicleRedisSchema] = []
-    for vk_bytes, result in zip(vehicle_keys_list, results):
+    for result in results:
         if not result:
-            stale_keys.append(vk_bytes)
             continue
         try:
-            vehicle_info = VehicleRedisSchema.model_validate_json(
-                strict=False, json_data=result
-            )
-        except ValidationError:
+            raw = orjson.loads(result)
+        except orjson.JSONDecodeError:
             validation_errors += 1
             continue
+        raw["update_time"] = datetime.fromisoformat(raw["update_time"])
+        vehicle_info = VehicleRedisSchema.model_construct(**raw)
         validated.append(vehicle_info)
         if (
             vehicle_info.stop
@@ -605,17 +585,11 @@ async def get_vehicle_features(
             )
             features[vehicle_info.id] = feature
 
-    # Prune stale entries from pos-data to prevent unbounded set growth
-    if stale_keys:
-        await r_client.srem("pos-data", *stale_keys)  # type: ignore[misc]
-        redis_commands.labels("srem").inc()
-
     add_current_span_attributes(
         {
             "vehicles.count": len(features),
             "vehicles.filtered_count": filtered_count,
             "vehicles.validation_errors": validation_errors,
-            "redis.stale_keys": len(stale_keys),
         }
     )
     tg.start_soon(
