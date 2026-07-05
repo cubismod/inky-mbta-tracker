@@ -51,6 +51,7 @@ from tenacity import (
     retry_if_not_exception_type,
     wait_exponential_jitter,
 )
+from yarl import URL
 
 # Avoid circular import at runtime; only import for typing checks
 if TYPE_CHECKING:
@@ -679,7 +680,13 @@ async def watch_vehicles(
         f"Starting route monitoring for {route_id} with transaction ID: {route_monitor_txn_id}"
     )
 
-    endpoint = f"{MBTA_V3_ENDPOINT}/vehicles?fields[vehicle]=direction_id,latitude,longitude,speed,current_status,occupancy_status,carriages&filter[route]={route_id}&api_key={MBTA_AUTH}"
+    params: dict[str, str] = {
+        "fields[vehicle]": "direction_id,latitude,longitude,speed,current_status,occupancy_status,carriages",
+        "filter[route]": route_id,
+    }
+    if MBTA_AUTH:
+        params["api_key"] = MBTA_AUTH
+    endpoint = str(URL(MBTA_V3_ENDPOINT) / "vehicles" % dict(params))
     mbta_api_requests.labels("vehicles").inc()
     headers = {"accept": "text/event-stream"}
     assert session is not None, "ClientSession must be provided to watch_vehicles"
@@ -804,15 +811,18 @@ async def _watch_station_impl(
         logger.info(
             f"Watching station {stop_id} for route substring filter {route_substring_filter}"
         )
-    endpoint = (
-        f"{MBTA_V3_ENDPOINT}/predictions?filter[stop]={stop_id}&api_key={MBTA_AUTH}"
-    )
+    params: dict[str, str] = {
+        "filter[stop]": stop_id,
+    }
+    if MBTA_AUTH:
+        params["api_key"] = MBTA_AUTH
+    if route is not None and route != "":
+        params["filter[route]"] = route
+    if direction_filter is not None:
+        params["filter[direction_id]"] = str(direction_filter)
+    endpoint = str(URL(MBTA_V3_ENDPOINT) / "predictions" % dict(params))
 
     mbta_api_requests.labels("predictions").inc()
-    if route != "":
-        endpoint += f"&filter[route]={route}"
-    if direction_filter != "":
-        endpoint += f"&filter[direction_id]={direction_filter}"
     headers = {"accept": "text/event-stream"}
 
     assert session is not None, "ClientSession must be provided to watch_station"
@@ -851,9 +861,15 @@ async def watch_alerts(
       `alerts:route:{route_id}` set membership.
     - Stores individual alerts under `alert:{id}` with a short TTL.
     """
-    endpoint = f"{MBTA_V3_ENDPOINT}/alerts?api_key={MBTA_AUTH}&filter[lifecycle]=NEW,ONGOING,ONGOING_UPCOMING&filter[datetime]=NOW"
-    if route_id:
-        endpoint += f"&filter[route]={route_id}"
+    params: dict[str, str] = {
+        "filter[lifecycle]": "NEW,ONGOING,ONGOING_UPCOMING",
+        "filter[datetime]": "NOW",
+    }
+    if MBTA_AUTH:
+        params["api_key"] = MBTA_AUTH
+    if route_id is not None:
+        params["filter[route]"] = route_id
+    endpoint = str(URL(MBTA_V3_ENDPOINT) / "alerts" % dict(params))
     headers = {"accept": "text/event-stream"}
 
     from mbta_client import MBTAApi

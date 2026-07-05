@@ -56,6 +56,11 @@ async def test_fetch_predictions_for_trip_requests_mbta_trip_filter(
     async def fake_rate_limited_get(
         session: ClientSession, redis: Redis, url: str, **kwargs: Any
     ) -> AsyncIterator[FakeResponse]:
+        params = kwargs.pop("params", None)
+        if params:
+            from urllib.parse import urlencode
+
+            url = f"{url}?{urlencode(params)}"
         calls.append(url)
         yield FakeResponse(200, PREDICTIONS_BODY)
 
@@ -81,6 +86,11 @@ async def test_fetch_predictions_supports_latitude_longitude_radius_filters(
     async def fake_rate_limited_get(
         session: ClientSession, redis: Redis, url: str, **kwargs: Any
     ) -> AsyncIterator[FakeResponse]:
+        params = kwargs.pop("params", None)
+        if params:
+            from urllib.parse import urlencode
+
+            url = f"{url}?{urlencode(params)}"
         calls.append(url)
         yield FakeResponse(200, PREDICTIONS_BODY)
 

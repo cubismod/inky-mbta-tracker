@@ -935,7 +935,8 @@ class MBTAApi:
             async with rate_limited_get(
                 session,
                 self.r_client,
-                f"routes/{id}?api_key={MBTA_AUTH}",
+                f"routes/{id}",
+                params=[("api_key", MBTA_AUTH)],
             ) as response:
                 try:
                     if response.status == 429:

@@ -519,7 +519,8 @@ async def _post_webhook_impl(
         )
         return
     async with session.post(
-        f"{url}?wait=true",
+        url,
+        params={"wait": "true"},
         data=webhook.model_dump_json(),
         headers={"Content-Type": "application/json"},
     ) as response:

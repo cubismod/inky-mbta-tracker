@@ -718,7 +718,6 @@ class TestQueueEventCommuterRailId:
             ),
         )
 
-
     async def test_non_cr_vehicle_has_no_short_name(self) -> None:
         vehicle = VehicleResource(
             id="y1817",

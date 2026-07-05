@@ -39,7 +39,12 @@ class MockSession:
         self._data = data
         self.calls: list[str] = []
 
-    def get(self, endpoint: str) -> Any:  # return Any to appease type checking
+    def get(self, endpoint: str, **kwargs: Any) -> Any:
+        params = kwargs.pop("params", None)
+        if params:
+            from urllib.parse import urlencode
+
+            endpoint = f"{endpoint}?{urlencode(params)}"
         self.calls.append(endpoint)
         return MockResp(self._status, self._data)
 
@@ -97,7 +102,8 @@ async def test_light_get_alerts_batch_success() -> None:
     # Assert
     assert alerts is not None
     assert len(alerts) == 1
-    assert "alerts?filter[route]=Red,Blue" in session.calls[0]
+    assert "filter%5Broute%5D" in session.calls[0]
+    assert "Red%2CBlue" in session.calls[0]
 
 
 @pytest.mark.anyio("asyncio")
