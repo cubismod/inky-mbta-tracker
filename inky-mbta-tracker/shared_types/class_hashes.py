@@ -107,7 +107,7 @@ VEHICLEDOCUMENTLINKS_HASH = (
     "ef7be957388ae093042b57618f6dee7335980bc876f6891d3ff1973ac4ce5eb0"
 )
 VEHICLEREDISSCHEMA_HASH = (
-    "fa88dd9a9983ade69134e91b845858ecbd259015a6a18e9eac43649e302dbfa6"
+    "8c20d693e1f5e6bf87822b5215474cc24a23531e579ecc76895e260c51e84baa"
 )
 VEHICLERELATIONSHIPS_HASH = (
     "078e29a43ecfa68fb47a3a8ff3e5a9ed5a340a3fed4da34896c4b84475a61a9d"
@@ -179,7 +179,7 @@ CLASS_HASHES = {
     "Vehicle": "11c70fad89d12a37fd254242e810c8a10a2feaac2664e27384059a7aa73ce909",
     "VehicleAttributes": "a68d6a3cef5c270232b186c07da283095b6152152ef75ff2642470c54d7a44fd",
     "VehicleDocumentLinks": "ef7be957388ae093042b57618f6dee7335980bc876f6891d3ff1973ac4ce5eb0",
-    "VehicleRedisSchema": "fa88dd9a9983ade69134e91b845858ecbd259015a6a18e9eac43649e302dbfa6",
+    "VehicleRedisSchema": "8c20d693e1f5e6bf87822b5215474cc24a23531e579ecc76895e260c51e84baa",
     "VehicleRelationships": "078e29a43ecfa68fb47a3a8ff3e5a9ed5a340a3fed4da34896c4b84475a61a9d",
     "VehicleResource": "7e8aedebb8d5f16427dd6ab720b20eccd2ab3754b0e0cedafc3fd87a88f9ae35",
     "VehicleSpeedHistory": "252a7c26611fe30fdf61bde80e903f845fa4522c9e71f1584a768f71affed3b5",

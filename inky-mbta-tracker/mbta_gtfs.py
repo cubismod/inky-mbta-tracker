@@ -128,6 +128,7 @@ async def _process_gtfs_event(
         carriages=carriages,
         headsign=fields.get("headsign"),
         trip_id=fields.get("trip_id"),
+        source="gtfs_rt",
     )
     if await _should_replace_current_event(vehicle, r_client, fields["id"]):
         await send_stream.send(vehicle)

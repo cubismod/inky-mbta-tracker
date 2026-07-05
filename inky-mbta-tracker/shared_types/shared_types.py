@@ -39,6 +39,7 @@ class VehicleRedisSchema(BaseModel):
     occupancy_status: Optional[str] = None
     carriages: Optional[list[str]] = None
     headsign: Optional[str] = None
+    source: str = "mbta_v3"
     # OpenTelemetry trace context for distributed tracing
     trace_context: Optional[str] = None
     trip_id: Optional[str] = None
