@@ -435,6 +435,16 @@ async def get_vehicle_features(
     validation_errors = 0
     filtered_count = 0
 
+    # Apply the frequent_buses route filter inside the validation loop so we
+    # only collect stop/prediction lookup metadata for vehicles that will
+    # actually be emitted as features. Otherwise we waste a batch fetch on
+    # stops and predictions for every vehicle that gets dropped by the
+    # second loop. This matters on the vehicle_stream_diff hot path, which
+    # calls this every second with skip_cache=True.
+    frequent_set: Optional[set[str]] = (
+        set(config.frequent_bus_lines) if config.frequent_bus_lines else None
+    )
+
     pred_lookup: dict[tuple[str, str], datetime] = {}
     unique_stops: set[str] = set()
     stop_lookup_ids: set[str] = set()
@@ -450,18 +460,29 @@ async def get_vehicle_features(
             continue
         raw["update_time"] = datetime.fromisoformat(raw["update_time"])
         vehicle_info = VehicleRedisSchema.model_construct(**raw)
+        route = vehicle_info.route
+
+        if frequent_set is not None:
+            is_frequent = route in frequent_set
+            if frequent_buses and not is_frequent:
+                filtered_count += 1
+                continue
+            if not frequent_buses and is_frequent:
+                filtered_count += 1
+                continue
+
         validated.append(vehicle_info)
         if (
             vehicle_info.stop
-            and not vehicle_info.route.startswith("Amtrak")
+            and not route.startswith("Amtrak")
             and vehicle_info.speed is not None
             and vehicle_info.speed >= 10
             and vehicle_info.current_status != "STOPPED_AT"
         ):
             unique_stops.add(vehicle_info.stop)
-        if vehicle_info.stop and not vehicle_info.route.startswith("Amtrak"):
+        if vehicle_info.stop and not route.startswith("Amtrak"):
             stop_lookup_ids.add(vehicle_info.stop)
-            stop_route_map[vehicle_info.stop] = vehicle_info.route
+            stop_route_map[vehicle_info.stop] = route
 
     if unique_stops:
         try:
@@ -486,20 +507,6 @@ async def get_vehicle_features(
         vehicle_bearing = None
         platform_prediction = None
 
-        if (
-            frequent_buses
-            and config.frequent_bus_lines
-            and vehicle_info.route not in config.frequent_bus_lines
-        ):
-            filtered_count += 1
-            continue
-        elif (
-            not frequent_buses
-            and config.frequent_bus_lines
-            and vehicle_info.route in config.frequent_bus_lines
-        ):
-            filtered_count += 1
-            continue
         point = Point((vehicle_info.longitude, vehicle_info.latitude))
         stop = None
         stop_id = None

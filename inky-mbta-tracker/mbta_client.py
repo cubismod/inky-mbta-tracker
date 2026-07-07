@@ -380,7 +380,7 @@ class MBTAApi:
         return hs
 
     async def _save_live_negative_cache(self, data: str, event_type: str):
-        ex_time = 5
+        ex_time = 15
         if self.watcher_type == TaskType.ALERTS:
             ex_time = HOUR
         h = f"{event_type}:{hashlib.sha512(data.encode('utf-8')).hexdigest()}"
