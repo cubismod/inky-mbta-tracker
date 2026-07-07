@@ -107,7 +107,11 @@ class VehicleStreamDiff:
 
                 try:
                     features = await get_vehicle_features(
-                        self.r_client, self.config, self.tg, frequent_buses
+                        self.r_client,
+                        self.config,
+                        self.tg,
+                        frequent_buses,
+                        skip_cache=True,
                     )
                 except (RedisError, ConnectionError, TimeoutError):
                     logger.error("Failed to fetch vehicle features", exc_info=True)
@@ -132,6 +136,9 @@ class VehicleStreamDiff:
                     else:
                         self.empty_count = 0
                         diff = self._calculate_diff(self.current_snapshot, features)
+                        if not diff.updated and not diff.removed:
+                            continue
+
                         await self.r_client.publish(key, diff.model_dump_json())
                         span.set_attribute("vehicle_stream.published_diff", True)
                         span.set_attribute(

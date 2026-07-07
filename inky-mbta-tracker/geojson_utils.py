@@ -395,6 +395,7 @@ async def get_vehicle_features(
     tg: TaskGroup,
     frequent_buses: bool = False,
     session: ClientSession | None = None,
+    skip_cache: bool = False,
 ) -> dict[str, Feature]:
     """Extract vehicle features from Redis data"""
     add_current_span_attributes(
@@ -404,9 +405,10 @@ async def get_vehicle_features(
         }
     )
     cache_key = f"geojson_vehicle_features:{'buses' if frequent_buses else 'rapid'}"
-    cached = await get_cache(r_client, cache_key)
-    if cached:
-        return orjson.loads(cached)
+    if not skip_cache:
+        cached = await get_cache(r_client, cache_key)
+        if cached:
+            return orjson.loads(cached)
 
     features = dict[str, Feature]()
 
@@ -598,9 +600,8 @@ async def get_vehicle_features(
             "vehicles.validation_errors": validation_errors,
         }
     )
-    tg.start_soon(
-        write_cache, r_client, cache_key, orjson.dumps(features).decode("utf-8"), 1
-    )
+    await write_cache(r_client, cache_key, orjson.dumps(features).decode("utf-8"), 120)
+
     return features
 
 
@@ -702,9 +703,11 @@ async def background_refresh(r_client: Redis, config: Config, tg: TaskGroup):
                 ) as span:
                     add_transaction_ids_to_span(span)
                     try:
-                        await get_vehicle_features(r_client, config, tg)
                         await get_vehicle_features(
-                            r_client, config, tg, frequent_buses=True
+                            r_client, config, tg, skip_cache=True
+                        )
+                        await get_vehicle_features(
+                            r_client, config, tg, frequent_buses=True, skip_cache=True
                         )
                         span.set_attribute("background_refresh.status", "success")
                     except Exception as exc:
@@ -715,6 +718,8 @@ async def background_refresh(r_client: Redis, config: Config, tg: TaskGroup):
                 await sleep(30)
     else:
         while True:
-            await get_vehicle_features(r_client, config, tg)
-            await get_vehicle_features(r_client, config, tg, frequent_buses=True)
+            await get_vehicle_features(r_client, config, tg, skip_cache=True)
+            await get_vehicle_features(
+                r_client, config, tg, frequent_buses=True, skip_cache=True
+            )
             await sleep(30)

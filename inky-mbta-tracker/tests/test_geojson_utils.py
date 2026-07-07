@@ -2,6 +2,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import orjson
 import pytest
 from aiohttp import ClientSession
 from config import Config
@@ -445,3 +446,73 @@ async def test_get_vehicle_features_surfaces_commuter_rail_short_name(
     assert features["y1817"]["id"] == "y1817"
     assert features["y1817"]["properties"]["id"] == "y1817"
     assert features["y1817"]["properties"]["short_name"] == "503"
+
+
+@pytest.mark.anyio("asyncio")
+async def test_get_vehicle_features_cached_only_returns_cache_on_hit() -> None:
+    cached_features = {"v1": Feature(id="v1", geometry=Point((0, 0)), properties={})}
+    redis = MagicMock()
+    redis.get = AsyncMock(return_value=orjson.dumps(cached_features))
+    redis.smembers = AsyncMock(side_effect=AssertionError("should not be called"))
+    redis.mget = AsyncMock(side_effect=AssertionError("should not be called"))
+
+    features = await get_vehicle_features(
+        redis,
+        Config(vehicles_by_route=["Red"]),
+        cast(Any, MagicMock(start_soon=lambda *_a, **_kw: None)),
+        cached_only=True,
+    )
+
+    assert features == cached_features
+    redis.get.assert_awaited_once_with("geojson_vehicle_features:rapid")
+
+
+@pytest.mark.anyio("asyncio")
+async def test_get_vehicle_features_cached_only_returns_empty_on_miss() -> None:
+    redis = MagicMock()
+    redis.get = AsyncMock(return_value=None)
+    redis.smembers = AsyncMock(side_effect=AssertionError("should not be called"))
+    redis.mget = AsyncMock(side_effect=AssertionError("should not be called"))
+
+    features = await get_vehicle_features(
+        redis,
+        Config(vehicles_by_route=["Red"]),
+        cast(Any, MagicMock(start_soon=lambda *_a, **_kw: None)),
+        cached_only=True,
+    )
+
+    assert features == {}
+    redis.get.assert_awaited_once_with("geojson_vehicle_features:rapid")
+
+
+@pytest.mark.anyio("asyncio")
+@patch("geojson_utils.light_get_stops")
+async def test_get_vehicle_features_default_computes_on_miss(
+    mock_light_get_stops: AsyncMock,
+) -> None:
+    vehicle = VehicleRedisSchema(
+        action="add",
+        id="v-default",
+        current_status="IN_TRANSIT_TO",
+        direction_id=0,
+        latitude=42.0,
+        longitude=-71.0,
+        speed=0,
+        bearing=0,
+        stop=None,
+        route="Red",
+        update_time=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+    redis = MagicMock()
+    redis.get = AsyncMock(return_value=None)
+    redis.smembers = AsyncMock(return_value={b"vehicle:v-default"})
+    redis.mget = AsyncMock(return_value=[vehicle.model_dump_json().encode()])
+
+    features = await get_vehicle_features(
+        redis,
+        Config(vehicles_by_route=["Red"]),
+        cast(Any, MagicMock(start_soon=lambda *_a, **_kw: None)),
+    )
+
+    assert "v-default" in features
+    assert features["v-default"]["properties"]["route"] == "Red"

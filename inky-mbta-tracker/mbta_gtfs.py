@@ -1,7 +1,6 @@
 import logging
 from asyncio import CancelledError
 from datetime import UTC, datetime
-from random import randint
 from typing import Any, Optional
 
 import aiohttp

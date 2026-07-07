@@ -112,8 +112,9 @@ async def get_vehicles_sse(
                 frequent_buses,
                 session=session,
             )
-            reset = DiffApiResponse(updated=features, removed=set())
-            yield f"data: {reset.model_dump_json()}\n\n"
+            if features:
+                reset = DiffApiResponse(updated=features, removed=set())
+                yield f"data: {reset.model_dump_json()}\n\n"
         except (ConnectionError, TimeoutError) as exc:
             logger.error("Error fetching initial vehicle snapshot", exc_info=exc)
             yield ": error initial-load\n\n"
