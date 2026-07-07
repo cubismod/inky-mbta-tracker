@@ -51,7 +51,7 @@ dependencies = [
     "textdistance>=4.6.3",
     "typing-extensions==4.16.0",
     "urllib3==2.7.0",
-    "uvicorn==0.49.0",
+    "uvicorn==0.50.0",
     "uvloop>=0.21.0",
     "uvloop>=0.20.0; sys_platform != 'win32'",
     "yarl==1.24.2",
