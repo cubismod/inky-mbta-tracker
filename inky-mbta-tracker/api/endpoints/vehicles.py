@@ -1,6 +1,8 @@
 import logging
+from collections.abc import AsyncGenerator
 from datetime import datetime
-from typing import AsyncGenerator, Optional
+from typing import Optional
+from zlib_ng import zlib_ng
 
 import orjson
 from api.middleware.cache_middleware import cache_ttl
@@ -89,7 +91,10 @@ async def get_vehicles(
 )
 @limiter.limit("70/minute")
 async def get_vehicles_sse(
-    request: Request, commons: GET_DI, frequent_buses: bool = False
+    request: Request,
+    commons: GET_DI,
+    frequent_buses: bool = False,
+    compress: bool = False,
 ) -> StreamingResponse:
     if not SSE_ENABLED:
         raise HTTPException(status_code=503, detail="SSE streaming disabled")
@@ -102,7 +107,7 @@ async def get_vehicles_sse(
     session = commons.session
     channel = f"{VEHICLE_STREAM_KEY}:{'buses' if frequent_buses else 'rapid'}"
 
-    async def event_generator() -> AsyncGenerator[str, None]:
+    async def _event_generator_str() -> AsyncGenerator[str, None]:
         yield ": stream-start\n\n"
         try:
             features = await get_vehicle_features(
@@ -136,12 +141,68 @@ async def get_vehicles_sse(
             await pubsub.unsubscribe(channel)
             await pubsub.aclose()
 
+    async def _event_generator_gz() -> AsyncGenerator[bytes, None]:
+        compressor = zlib_ng.compressobj(wbits=zlib_ng.MAX_WBITS + 16)
+
+        data = b": stream-start\n\n"
+        compressed = compressor.compress(data)
+        flushed = compressor.flush(zlib_ng.Z_SYNC_FLUSH)
+        if compressed or flushed:
+            yield compressed + flushed
+
+        try:
+            features = await get_vehicle_features(
+                r_client,
+                config,
+                tg,
+                frequent_buses,
+                session=session,
+            )
+            if features:
+                reset = DiffApiResponse(updated=features, removed=set())
+                data = f"data: {reset.model_dump_json()}\n\n".encode("utf-8")
+                compressed = compressor.compress(data)
+                flushed = compressor.flush(zlib_ng.Z_SYNC_FLUSH)
+                if compressed or flushed:
+                    yield compressed + flushed
+        except (ConnectionError, TimeoutError) as exc:
+            logger.error("Error fetching initial vehicle snapshot", exc_info=exc)
+            data = b": error initial-load\n\n"
+            compressed = compressor.compress(data)
+            flushed = compressor.flush(zlib_ng.Z_SYNC_FLUSH)
+            if compressed or flushed:
+                yield compressed + flushed
+
+        pubsub = r_client.pubsub()
+        await pubsub.subscribe(channel)
+        try:
+            while not await request.is_disconnected():
+                message = await pubsub.get_message(
+                    ignore_subscribe_messages=True, timeout=1.0
+                )
+                if message is None or message.get("type") != "message":
+                    continue
+                payload: str | bytes = message["data"]
+                if isinstance(payload, bytes):
+                    payload = payload.decode("utf-8")
+                data = f"data: {payload}\n\n".encode("utf-8")
+                compressed = compressor.compress(data)
+                flushed = compressor.flush(zlib_ng.Z_SYNC_FLUSH)
+                if compressed or flushed:
+                    yield compressed + flushed
+        finally:
+            await pubsub.unsubscribe(channel)
+            await pubsub.aclose()
+
     headers = {
         "Cache-Control": "no-cache",
         "Content-Type": "text/event-stream",
         "Connection": "keep-alive",
         "X-Accel-Buffering": "no",
     }
+    if compress:
+        headers["Content-Encoding"] = "gzip"
+
     span = trace.get_current_span()
     add_span_attributes(
         span,
@@ -149,12 +210,13 @@ async def get_vehicles_sse(
             "api.endpoint": "vehicles_stream",
             "vehicle_stream.frequent_buses": frequent_buses,
             "vehicle_stream.enabled": True,
+            "vehicle_stream.compress": compress,
         },
     )
     add_transaction_ids_to_span(span)
-    return StreamingResponse(
-        event_generator(), media_type="text/event-stream", headers=headers
-    )
+
+    content = _event_generator_gz() if compress else _event_generator_str()
+    return StreamingResponse(content, media_type="text/event-stream", headers=headers)
 
 
 @router.get(

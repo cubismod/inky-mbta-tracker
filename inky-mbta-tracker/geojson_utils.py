@@ -6,6 +6,7 @@ from math import cos, radians, sin, tau
 from typing import Any, Optional
 
 import aiohttp
+from consts import DAY
 import humanize
 import orjson
 from aiohttp import ClientSession
@@ -607,7 +608,7 @@ async def get_vehicle_features(
             "vehicles.validation_errors": validation_errors,
         }
     )
-    await write_cache(r_client, cache_key, orjson.dumps(features).decode("utf-8"), 120)
+    await write_cache(r_client, cache_key, orjson.dumps(features).decode("utf-8"), DAY)
 
     return features
 

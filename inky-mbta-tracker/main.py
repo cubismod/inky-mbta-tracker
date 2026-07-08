@@ -279,6 +279,9 @@ async def __main__() -> None:
                             stop,
                         )
             if config.vehicles_by_route:
+                tg.start_soon(
+                    run_vehicle_stream_diff, get_redis(redis_pool), config, tg
+                )
                 for route_id in config.vehicles_by_route:
                     start_task(
                         get_redis(redis_pool),
@@ -295,9 +298,6 @@ async def __main__() -> None:
                     tg.start_soon(
                         watch_alerts, get_redis(redis_pool), route_id, session, config
                     )
-                tg.start_soon(
-                    run_vehicle_stream_diff, get_redis(redis_pool), config, tg
-                )
             if config.frequent_bus_lines:
                 for route_id in config.frequent_bus_lines:
                     start_task(

@@ -68,6 +68,7 @@ dependencies = [
     "httptools>=0.7.1",
     "gtfs-realtime-bindings>=2.0.0",
     "pyroscope-io>=1.0.12",
+    "zlib-ng>=1.0.0",
 ]
 
 [dependency-groups]
