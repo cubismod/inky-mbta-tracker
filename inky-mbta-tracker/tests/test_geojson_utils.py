@@ -162,7 +162,6 @@ def test_lookup_vehicle_color_mapping() -> None:
             update_time=datetime.now(UTC),
         )
 
-    assert lookup_vehicle_color(mk("Amtrak NE Corridor")) == "#18567D"
     assert lookup_vehicle_color(mk("Green-B")) == "#008150"
     assert lookup_vehicle_color(mk("Blue")) == "#2F5DA6"
     assert lookup_vehicle_color(mk("CR-Providence")) == "#7B388C"

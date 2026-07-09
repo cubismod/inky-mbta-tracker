@@ -116,6 +116,7 @@ async def get_vehicles_sse(
                 frequent_buses,
                 session=session,
             )
+            # wait to fetch features as we don't wanna serve up empty position data
             yield ": stream-start\n\n"
             if features:
                 reset = DiffApiResponse(updated=features, removed=set())

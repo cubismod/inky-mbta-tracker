@@ -196,8 +196,6 @@ def lookup_vehicle_color(vehicle: VehicleRedisSchema) -> str:
 
 
 def lookup_route_color(route: str) -> str:
-    if route.startswith("Amtrak"):
-        return "#18567D"
     if route.startswith("Green"):
         return "#008150"
     if route.startswith("Blue"):
@@ -407,6 +405,7 @@ async def get_vehicle_features(
     )
     cache_key = f"geojson_vehicle_features:{'buses' if frequent_buses else 'rapid'}"
     if not skip_cache:
+        # there is a trade-off here where we will serve very out of date vehicle data instead of nothing at all
         cached = await get_cache(r_client, cache_key)
         if cached:
             return orjson.loads(cached)
@@ -475,13 +474,12 @@ async def get_vehicle_features(
         validated.append(vehicle_info)
         if (
             vehicle_info.stop
-            and not route.startswith("Amtrak")
             and vehicle_info.speed is not None
             and vehicle_info.speed >= 10
             and vehicle_info.current_status != "STOPPED_AT"
         ):
             unique_stops.add(vehicle_info.stop)
-        if vehicle_info.stop and not route.startswith("Amtrak"):
+        if vehicle_info.stop:
             stop_lookup_ids.add(vehicle_info.stop)
             stop_route_map[vehicle_info.stop] = route
 
@@ -521,7 +519,7 @@ async def get_vehicle_features(
         if vehicle_info.bearing:
             vehicle_bearing = vehicle_info.bearing
         if vehicle_info.route:
-            if vehicle_info.stop and not vehicle_info.route.startswith("Amtrak"):
+            if vehicle_info.stop:
                 stop = stops_lookup.get(vehicle_info.stop)
                 if stop:
                     mbta_stop_id = stop.mbta_stop_id
@@ -548,9 +546,6 @@ async def get_vehicle_features(
                                 vehicle_info.speed,
                                 predicted_arrival=predicted,
                             )
-            elif vehicle_info.stop:
-                route_icon = "rail_amtrak"
-                stop_id = vehicle_info.stop
 
             if vehicle_info.route.startswith("7") or vehicle_info.route.isdecimal():
                 route_icon = "bus"
