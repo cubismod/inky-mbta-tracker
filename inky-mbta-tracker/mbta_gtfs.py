@@ -1,6 +1,7 @@
 import logging
 from asyncio import CancelledError
 from datetime import UTC, datetime
+from random import randint
 from typing import Any, Optional
 
 import aiohttp
@@ -176,4 +177,4 @@ async def gtfs_loop(
                                                     tg,
                                                     route_id,
                                                 )
-                    await sleep(5)
+                    await sleep(5 + randint(0, 2))
