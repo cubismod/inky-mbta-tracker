@@ -351,11 +351,6 @@ class MBTAApi:
         route_id: Optional[str] = None,
         direction_id: Optional[int] = None,
     ) -> str:
-        negative_key = f"headsign:neg:{trip_id or ''}:{route_id or ''}:{direction_id}"
-        cached_negative = await get_cache(self.r_client, negative_key)
-        if cached_negative:
-            return ""
-
         hs = ""
         if trip_id:
             trip = await self.get_trip(trip_id, tg, session)
