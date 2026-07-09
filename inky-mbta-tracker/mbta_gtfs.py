@@ -105,7 +105,7 @@ async def _process_gtfs_event(
     carriages = _process_cariages(vehicle_entity)
     direction_id = fields.get("direction_id")
 
-    if fields.get("trip_id") and direction_id:
+    if fields.get("trip_id") and direction_id is not None:
         async with MBTAApi(r_client) as mbta_client:
             fields["headsign"] = await mbta_client.get_headsign(
                 mbta_session, tg, fields["trip_id"], route_id, direction_id

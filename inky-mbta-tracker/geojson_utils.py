@@ -6,13 +6,13 @@ from math import cos, radians, sin, tau
 from typing import Any, Optional
 
 import aiohttp
-from consts import DAY
 import humanize
 import orjson
 from aiohttp import ClientSession
 from anyio import sleep
 from anyio.abc import TaskGroup
 from config import Config
+from consts import DAY
 from geo_math import bearing, distance
 from geojson import Feature, LineString, Point
 from mbta_client import (

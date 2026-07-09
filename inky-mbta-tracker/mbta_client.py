@@ -777,6 +777,13 @@ class MBTAApi:
                 trip_info = await self.get_trip(
                     item.relationships.trip.data.id, tg, session
                 )
+            trip_resource_id: str | None = None
+            if (
+                item.relationships
+                and item.relationships.trip
+                and item.relationships.trip.data
+            ):
+                trip_resource_id = item.relationships.trip.data.id
             short_name: str | None = None
             if (
                 trip_info
@@ -786,15 +793,8 @@ class MBTAApi:
             ):
                 short_name = trip_info.data[0].attributes.name
             headsign = await self.get_headsign(
-                session, tg, None, route, item.attributes.direction_id
+                session, tg, trip_resource_id, route, item.attributes.direction_id
             )
-            trip_resource_id: str | None = None
-            if (
-                item.relationships
-                and item.relationships.trip
-                and item.relationships.trip.data
-            ):
-                trip_resource_id = item.relationships.trip.data.id
             event = VehicleRedisSchema(  # type: ignore
                 action=event_type,
                 id=vehicle_id,

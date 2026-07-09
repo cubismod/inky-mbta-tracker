@@ -1,6 +1,5 @@
-from zlib_ng import zlib_ng
-
 import pytest
+from zlib_ng import zlib_ng
 
 
 def _compress_single_stream(chunks: list[bytes]) -> bytes:

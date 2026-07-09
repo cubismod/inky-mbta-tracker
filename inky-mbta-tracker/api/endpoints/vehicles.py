@@ -2,7 +2,6 @@ import logging
 from collections.abc import AsyncGenerator
 from datetime import datetime
 from typing import Optional
-from zlib_ng import zlib_ng
 
 import orjson
 from api.middleware.cache_middleware import cache_ttl
@@ -15,6 +14,7 @@ from opentelemetry import trace
 from otel_utils import add_span_attributes, add_transaction_ids_to_span, set_span_error
 from shared_types.shared_types import DiffApiResponse
 from starlette.responses import StreamingResponse
+from zlib_ng import zlib_ng
 
 from ..core import GET_DI, SSE_ENABLED
 from ..limits import limiter
@@ -108,7 +108,6 @@ async def get_vehicles_sse(
     channel = f"{VEHICLE_STREAM_KEY}:{'buses' if frequent_buses else 'rapid'}"
 
     async def _event_generator_str() -> AsyncGenerator[str, None]:
-        yield ": stream-start\n\n"
         try:
             features = await get_vehicle_features(
                 r_client,
@@ -117,6 +116,7 @@ async def get_vehicles_sse(
                 frequent_buses,
                 session=session,
             )
+            yield ": stream-start\n\n"
             if features:
                 reset = DiffApiResponse(updated=features, removed=set())
                 yield f"data: {reset.model_dump_json()}\n\n"

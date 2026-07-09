@@ -718,6 +718,79 @@ class TestQueueEventCommuterRailId:
             ),
         )
 
+    async def test_cr_vehicle_headsign_uses_trip_id_not_route_fallback(self) -> None:
+        """Regression: vehicles must resolve headsign from the trip (specific
+        terminus, e.g. a Franklin train short-turning at Walpole) rather than
+        the generic route direction destination. Previously queue_event passed
+        trip_id=None to get_headsign even though the trip was already fetched.
+        """
+        trip_id = "CR-Worcester-CR-Weekday-Jul14-25-Express-503"
+        vehicle = VehicleResource(
+            id="y1817",
+            type="vehicle",
+            attributes=VehicleAttributes(
+                current_status="IN_TRANSIT_TO",
+                direction_id=0,
+                latitude=42.0,
+                longitude=-71.0,
+                speed=10.0,
+                occupancy_status="FEW_SEATS_AVAILABLE",
+                bearing=180,
+            ),
+            relationships=VehicleRelationships(
+                route=TypeAndIDinData(data=TypeAndID(type="route", id="CR-Worcester")),
+                trip=TypeAndIDinData(data=TypeAndID(type="trip", id=trip_id)),
+            ),
+        )
+
+        send_stream = MagicMock()
+        sent: list = []
+        send_stream.send = AsyncMock(side_effect=lambda ev: sent.append(ev))
+
+        api = MBTAApi(
+            cast(RedisClient, AsyncMock()),
+            watcher_type=TaskType.VEHICLES,
+        )
+        api.get_trip = AsyncMock(
+            return_value=Trips(
+                data=[
+                    TripResource(
+                        type="trip",
+                        relationships={},
+                        attributes=TripAttributes(
+                            wheelchair_accessible=0,
+                            name="503",
+                            headsign="Worcester",
+                            direction_id=0,
+                        ),
+                    )
+                ]
+            )
+        )
+        api.get_headsign = AsyncMock(return_value="Worcester")
+        api.get_route = AsyncMock(return_value=None)
+
+        await api.queue_event(
+            vehicle,
+            "update",
+            send_stream,
+            cast(Any, MagicMock(closed=False)),
+            cast(Any, MagicMock(start_soon=lambda *_a, **_kw: None)),
+        )
+
+        assert len(sent) == 1
+        event = sent[0]
+        assert isinstance(event, VehicleRedisSchema)
+        assert event.headsign == "Worcester"
+        api.get_headsign.assert_awaited_once()
+        args, _kwargs = api.get_headsign.call_args
+        # positional: session, tg, trip_id, route_id, direction_id
+        assert args[2] == trip_id
+        assert args[3] == "CR-Worcester"
+        assert args[4] == 0
+        # must not have fallen back to the route direction destination
+        api.get_route.assert_not_awaited()
+
     async def test_non_cr_vehicle_has_no_short_name(self) -> None:
         vehicle = VehicleResource(
             id="y1817",
