@@ -206,10 +206,10 @@ async def stale_key_cleanup_task(r_client: Redis) -> None:
     """Periodically prune expired keys from the pos-data set.
 
     Vehicle keys in Redis have a TTL. When they expire, the key name lingers
-    in the pos-data set until cleaned up. This task scans the set every 60s
+    in the pos-data set until cleaned up. This task scans the set every 300s
     and removes members whose keys no longer exist.
     """
-    INTERVAL_SECONDS = 60
+    INTERVAL_SECONDS = 300
 
     logger.info("Starting stale key cleanup task")
 
