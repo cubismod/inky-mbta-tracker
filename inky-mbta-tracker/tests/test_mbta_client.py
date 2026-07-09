@@ -435,6 +435,9 @@ class TestLightGetStop:
 
         mock_get_cache.return_value = None
 
+        mock_session = AsyncMock()
+        mock_client_session.return_value = mock_session
+
         mock_response = AsyncMock()
         mock_response.status = 404
         mock_rate_limited_get.return_value.__aenter__.return_value = mock_response
@@ -443,6 +446,7 @@ class TestLightGetStop:
 
         assert result is None
         mock_get_cache.assert_called_once()
+        mock_session.close.assert_awaited_once()
 
 
 @pytest.mark.anyio("asyncio")

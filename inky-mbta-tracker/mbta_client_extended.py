@@ -189,6 +189,7 @@ async def light_get_stop(
     r_client: Redis,
     stop_id: str,
     tg: TaskGroup,
+    session: Optional[ClientSession] = None,
 ) -> Optional[LightStop]:
     key = f"stop:{stop_id}:light"
     import mbta_client
@@ -217,8 +218,11 @@ async def light_get_stop(
 
         logger.debug("Cache miss for stop %s; fetching from MBTA API", stop_id)
 
-        async with aiohttp.ClientSession(base_url=MBTA_V3_ENDPOINT) as session:
-            params = [("api_key", MBTA_AUTH)]
+        owns_session = session is None
+        if owns_session:
+            session = aiohttp.ClientSession(base_url=MBTA_V3_ENDPOINT)
+        try:
+            params = [("api_key", MBTA_AUTH), ("filter[id]", stop_id)]
             async with rate_limited_get(
                 session,
                 r_client,
@@ -271,6 +275,9 @@ async def light_get_stop(
                 )
 
                 return ls
+        finally:
+            if owns_session and session is not None:
+                await session.close()
 
 
 async def fetch_route_stops(

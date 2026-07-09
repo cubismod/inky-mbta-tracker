@@ -124,6 +124,8 @@ class VehicleStreamDiff:
                 try:
                     if len(features) == 0:
                         if self.empty_count > 3:
+                            # we want to avoid serving up empty vehicle data as much as possible so wait a few times
+                            # before actually returning empty data to prevent possible intermittent pipeline errors
                             await self.r_client.publish(
                                 key,
                                 DiffApiResponse(

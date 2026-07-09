@@ -105,9 +105,6 @@ async def get_vehicle_route_counts(
     into a ``VehicleRedisSchema`` exactly once, applies the frequent-bus filter,
     and classifies routes into the RL/GL/BL/OL/SL/CR line columns and the
     light/heavy/regional-rail/bus type rows.
-
-    Stale keys (expired GETs) are pruned from the ``pos-data`` set, mirroring
-    ``get_vehicle_features``.
     """
     counts = _empty_counts()
 
@@ -125,9 +122,9 @@ async def get_vehicle_route_counts(
             continue
         try:
             raw = orjson.loads(result)
-        except orjson.JSONDecodeError:
+            raw["update_time"] = datetime.fromisoformat(raw["update_time"])
+        except (orjson.JSONDecodeError, KeyError, ValueError):
             continue
-        raw["update_time"] = datetime.fromisoformat(raw["update_time"])
         vehicle_info = VehicleRedisSchema.model_construct(**raw)
         route = vehicle_info.route
         if frequent_lines:

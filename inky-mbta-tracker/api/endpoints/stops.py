@@ -27,7 +27,9 @@ async def get_stop(request: Request, commons: GET_DI, id: str) -> Response:
 
         try:
             if commons.tg:
-                light_stop = await light_get_stop(commons.r_client, id, commons.tg)
+                light_stop = await light_get_stop(
+                    commons.r_client, id, commons.tg, session=commons.session
+                )
                 if light_stop:
                     add_span_attributes(span, {"api.response.success": True})
                     return Response(
