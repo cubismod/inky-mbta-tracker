@@ -371,7 +371,6 @@ class MBTAApi:
             logger.warning(
                 f"Could not determine headsign for trip {trip_id}, route/direction: {route_id}/{direction_id}"
             )
-            tg.start_soon(write_cache, self.r_client, negative_key, "negative", HOUR)
         return hs
 
     async def _save_live_negative_cache(self, data: str, event_type: str):
