@@ -177,4 +177,4 @@ async def gtfs_loop(
                                                     tg,
                                                     route_id,
                                                 )
-                    await sleep(5 + randint(0, 2))
+                    await sleep(randint(0, 5))
