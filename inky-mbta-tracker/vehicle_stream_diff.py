@@ -8,6 +8,7 @@ from geojson import Feature
 from geojson_utils import get_vehicle_features
 from opentelemetry import trace
 from otel_utils import add_current_span_attributes, add_transaction_ids_to_span
+from prometheus import vehicle_stream_pubsub
 from redis.asyncio import Redis
 from redis.exceptions import RedisError
 from shared_types.shared_types import DiffApiResponse
@@ -142,6 +143,14 @@ class VehicleStreamDiff:
                             continue
 
                         await self.r_client.publish(key, diff.model_dump_json())
+                        [
+                            vehicle_stream_pubsub.labels(event_type="publish").inc()
+                            for _ in diff.updated
+                        ]
+                        [
+                            vehicle_stream_pubsub.labels(event_type="publish").inc()
+                            for _ in diff.removed
+                        ]
                         span.set_attribute("vehicle_stream.published_diff", True)
                         span.set_attribute(
                             "vehicle_stream.diff_updated_count", len(diff.updated)

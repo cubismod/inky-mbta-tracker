@@ -111,6 +111,16 @@ last_batch_flush_ts = Gauge(
     ["name"],
 )
 
+vehicle_stream_pubsub = Gauge(
+    "imt_vehicle_stream_pubsub",
+    "Pub/sub events around vehicle stream diffing",
+    ["event_type"],
+)
+
+vehicle_stream_subsribers = Gauge(
+    "imt_vehicle_stream_subscribers", "Active subscribers to the vehicle stream"
+)
+
 pos_data_count = Gauge("imt_pos_data_count", "Count of members in pos-data", ["name"])
 
 running_tasks = Gauge("imt_tasks", "Number of anyio tasks")

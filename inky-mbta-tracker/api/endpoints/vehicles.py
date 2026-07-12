@@ -12,6 +12,7 @@ from fastapi.responses import RedirectResponse
 from geojson_utils import get_vehicle_features
 from opentelemetry import trace
 from otel_utils import add_span_attributes, add_transaction_ids_to_span, set_span_error
+from prometheus import vehicle_stream_pubsub, vehicle_stream_subsribers
 from shared_types.shared_types import DiffApiResponse
 from starlette.responses import StreamingResponse
 from zlib_ng import zlib_ng
@@ -176,6 +177,7 @@ async def get_vehicles_sse(
 
         pubsub = r_client.pubsub()
         await pubsub.subscribe(channel)
+        vehicle_stream_subsribers.inc()
         try:
             while not await request.is_disconnected():
                 message = await pubsub.get_message(
@@ -186,6 +188,7 @@ async def get_vehicles_sse(
                 payload: str | bytes = message["data"]
                 if isinstance(payload, bytes):
                     payload = payload.decode("utf-8")
+                vehicle_stream_pubsub.labels(event_type="receive").inc()
                 data = f"data: {payload}\n\n".encode("utf-8")
                 compressed = compressor.compress(data)
                 flushed = compressor.flush(zlib_ng.Z_SYNC_FLUSH)
@@ -193,6 +196,7 @@ async def get_vehicles_sse(
                     yield compressed + flushed
         finally:
             await pubsub.unsubscribe(channel)
+            vehicle_stream_subsribers.dec()
             await pubsub.aclose()
 
     headers = {
