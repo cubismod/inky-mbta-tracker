@@ -21,7 +21,10 @@ vehicle_speeds = Gauge(
 tracker_executions = Counter("imt_tracker_executions", "Tracker Executions", ["stop"])
 
 mbta_api_requests = Gauge(
-    "mbta_api_requests", "Requests we are making to the MBTA API", ["endpoint"]
+    "mbta_api_requests",
+    "Requests we are making to the MBTA API",
+    ["endpoint"],
+    multiprocess_mode="livesum",
 )
 
 mbta_api_rate_limit_hits = Counter(
@@ -44,7 +47,12 @@ def record_mbta_api_rate_limit_hit(url: str) -> None:
 
 running_threads = Gauge("imt_active_threads", "Active Threads")
 
-redis_commands = Gauge("imt_redis_cmds", "Redis commands made", ["name"])
+redis_commands = Gauge(
+    "imt_redis_cmds",
+    "Redis commands made",
+    ["name"],
+    multiprocess_mode="livesum",
+)
 
 schema_key_counts = Gauge(
     "imt_schema_key_counts",
@@ -115,10 +123,13 @@ vehicle_stream_pubsub = Gauge(
     "imt_vehicle_stream_pubsub",
     "Pub/sub events around vehicle stream diffing",
     ["event_type"],
+    multiprocess_mode="livesum",
 )
 
 vehicle_stream_subsribers = Gauge(
-    "imt_vehicle_stream_subscribers", "Active subscribers to the vehicle stream"
+    "imt_vehicle_stream_subscribers",
+    "Active subscribers to the vehicle stream",
+    multiprocess_mode="livesum",
 )
 
 pos_data_count = Gauge("imt_pos_data_count", "Count of members in pos-data", ["name"])

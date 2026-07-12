@@ -22,6 +22,10 @@ IMT_REDIS_BACKUP_TIME=21:50 # set to backup every night at this time, you are re
 IMT_PROMETHEUS_ENABLE="true"  # disabled by default
 IMT_PROM_PORT="8000"
 
+# prometheus multiprocess mode for the multi-worker API server (uvicorn --workers N)
+IMT_PROM_MULTIPROCESS="true"  # enable aggregation across uvicorn workers
+PROMETHEUS_MULTIPROC_DIR="/tmp/imt-prom-mp"  # shared dir; must exist & be writable
+
 # use these settings for real time self-monitoring health checks via prometheus
 IMT_PROMETHEUS_JOB="imt_dev"
 IMT_PROMETHEUS_ENDPOINT="http://prometheus.local"

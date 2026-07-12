@@ -13,7 +13,6 @@ from anyio.streams.memory import MemoryObjectSendStream
 from config import Config, StopSetup, load_config
 from consts import MBTA_V3_ENDPOINT
 from dotenv import load_dotenv
-from geojson_utils import background_refresh
 from logging_setup import setup_logging
 from mbta_client_extended import (
     watch_alerts,
@@ -324,7 +323,7 @@ async def __main__() -> None:
             tg.start_soon(stale_key_cleanup_task, get_redis(redis_pool))
 
             # Background cache warmer for GeoJSON vehicle features
-            tg.start_soon(background_refresh, get_redis(redis_pool), config, tg)
+            # tg.start_soon(background_refresh, get_redis(redis_pool), config, tg)
 
             tg.start_soon(watch_running_tasks)
 

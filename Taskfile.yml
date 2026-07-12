@@ -24,6 +24,13 @@ tasks:
   api-server:
     cmds:
       - uv run uvicorn api_server:app --workers 1 --loop uvloop --log-config uvicorn_logging_config.json
+  api-server-multi:
+    env:
+      IMT_PROM_MULTIPROCESS: "true"
+      PROMETHEUS_MULTIPROC_DIR: "/tmp/imt-prom-mp"
+    cmds:
+      - rm -rf /tmp/imt-prom-mp && mkdir -p /tmp/imt-prom-mp
+      - uv run uvicorn api_server:app --workers 4 --loop uvloop --log-config uvicorn_logging_config.json
   gunicorn:
     cmds:
       - uv run gunicorn -w 4 -k uvicorn_logging.NginxAccessUvicornWorker --forwarded-allow-ips "*" api_server:app

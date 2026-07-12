@@ -21,6 +21,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from logging_setup import setup_logging
 from otel_config import initialize_otel, is_otel_enabled, setup_pyroscope, shutdown_otel
+from prometheus_client.multiprocess import mark_process_dead
 from prometheus_fastapi_instrumentator import Instrumentator
 from redis.asyncio import Redis
 from sentry_config import initialize_sentry
@@ -39,6 +40,8 @@ def create_app() -> FastAPI:
     # Initialize OpenTelemetry for the API server
     initialize_otel()
 
+    prom_multiprocess = os.getenv("IMT_PROM_MULTIPROCESS", "false").lower() == "true"
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         app.state.session = aiohttp.ClientSession(base_url=MBTA_V3_ENDPOINT)
@@ -53,6 +56,10 @@ def create_app() -> FastAPI:
             # Ensure OTEL spans are flushed before exit
             if is_otel_enabled():
                 shutdown_otel()
+            # In multiprocess mode, drop this worker's files so stale
+            # samples are not re-aggregated after the worker exits.
+            if prom_multiprocess:
+                mark_process_dead(os.getpid())
 
     app = FastAPI(
         title="MBTA Transit Data API",
@@ -117,6 +124,9 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
+    # prometheus_fastapi_instrumentator's expose() automatically serves
+    # multiprocess-aggregated metrics when PROMETHEUS_MULTIPROC_DIR is set,
+    # aggregating across all uvicorn workers on each scrape.
     Instrumentator().instrument(app).expose(app)
 
     # Apply FastAPI OTEL instrumentation if enabled
