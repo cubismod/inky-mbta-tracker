@@ -397,7 +397,6 @@ class MBTAApi:
             ex_time = HOUR
         await self.r_client.hsetex(LIVE_NEGATIVE_CACHE_KEY, cache_key, "", ex=ex_time)  # type: ignore[misc]
 
-    @alru_cache(maxsize=128)
     async def _skip_live_negative_cache(self, cache_key: str) -> bool:
         return await self.r_client.hexists(LIVE_NEGATIVE_CACHE_KEY, cache_key)  # type: ignore[misc]
 
