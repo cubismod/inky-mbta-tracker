@@ -8,10 +8,12 @@ import aiohttp
 from anyio import sleep
 from anyio.abc import TaskGroup
 from anyio.streams.memory import MemoryObjectSendStream
+from config import Config
 from consts import MBTA_V3_ENDPOINT
 from google.protobuf.json_format import MessageToDict
 from google.transit import gtfs_realtime_pb2
 from mbta_client import MBTAApi, occupancy_status_human_readable
+from prometheus import mbta_gtfs_vehicle_event
 from pydantic import ValidationError
 from redis.asyncio import Redis
 from redis_cache import get_cache
@@ -22,7 +24,6 @@ from tenacity import (
     retry_if_not_exception_type,
     wait_exponential_jitter,
 )
-from utils import Config
 
 GTFS_BASE_URL = "https://cdn.mbta.com/"
 logger = logging.getLogger(__name__)
@@ -131,6 +132,7 @@ async def _process_gtfs_event(
         source="MBTA Real-Time GTFS",
     )
     if await _should_replace_current_event(vehicle, r_client, fields["id"]):
+        mbta_gtfs_vehicle_event.labels(route_id=route_id).inc()
         await send_stream.send(vehicle)
 
 
@@ -168,7 +170,8 @@ async def gtfs_loop(
                                                 and route_id
                                                 in config.frequent_bus_lines
                                             ):
-                                                await _process_gtfs_event(
+                                                tg.start_soon(
+                                                    _process_gtfs_event,
                                                     entity_dict,
                                                     r_client,
                                                     send_stream,
@@ -177,4 +180,4 @@ async def gtfs_loop(
                                                     tg,
                                                     route_id,
                                                 )
-                    await sleep(randint(0, 10))
+                    await sleep(randint(1, 8))

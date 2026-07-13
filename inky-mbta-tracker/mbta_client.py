@@ -14,6 +14,7 @@ from aiohttp import ClientSession
 from anyio import create_task_group, sleep
 from anyio.abc import TaskGroup
 from anyio.streams.memory import MemoryObjectSendStream
+from async_lru import alru_cache
 from config import Config
 from consts import (
     ALERTS_SET_KEY,
@@ -343,6 +344,7 @@ class MBTAApi:
                     if not failtime:
                         failtime = now + timedelta(seconds=hc_fail_threshold)
 
+    @alru_cache(maxsize=256)
     async def get_headsign(
         self,
         session: ClientSession,
@@ -380,6 +382,7 @@ class MBTAApi:
         h = f"{event_type}:{hashlib.sha512(data.encode('utf-8')).hexdigest()}"
         await self.r_client.hsetex(LIVE_NEGATIVE_CACHE_KEY, h, "", ex=ex_time)  # type: ignore[misc]
 
+    @alru_cache(maxsize=128)
     async def _skip_live_negative_cache(self, data: str, event_type: str) -> bool:
         h = f"{event_type}:{hashlib.sha512(data.encode('utf-8')).hexdigest()}"
         return await self.r_client.hexists(LIVE_NEGATIVE_CACHE_KEY, h)  # type: ignore[misc]
@@ -828,6 +831,7 @@ class MBTAApi:
         before_sleep=before_sleep_log(logger, logging.WARNING, exc_info=True),
         retry=retry_if_not_exception_type(CancelledError),
     )
+    @alru_cache(maxsize=256)
     async def get_trip(
         self, trip_id: str, tg: TaskGroup, session: ClientSession
     ) -> Optional[Trips]:
@@ -907,6 +911,7 @@ class MBTAApi:
         before_sleep=before_sleep_log(logger, logging.WARNING, exc_info=True),
         retry=retry_if_not_exception_type(CancelledError),
     )
+    @alru_cache(maxsize=128)
     async def get_route(
         self, id: str, r_client: Redis, session: aiohttp.ClientSession
     ) -> Optional[RouteResource]:
@@ -1114,6 +1119,7 @@ class MBTAApi:
         before_sleep=before_sleep_log(logger, logging.WARNING, exc_info=True),
         retry=retry_if_not_exception_type(CancelledError),
     )
+    @alru_cache(maxsize=256)
     async def get_stop(
         self,
         session: ClientSession,

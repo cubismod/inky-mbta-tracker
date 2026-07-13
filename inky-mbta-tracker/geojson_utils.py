@@ -34,6 +34,7 @@ from prometheus import redis_commands
 from pydantic import ValidationError
 from redis.asyncio import Redis
 from redis_cache import get_cache, write_cache
+from redis_lock.asyncio import RedisLock
 from schedule_tracker import VehicleRedisSchema
 from shapely.geometry import LineString as ShapelyLineString
 from shared_types.shared_types import LightStop
@@ -410,202 +411,223 @@ async def get_vehicle_features(
         if cached:
             return orjson.loads(cached)
 
-    features = dict[str, Feature]()
+    try:
+        features = dict[str, Feature]()
 
-    vehicle_keys: list[bytes] = list(await r_client.smembers("pos-data"))  # type: ignore[misc]
-    redis_commands.labels("smembers").inc()
-    add_current_span_attributes(
-        {
-            "redis.pos_data.keys": len(vehicle_keys),
-        }
-    )
-
-    if not vehicle_keys:
+        vehicle_keys: list[bytes] = list(await r_client.smembers("pos-data"))  # type: ignore[misc]
+        redis_commands.labels("smembers").inc()
         add_current_span_attributes(
             {
-                "vehicles.count": 0,
-                "vehicles.filtered_count": 0,
+                "redis.pos_data.keys": len(vehicle_keys),
             }
         )
-        return features
 
-    results: list[bytes | None] = await r_client.mget(*vehicle_keys)
-    redis_commands.labels("mget").inc()
+        if not vehicle_keys:
+            add_current_span_attributes(
+                {
+                    "vehicles.count": 0,
+                    "vehicles.filtered_count": 0,
+                }
+            )
+            return features
 
-    validation_errors = 0
-    filtered_count = 0
+        results: list[bytes | None] = await r_client.mget(*vehicle_keys)
+        redis_commands.labels("mget").inc()
 
-    # Apply the frequent_buses route filter inside the validation loop so we
-    # only collect stop/prediction lookup metadata for vehicles that will
-    # actually be emitted as features. Otherwise we waste a batch fetch on
-    # stops and predictions for every vehicle that gets dropped by the
-    # second loop. This matters on the vehicle_stream_diff hot path, which
-    # calls this every second with skip_cache=True.
-    frequent_set: Optional[set[str]] = (
-        set(config.frequent_bus_lines) if config.frequent_bus_lines else None
-    )
+        validation_errors = 0
+        filtered_count = 0
 
-    pred_lookup: dict[tuple[str, str], datetime] = {}
-    unique_stops: set[str] = set()
-    stop_lookup_ids: set[str] = set()
-    stop_route_map: dict[str, str] = {}
-    validated: list[VehicleRedisSchema] = []
-    for result in results:
-        if not result:
-            continue
-        try:
-            raw = orjson.loads(result)
-        except orjson.JSONDecodeError:
-            validation_errors += 1
-            continue
-        raw["update_time"] = datetime.fromisoformat(raw["update_time"])
-        vehicle_info = VehicleRedisSchema.model_construct(**raw)
-        route = vehicle_info.route
+        # Apply the frequent_buses route filter inside the validation loop so we
+        # only collect stop/prediction lookup metadata for vehicles that will
+        # actually be emitted as features. Otherwise we waste a batch fetch on
+        # stops and predictions for every vehicle that gets dropped by the
+        # second loop. This matters on the vehicle_stream_diff hot path, which
+        # calls this every second with skip_cache=True.
+        frequent_set: Optional[set[str]] = (
+            set(config.frequent_bus_lines) if config.frequent_bus_lines else None
+        )
 
-        if frequent_set is not None:
-            is_frequent = route in frequent_set
-            if frequent_buses and not is_frequent:
-                filtered_count += 1
-                continue
-            if not frequent_buses and is_frequent:
-                filtered_count += 1
-                continue
-
-        validated.append(vehicle_info)
-        if (
-            vehicle_info.stop
-            and vehicle_info.speed is not None
-            and vehicle_info.speed >= 10
-            and vehicle_info.current_status != "STOPPED_AT"
+        pred_lookup: dict[tuple[str, str], datetime] = {}
+        unique_stops: set[str] = set()
+        stop_lookup_ids: set[str] = set()
+        stop_route_map: dict[str, str] = {}
+        validated: list[VehicleRedisSchema] = []
+        async with RedisLock(
+            r_client,
+            f"get_vehicle_features:{cache_key}",
+            expire_timeout=60,
+            blocking_timeout=120,
         ):
-            unique_stops.add(vehicle_info.stop)
-        if vehicle_info.stop:
-            stop_lookup_ids.add(vehicle_info.stop)
-            stop_route_map[vehicle_info.stop] = route
+            for result in results:
+                if not result:
+                    continue
+                try:
+                    raw = orjson.loads(result)
+                except orjson.JSONDecodeError:
+                    validation_errors += 1
+                    continue
+                raw["update_time"] = datetime.fromisoformat(raw["update_time"])
+                vehicle_info = VehicleRedisSchema.model_construct(**raw)
+                route = vehicle_info.route
 
-    if unique_stops:
-        try:
-            from api.services.predictions import batch_fetch_trip_predictions
+                if frequent_set is not None:
+                    is_frequent = route in frequent_set
+                    if frequent_buses and not is_frequent:
+                        filtered_count += 1
+                        continue
+                    if not frequent_buses and is_frequent:
+                        filtered_count += 1
+                        continue
 
-            pred_lookup = await batch_fetch_trip_predictions(
-                session, r_client, list(unique_stops)
-            )
-        except Exception as exc:
-            logger.warning("Failed to batch-fetch predictions", exc_info=exc)
+                validated.append(vehicle_info)
+                if (
+                    vehicle_info.stop
+                    and vehicle_info.speed is not None
+                    and vehicle_info.speed >= 10
+                    and vehicle_info.current_status != "STOPPED_AT"
+                ):
+                    unique_stops.add(vehicle_info.stop)
+                if vehicle_info.stop:
+                    stop_lookup_ids.add(vehicle_info.stop)
+                    stop_route_map[vehicle_info.stop] = route
 
-    stops_lookup: dict[str, LightStop] = {}
-    if stop_lookup_ids:
-        try:
-            stops_lookup = await light_get_stops(
-                r_client, stop_lookup_ids, tg, stop_route_map
-            )
-        except Exception as exc:
-            logger.warning("Failed to batch-fetch stops", exc_info=exc)
+            if unique_stops:
+                try:
+                    from api.services.predictions import batch_fetch_trip_predictions
 
-    for vehicle_info in validated:
-        vehicle_bearing = None
-        platform_prediction = None
+                    pred_lookup = await batch_fetch_trip_predictions(
+                        session, r_client, list(unique_stops)
+                    )
+                except Exception as exc:
+                    logger.warning("Failed to batch-fetch predictions", exc_info=exc)
 
-        point = Point((vehicle_info.longitude, vehicle_info.latitude))
-        stop = None
-        stop_id = None
-        long = None
-        lat = None
-        stop_point = None
-        route_icon = "rail"
-        stop_eta = None
-        mbta_stop_id = ""
-        parent_stop_id = None
-        if vehicle_info.bearing:
-            vehicle_bearing = vehicle_info.bearing
-        if vehicle_info.route:
-            if vehicle_info.stop:
-                stop = stops_lookup.get(vehicle_info.stop)
-                if stop:
-                    mbta_stop_id = stop.mbta_stop_id
-                    stop_id = stop.stop_id
-                    if stop.parent_stop_id:
-                        parent_stop_id = stop.parent_stop_id
-                    if stop.long is not None and stop.lat is not None:
-                        stop_point = Point((stop.long, stop.lat))
-                        long = stop.long
-                        lat = stop.lat
-                        if not vehicle_bearing:
-                            vehicle_bearing = calculate_bearing(point, stop_point)
-                        if vehicle_info.current_status != "STOPPED_AT":
-                            predicted = (
-                                pred_lookup.get(
-                                    (vehicle_info.trip_id, vehicle_info.stop)
-                                )
-                                if vehicle_info.trip_id
-                                else None
-                            )  # type: ignore[arg-type]
-                            stop_eta = calculate_stop_eta(
-                                Feature(geometry=stop_point),
-                                Feature(geometry=point),
-                                vehicle_info.speed,
-                                predicted_arrival=predicted,
-                            )
+            stops_lookup: dict[str, LightStop] = {}
+            if stop_lookup_ids:
+                try:
+                    stops_lookup = await light_get_stops(
+                        r_client, stop_lookup_ids, tg, stop_route_map
+                    )
+                except Exception as exc:
+                    logger.warning("Failed to batch-fetch stops", exc_info=exc)
 
-            if vehicle_info.route.startswith("7") or vehicle_info.route.isdecimal():
-                route_icon = "bus"
-            if vehicle_info.route.startswith("74") or vehicle_info.route.startswith(
-                "75"
-            ):
-                vehicle_info.route = silver_line_lookup(vehicle_info.route)
-            feature = Feature(
-                geometry=vehicle_display_point(
-                    point,
-                    long,
-                    lat,
-                    vehicle_info.current_status,
-                    vehicle_info.id,
-                ),
-                id=vehicle_info.id,
-                properties={
-                    "route": vehicle_info.route,
-                    "status": vehicle_info.current_status,
-                    "marker-size": "medium",
-                    "marker-symbol": route_icon,
-                    "marker-color": lookup_vehicle_color(vehicle_info),
-                    "speed": round(vehicle_info.speed)
-                    if vehicle_info.speed is not None
-                    else None,
-                    "direction": vehicle_info.direction_id,
-                    "id": vehicle_info.id,
-                    "stop": short_stop_name(stop_id),
-                    "stop_eta": stop_eta,
-                    "stop_id": mbta_stop_id,
-                    "parent_stop_id": parent_stop_id,
-                    "stop-coordinates": (
-                        long,
-                        lat,
-                    ),
-                    "bearing": vehicle_bearing,
-                    "occupancy_status": vehicle_info.occupancy_status,
-                    "approximate_speed": vehicle_info.approximate_speed,
-                    "update_time": vehicle_info.update_time.strftime(
-                        "%Y-%m-%dT%H:%M:%S.000Z"
-                    ),
-                    "carriages": vehicle_info.carriages,
-                    "platform_prediction": platform_prediction,
-                    "headsign": vehicle_info.headsign,
-                    "short_name": vehicle_info.short_name,
-                    "source": vehicle_info.source,
-                },
-            )
-            features[vehicle_info.id] = feature
+            for vehicle_info in validated:
+                vehicle_bearing = None
+                platform_prediction = None
 
-    add_current_span_attributes(
-        {
-            "vehicles.count": len(features),
-            "vehicles.filtered_count": filtered_count,
-            "vehicles.validation_errors": validation_errors,
-        }
-    )
-    await write_cache(r_client, cache_key, orjson.dumps(features).decode("utf-8"), DAY)
+                point = Point((vehicle_info.longitude, vehicle_info.latitude))
+                stop = None
+                stop_id = None
+                long = None
+                lat = None
+                stop_point = None
+                route_icon = "rail"
+                stop_eta = None
+                mbta_stop_id = ""
+                parent_stop_id = None
+                if vehicle_info.bearing:
+                    vehicle_bearing = vehicle_info.bearing
+                if vehicle_info.route:
+                    if vehicle_info.stop:
+                        stop = stops_lookup.get(vehicle_info.stop)
+                        if stop:
+                            mbta_stop_id = stop.mbta_stop_id
+                            stop_id = stop.stop_id
+                            if stop.parent_stop_id:
+                                parent_stop_id = stop.parent_stop_id
+                            if stop.long is not None and stop.lat is not None:
+                                stop_point = Point((stop.long, stop.lat))
+                                long = stop.long
+                                lat = stop.lat
+                                if not vehicle_bearing:
+                                    vehicle_bearing = calculate_bearing(
+                                        point, stop_point
+                                    )
+                                if vehicle_info.current_status != "STOPPED_AT":
+                                    predicted = (
+                                        pred_lookup.get(
+                                            (vehicle_info.trip_id, vehicle_info.stop)
+                                        )
+                                        if vehicle_info.trip_id
+                                        else None
+                                    )  # type: ignore[arg-type]
+                                    stop_eta = calculate_stop_eta(
+                                        Feature(geometry=stop_point),
+                                        Feature(geometry=point),
+                                        vehicle_info.speed,
+                                        predicted_arrival=predicted,
+                                    )
 
-    return features
+                    if (
+                        vehicle_info.route.startswith("7")
+                        or vehicle_info.route.isdecimal()
+                    ):
+                        route_icon = "bus"
+                    if vehicle_info.route.startswith(
+                        "74"
+                    ) or vehicle_info.route.startswith("75"):
+                        vehicle_info.route = silver_line_lookup(vehicle_info.route)
+                    feature = Feature(
+                        geometry=vehicle_display_point(
+                            point,
+                            long,
+                            lat,
+                            vehicle_info.current_status,
+                            vehicle_info.id,
+                        ),
+                        id=vehicle_info.id,
+                        properties={
+                            "route": vehicle_info.route,
+                            "status": vehicle_info.current_status,
+                            "marker-size": "medium",
+                            "marker-symbol": route_icon,
+                            "marker-color": lookup_vehicle_color(vehicle_info),
+                            "speed": round(vehicle_info.speed)
+                            if vehicle_info.speed is not None
+                            else None,
+                            "direction": vehicle_info.direction_id,
+                            "id": vehicle_info.id,
+                            "stop": short_stop_name(stop_id),
+                            "stop_eta": stop_eta,
+                            "stop_id": mbta_stop_id,
+                            "parent_stop_id": parent_stop_id,
+                            "stop-coordinates": (
+                                long,
+                                lat,
+                            ),
+                            "bearing": vehicle_bearing,
+                            "occupancy_status": vehicle_info.occupancy_status,
+                            "approximate_speed": vehicle_info.approximate_speed,
+                            "update_time": vehicle_info.update_time.strftime(
+                                "%Y-%m-%dT%H:%M:%S.000Z"
+                            ),
+                            "carriages": vehicle_info.carriages,
+                            "platform_prediction": platform_prediction,
+                            "headsign": vehicle_info.headsign,
+                            "short_name": vehicle_info.short_name,
+                            "source": vehicle_info.source,
+                        },
+                    )
+                    features[vehicle_info.id] = feature
+
+        add_current_span_attributes(
+            {
+                "vehicles.count": len(features),
+                "vehicles.filtered_count": filtered_count,
+                "vehicles.validation_errors": validation_errors,
+            }
+        )
+        tg.start_soon(
+            write_cache,
+            r_client,
+            cache_key,
+            orjson.dumps(features).decode("utf-8"),
+            DAY,
+        )
+
+        return features
+    except Exception:
+        logger.error("Error getting vehicle features", exc_info=True)
+        return {}
 
 
 def _optimize_line_geometry(

@@ -33,6 +33,10 @@ mbta_api_rate_limit_hits = Counter(
     ["endpoint"],
 )
 
+mbta_gtfs_vehicle_event = Counter(
+    "imt_mbta_gtfs_vehicle_event", "Vehicle events from MBTA GTFS", ["route_id"]
+)
+
 
 def mbta_api_endpoint_label(url: str) -> str:
     path = urlsplit(url).path.strip("/")

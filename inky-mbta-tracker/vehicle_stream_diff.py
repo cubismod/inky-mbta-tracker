@@ -1,4 +1,5 @@
 import logging
+from random import randint
 
 from anyio import sleep
 from anyio.abc import TaskGroup
@@ -13,7 +14,7 @@ from redis.asyncio import Redis
 from redis.exceptions import RedisError
 from shared_types.shared_types import DiffApiResponse
 
-SLEEP_DURATION = 2
+SLEEP_DURATION = 3
 
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
@@ -165,10 +166,9 @@ class VehicleStreamDiff:
                     )
 
                 add_current_span_attributes({"vehicle_stream.iteration_complete": True})
-
-            await sleep(SLEEP_DURATION)
             if features:
                 self._save_snapshot(features)
+            await sleep(randint(1, 3))
 
 
 async def run_vehicle_stream_diff(
