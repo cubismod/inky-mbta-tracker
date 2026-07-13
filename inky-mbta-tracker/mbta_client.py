@@ -131,10 +131,18 @@ class MBTAApi:
             or route_substring_filter
         ):
             logger.debug(
-                f"init MBTAApi {self.watcher_type} with {stop_id=} {route=} {direction_filter=} {expiration_time=} {schedule_only=} {route_substring_filter=}"
+                "init MBTAApi %s with stop_id=%r route=%r direction_filter=%r "
+                "expiration_time=%r schedule_only=%r route_substring_filter=%r",
+                self.watcher_type,
+                stop_id,
+                route,
+                direction_filter,
+                expiration_time,
+                schedule_only,
+                route_substring_filter,
             )
         else:
-            logger.debug(f"init MBTAApi {self.watcher_type}")
+            logger.debug("init MBTAApi %s", self.watcher_type)
 
         self.schedule_only = schedule_only
 
@@ -147,15 +155,15 @@ class MBTAApi:
         exc_value: Optional[BaseException],
         traceback: Optional[TracebackType],
     ):
-        logging.debug(f"Closing MBTAApi {self.watcher_type} {exc_type}")
+        logging.debug("Closing MBTAApi %s %s", self.watcher_type, exc_type)
         # Suppress noisy traces on cooperative cancellation
         if isinstance(exc_value, CancelledError):
-            logger.info(f"{self.watcher_type} cancelled; exiting cleanly")
+            logger.info("%s cancelled; exiting cleanly", self.watcher_type)
             return True
         if exc_value:
             # Log unexpected errors with stack for investigation
             logger.error(
-                f"Error in MBTAApi {exc_type}\n{traceback}", exc_info=exc_value
+                "Error in MBTAApi %s\n%s", exc_type, traceback, exc_info=exc_value
             )
             return True
         return False
@@ -293,7 +301,7 @@ class MBTAApi:
                         if not failtime:
                             failtime = now + timedelta(seconds=hc_fail_threshold)
                 except (ValueError, TypeError) as err:
-                    logger.debug(f"Error reading alerts heartbeat: {err}")
+                    logger.debug("Error reading alerts heartbeat: %s", err)
                     if not failtime:
                         failtime = now + timedelta(seconds=hc_fail_threshold)
         if self.route:
@@ -315,12 +323,16 @@ class MBTAApi:
                 and datetime.now(UTC) >= max_runtime_expiration
             ):
                 logger.info(
-                    f"Refreshing vehicle watcher (route={self.route}) due to scheduled restart."
+                    "Refreshing vehicle watcher (route=%s) due to scheduled restart.",
+                    self.route,
                 )
                 raise WatcherRefreshRequested
             if failtime and now >= failtime:
                 logger.info(
-                    f"Refreshing {self.watcher_type} watcher (route={self.route}, stop={self.stop_id}) due to health check failure/scheduled restart."
+                    "Refreshing %s watcher (route=%s, stop=%s) due to health check failure/scheduled restart.",
+                    self.watcher_type,
+                    self.route,
+                    self.stop_id,
                 )
                 raise WatcherRefreshRequested
             if self.get_service_status():
@@ -340,7 +352,7 @@ class MBTAApi:
                         if not failtime:
                             failtime = now + timedelta(seconds=hc_fail_threshold)
                 except (ValueError, TypeError) as err:
-                    logger.debug(f"Error reading heartbeat: {err}")
+                    logger.debug("Error reading heartbeat: %s", err)
                     if not failtime:
                         failtime = now + timedelta(seconds=hc_fail_threshold)
 
@@ -488,7 +500,7 @@ class MBTAApi:
                 await self.r_client.hincrby(ALERTS_SET_KEY, self.route)  # type: ignore[misc]
             await process_alert_event(alert, self.r_client, config, item_tg)
             await self._save_alert_memberships(alert)
-            logger.debug(f"Alert: {self.route} | {alert.attributes.header}")
+            logger.debug("Alert: %s | %s", self.route, alert.attributes.header)
 
     async def _process_alert_remove(self, type_and_id: TypeAndID) -> None:
         try:
@@ -528,7 +540,7 @@ class MBTAApi:
         if data != "[]":
             try:
                 if await self._skip_live_negative_cache(data, event_type):
-                    logger.debug(f"Skipping live negative cache for data: {data}")
+                    logger.debug("Skipping live negative cache for data: %s", data)
                     return
                 # Handle Alerts stream separately
                 if self.watcher_type == TaskType.ALERTS:

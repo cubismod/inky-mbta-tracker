@@ -97,13 +97,31 @@ class Tracker:
     @staticmethod
     def log_prediction(event: ScheduleEvent) -> None:
         logger.debug(
-            f"action={event.action} time={event.time.astimezone(ZoneInfo('America/New_York')).strftime('%c')} route_id={event.route_id} route_type={event.route_type} headsign={event.headsign} stop={event.stop} id={event.id}, transit_time_min={event.transit_time_min}, alerting={event.alerting}, bikes_allowed={event.bikes_allowed}"
+            "action=%s time=%s route_id=%s route_type=%s headsign=%s stop=%s id=%s, "
+            "transit_time_min=%s, alerting=%s, bikes_allowed=%s",
+            event.action,
+            event.time.astimezone(ZoneInfo("America/New_York")).strftime("%c"),
+            event.route_id,
+            event.route_type,
+            event.headsign,
+            event.stop,
+            event.id,
+            event.transit_time_min,
+            event.alerting,
+            event.bikes_allowed,
         )
 
     @staticmethod
     def log_vehicle(event: VehicleRedisSchema) -> None:
         logger.debug(
-            f"action={event.action} route={event.route} vehicle_id={event.id} lat={event.latitude} long={event.longitude} status={event.current_status} speed={event.speed}"
+            "action=%s route=%s vehicle_id=%s lat=%s long=%s status=%s speed=%s",
+            event.action,
+            event.route,
+            event.id,
+            event.latitude,
+            event.longitude,
+            event.current_status,
+            event.speed,
         )
 
     async def write_event_heartbeat(self, route_id: str) -> None:
@@ -177,8 +195,11 @@ class Tracker:
             ).total_seconds()
             if duration_seconds <= 0:
                 logger.debug(
-                    f"Skipping speed calculation for {event.route} vehicle {event.id}: "
-                    f"non-positive duration {duration_seconds} seconds"
+                    "Skipping speed calculation for %s vehicle %s: "
+                    "non-positive duration %s seconds",
+                    event.route,
+                    event.id,
+                    duration_seconds,
                 )
                 return None, False
 
@@ -213,7 +234,10 @@ class Tracker:
 
             if not self.is_speed_reasonable(speed, event.route):
                 logger.debug(
-                    f"Rejecting speed calculation for {event.route} vehicle {event.id}: speed {speed} mph is unreasonable"
+                    "Rejecting speed calculation for %s vehicle %s: speed %s mph is unreasonable",
+                    event.route,
+                    event.id,
+                    speed,
                 )
                 # throw out insane predictions
                 if last_event_validated.speed > 0:
@@ -257,7 +281,8 @@ class Tracker:
                             pipeline = self.redis.pipeline()
                         except ResponseError as err:
                             logger.error(
-                                f"Unable to execute cleanup batch {i // batch_size}",
+                                "Unable to execute cleanup batch %s",
+                                i // batch_size,
                                 exc_info=err,
                             )
                             break
@@ -278,7 +303,10 @@ class Tracker:
                     dec_ee = existing_event.decode("utf-8")
                     if dec_ee != event.id and dec_ee.startswith("schedule"):
                         logger.info(
-                            f"Removing existing schedule entry with id {dec_ee} as it has been replaced with {event.id}, trip_id={event.trip_id}"
+                            "Removing existing schedule entry with id %s as it has been replaced with %s, trip_id=%s",
+                            dec_ee,
+                            event.id,
+                            event.trip_id,
                         )
                         await self.rm(dummy_schedule_event(existing_event), pipeline)
                     if dec_ee.startswith("prediction") and event.id.startswith(
@@ -311,7 +339,9 @@ class Tracker:
             # Generate vehicle tracking transaction ID for individual vehicle updates
             vehicle_track_txn_id = set_vehicle_track_transaction_id(event.id)
             logger.debug(
-                f"Processing vehicle {event.id} with transaction ID: {vehicle_track_txn_id}"
+                "Processing vehicle %s with transaction ID: %s",
+                event.id,
+                vehicle_track_txn_id,
             )
 
             redis_key = f"vehicle:{event.id}"
