@@ -40,8 +40,8 @@ async def test_get_cache_calls_redis_each_time() -> None:
     mock_redis = AsyncMock()
     mock_redis.get.return_value = b"cached"
 
-    first = await get_cache(mock_redis, "ttl-key")
-    second = await get_cache(mock_redis, "ttl-key")
+    first = await get_cache(mock_redis, "key-a")
+    second = await get_cache(mock_redis, "key-b")
 
     assert first == "cached"
     assert second == "cached"

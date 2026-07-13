@@ -275,9 +275,11 @@ def test_vehicle_display_point_offsets_vehicles_at_same_stop_differently() -> No
 
 
 @pytest.mark.anyio("asyncio")
+@patch("geojson_utils.RedisLock")
 @patch("geojson_utils.light_get_stops")
 async def test_get_vehicle_features_places_stopped_vehicle_at_stop_coordinates(
     mock_light_get_stops: AsyncMock,
+    mock_redis_lock: MagicMock,
 ) -> None:
     vehicle = VehicleRedisSchema(
         action="add",
@@ -326,9 +328,11 @@ async def test_get_vehicle_features_places_stopped_vehicle_at_stop_coordinates(
 
 
 @pytest.mark.anyio("asyncio")
+@patch("geojson_utils.RedisLock")
 @patch("geojson_utils.light_get_stops")
 async def test_get_vehicle_features_keeps_in_transit_vehicle_coordinates(
     mock_light_get_stops: AsyncMock,
+    mock_redis_lock: MagicMock,
 ) -> None:
     vehicle = VehicleRedisSchema(
         action="add",
@@ -372,9 +376,11 @@ async def test_get_vehicle_features_keeps_in_transit_vehicle_coordinates(
 
 
 @pytest.mark.anyio("asyncio")
+@patch("geojson_utils.RedisLock")
 @patch("geojson_utils.light_get_stops")
 async def test_get_vehicle_features_missing_stop_omits_stop_coordinates(
     mock_light_get_stops: AsyncMock,
+    mock_redis_lock: MagicMock,
 ) -> None:
     vehicle = VehicleRedisSchema(
         action="add",
@@ -413,9 +419,11 @@ async def test_get_vehicle_features_missing_stop_omits_stop_coordinates(
 
 
 @pytest.mark.anyio("asyncio")
+@patch("geojson_utils.RedisLock")
 @patch("geojson_utils.light_get_stops")
 async def test_get_vehicle_features_surfaces_commuter_rail_short_name(
     mock_light_get_stops: AsyncMock,
+    mock_redis_lock: MagicMock,
 ) -> None:
     vehicle = VehicleRedisSchema(
         action="add",
@@ -451,9 +459,11 @@ async def test_get_vehicle_features_surfaces_commuter_rail_short_name(
 
 
 @pytest.mark.anyio("asyncio")
+@patch("geojson_utils.RedisLock")
 @patch("geojson_utils.light_get_stops")
 async def test_get_vehicle_features_default_computes_on_miss(
     mock_light_get_stops: AsyncMock,
+    mock_redis_lock: MagicMock,
 ) -> None:
     vehicle = VehicleRedisSchema(
         action="add",
