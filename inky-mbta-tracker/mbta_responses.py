@@ -66,6 +66,7 @@ class RouteAttributes(BaseModel):
     direction_destinations: Optional[list[str]] = None
     fare_class: str
     direction_names: Optional[list[str]] = None
+    listed_route: Optional[bool] = None
     sort_order: int
     short_name: str
     long_name: str
@@ -168,9 +169,9 @@ class StopAttributes(BaseModel):
     address: Optional[str] = None
     at_street: Optional[str] = None
     description: Optional[str] = None
-    latitude: float
+    latitude: Optional[float] = None
     location_type: int
-    longitude: float
+    longitude: Optional[float] = None
     municipality: Optional[str] = None
     name: str
     on_street: Optional[str] = None
@@ -190,6 +191,11 @@ class StopResource(BaseModel):
 
 class Stop(BaseModel):
     data: StopResource
+
+
+class Stops(BaseModel):
+    data: list[StopResource]
+    included: Optional[list[StopResource]] = None
 
 
 class PredictionRelationships(BaseModel):

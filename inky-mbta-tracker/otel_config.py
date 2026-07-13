@@ -65,7 +65,7 @@ def get_otel_config() -> dict[str, str]:
         ),
         "bsp_schedule_delay": os.getenv("IMT_OTEL_BSP_SCHEDULE_DELAY", "5000"),
         "bsp_export_timeout": os.getenv("IMT_OTEL_BSP_EXPORT_TIMEOUT", "30000"),
-        "instrument_redis": os.getenv("IMT_OTEL_INSTRUMENT_REDIS", "true"),
+        "instrument_redis": os.getenv("IMT_OTEL_INSTRUMENT_REDIS", "false"),
         "instrument_aiohttp": os.getenv("IMT_OTEL_INSTRUMENT_AIOHTTP", "true"),
         "instrument_fastapi": os.getenv("IMT_OTEL_INSTRUMENT_FASTAPI", "true"),
         "include_vehicle_ids": os.getenv("IMT_OTEL_INCLUDE_VEHICLE_IDS", "false"),

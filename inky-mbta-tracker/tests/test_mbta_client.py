@@ -1,6 +1,7 @@
+import json
 from asyncio import CancelledError
 from datetime import UTC
-from typing import Optional, cast
+from typing import Any, Optional, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import anyio
@@ -13,6 +14,7 @@ from mbta_client import (
     silver_line_lookup,
 )
 from mbta_client_extended import (
+    fetch_route_stops,
     light_get_stop,
     light_get_stops,
     watch_mbta_server_side_events,
@@ -20,12 +22,18 @@ from mbta_client_extended import (
 from mbta_responses import (
     CarriageStatus,
     PredictionAttributes,
+    TripAttributes,
+    TripResource,
+    Trips,
+    TypeAndID,
+    TypeAndIDinData,
     Vehicle,
     VehicleAttributes,
+    VehicleRelationships,
     VehicleResource,
 )
 from redis.asyncio.client import Redis as RedisClient
-from shared_types.shared_types import LightStop, TaskType
+from shared_types.shared_types import LightStop, TaskType, VehicleRedisSchema
 
 
 @pytest.mark.anyio("asyncio")
@@ -412,33 +420,40 @@ class TestLightGetStop:
         mock_get_cache.assert_called_once_with(mock_redis, "stop:place-davis:light")
         mock_write_cache.assert_not_called()
 
+    @patch("mbta_client_extended.aiohttp.ClientSession")
+    @patch("mbta_client_extended.rate_limited_get")
     @patch("mbta_client.get_cache")
-    @patch("mbta_client.MBTAApi")
     @pytest.mark.anyio("asyncio")
     async def test_light_get_stop_not_cached(
-        self, mock_mbta_api: MagicMock, mock_get_cache: MagicMock
+        self,
+        mock_get_cache: MagicMock,
+        mock_rate_limited_get: MagicMock,
+        mock_client_session: MagicMock,
     ) -> None:
         mock_redis = AsyncMock()
+        mock_tg = MagicMock()
 
         mock_get_cache.return_value = None
 
-        mock_watcher = AsyncMock()
-        mock_mbta_api.return_value.__aenter__.return_value = mock_watcher
-        mock_watcher.get_stop.return_value = None
+        mock_session = AsyncMock()
+        mock_client_session.return_value = mock_session
 
-        async with anyio.create_task_group() as tg:
-            result = await light_get_stop(mock_redis, "place-davis", tg)
-            tg.cancel_scope.cancel()
+        mock_response = AsyncMock()
+        mock_response.status = 404
+        mock_rate_limited_get.return_value.__aenter__.return_value = mock_response
+
+        result = await light_get_stop(mock_redis, "place-davis", mock_tg)
 
         assert result is None
         mock_get_cache.assert_called_once()
+        mock_session.close.assert_awaited_once()
 
 
 @pytest.mark.anyio("asyncio")
 class TestLightGetStops:
-    @patch("mbta_client_extended.fetch_light_stop", new_callable=AsyncMock)
+    @patch("mbta_client_extended.fetch_route_stops", new_callable=AsyncMock)
     async def test_light_get_stops_batches_pipeline_and_backfills_misses(
-        self, mock_fetch_light_stop: AsyncMock
+        self, mock_fetch_route_stops: AsyncMock
     ) -> None:
         hit = LightStop(
             stop_id="Davis",
@@ -446,6 +461,13 @@ class TestLightGetStops:
             parent_stop_id=None,
             long=-71.1218,
             lat=42.3967,
+        )
+        miss = LightStop(
+            stop_id="Cold",
+            mbta_stop_id="place-cold",
+            parent_stop_id=None,
+            long=-71.13,
+            lat=42.40,
         )
         redis = MagicMock()
         pipeline = MagicMock()
@@ -466,20 +488,30 @@ class TestLightGetStops:
         pipeline.execute = AsyncMock(side_effect=fake_execute)
         redis.pipeline.return_value = pipeline
 
+        mock_fetch_route_stops.return_value = {
+            "place-cold": miss,
+        }
+
         async with anyio.create_task_group() as tg:
-            result = await light_get_stops(redis, {"place-davis", "place-cold"}, tg)
+            result = await light_get_stops(
+                redis,
+                {"place-davis", "place-cold"},
+                tg,
+                routes={"place-davis": "Red", "place-cold": "Red"},
+            )
             tg.cancel_scope.cancel()
 
-        assert set(result) == {"place-davis"}
+        assert set(result) == {"place-davis", "place-cold"}
         assert result["place-davis"].stop_id == "Davis"
+        assert result["place-cold"].stop_id == "Cold"
         assert pipeline.get.await_count == 2
         assert pipeline.execute.await_count == 1
-        mock_fetch_light_stop.assert_awaited_once()
-        assert mock_fetch_light_stop.call_args.args[1] == "place-cold"
+        mock_fetch_route_stops.assert_awaited_once()
+        assert mock_fetch_route_stops.call_args.args[1] == "Red"
 
-    @patch("mbta_client_extended.fetch_light_stop", new_callable=AsyncMock)
+    @patch("mbta_client_extended.fetch_route_stops", new_callable=AsyncMock)
     async def test_light_get_stops_empty_returns_empty_dict(
-        self, mock_fetch_light_stop: AsyncMock
+        self, mock_fetch_route_stops: AsyncMock
     ) -> None:
         redis = MagicMock()
         async with anyio.create_task_group() as tg:
@@ -488,7 +520,337 @@ class TestLightGetStops:
 
         assert result == {}
         redis.pipeline.assert_not_called()
-        mock_fetch_light_stop.assert_not_awaited()
+        mock_fetch_route_stops.assert_not_awaited()
+
+
+@pytest.mark.anyio("asyncio")
+class TestFetchRouteStops:
+    @patch("mbta_client_extended.get_cache", new_callable=AsyncMock)
+    @patch("mbta_client_extended.write_cache", new_callable=AsyncMock)
+    @patch("mbta_client_extended.rate_limited_get")
+    async def test_fetch_route_stops_caches_all_stops(
+        self,
+        mock_rate_limited_get: MagicMock,
+        mock_write_cache: AsyncMock,
+        mock_get_cache: AsyncMock,
+    ) -> None:
+        mock_get_cache.return_value = None
+        stops_response = json.dumps(
+            {
+                "data": [
+                    {
+                        "type": "stop",
+                        "id": "place-davis",
+                        "attributes": {
+                            "name": "Davis",
+                            "description": "Davis",
+                            "latitude": 42.3967,
+                            "longitude": -71.1218,
+                            "location_type": 1,
+                            "wheelchair_boarding": 1,
+                        },
+                        "relationships": {"parent_station": {"data": None}},
+                    },
+                    {
+                        "type": "stop",
+                        "id": "place-porter",
+                        "attributes": {
+                            "name": "Porter",
+                            "description": "Porter",
+                            "latitude": 42.3884,
+                            "longitude": -71.1193,
+                            "location_type": 1,
+                            "wheelchair_boarding": 1,
+                        },
+                        "relationships": {"parent_station": {"data": None}},
+                    },
+                ]
+            }
+        )
+        mock_response = AsyncMock()
+        mock_response.status = 200
+        mock_response.text = AsyncMock(return_value=stops_response)
+
+        mock_ctx = AsyncMock()
+        mock_ctx.__aenter__ = AsyncMock(return_value=mock_response)
+        mock_ctx.__aexit__ = AsyncMock(return_value=False)
+        mock_rate_limited_get.return_value = mock_ctx
+
+        mock_redis = AsyncMock()
+
+        result = await fetch_route_stops(mock_redis, "Red")
+
+        assert len(result) == 2
+        assert "place-davis" in result
+        assert "place-porter" in result
+        assert result["place-davis"].stop_id == "Davis"
+        assert result["place-davis"].lat == 42.3967
+        assert result["place-davis"].long == -71.1218
+        assert result["place-davis"].mbta_stop_id == "place-davis"
+        assert result["place-porter"].stop_id == "Porter"
+        assert mock_write_cache.await_count >= 3
+
+    @patch("mbta_client_extended.get_cache", new_callable=AsyncMock)
+    @patch("mbta_client_extended.write_cache", new_callable=AsyncMock)
+    @patch("mbta_client_extended.rate_limited_get")
+    async def test_fetch_route_stops_caches_child_platform_stops(
+        self,
+        mock_rate_limited_get: MagicMock,
+        mock_write_cache: AsyncMock,
+        mock_get_cache: AsyncMock,
+    ) -> None:
+        mock_get_cache.return_value = None
+        stops_response = json.dumps(
+            {
+                "data": [
+                    {
+                        "type": "stop",
+                        "id": "place-alfcl",
+                        "attributes": {
+                            "name": "Alewife",
+                            "description": None,
+                            "latitude": 42.39583,
+                            "longitude": -71.141287,
+                            "location_type": 1,
+                            "wheelchair_boarding": 1,
+                        },
+                        "relationships": {"parent_station": {"data": None}},
+                    }
+                ],
+                "included": [
+                    {
+                        "type": "stop",
+                        "id": "70061",
+                        "attributes": {
+                            "name": "Alewife",
+                            "description": "Alewife - Red Line",
+                            "latitude": 42.396148,
+                            "longitude": -71.140698,
+                            "location_type": 0,
+                            "wheelchair_boarding": 1,
+                        },
+                        "relationships": {
+                            "parent_station": {
+                                "data": {"type": "stop", "id": "place-alfcl"}
+                            }
+                        },
+                    },
+                    {
+                        "type": "stop",
+                        "id": "place-alfcl-entrance",
+                        "attributes": {
+                            "name": "Alewife Entrance",
+                            "description": None,
+                            "latitude": 42.396,
+                            "longitude": -71.141,
+                            "location_type": 2,
+                            "wheelchair_boarding": 0,
+                        },
+                        "relationships": {
+                            "parent_station": {
+                                "data": {"type": "stop", "id": "place-alfcl"}
+                            }
+                        },
+                    },
+                ],
+            }
+        )
+        mock_response = AsyncMock()
+        mock_response.status = 200
+        mock_response.text = AsyncMock(return_value=stops_response)
+
+        mock_ctx = AsyncMock()
+        mock_ctx.__aenter__ = AsyncMock(return_value=mock_response)
+        mock_ctx.__aexit__ = AsyncMock(return_value=False)
+        mock_rate_limited_get.return_value = mock_ctx
+
+        mock_redis = AsyncMock()
+
+        result = await fetch_route_stops(mock_redis, "Red")
+
+        assert set(result) == {"place-alfcl", "70061"}
+        assert result["70061"].stop_id == "Alewife - Red Line"
+        assert result["70061"].mbta_stop_id == "70061"
+        assert result["70061"].parent_stop_id == "place-alfcl"
+        assert result["70061"].lat == 42.396148
+        assert result["70061"].long == -71.140698
+        cached_ids = [
+            call.args[1]
+            for call in mock_write_cache.call_args_list
+            if call.args[1].startswith("stop:")
+        ]
+        assert "stop:70061:light" in cached_ids
+        assert "stop:place-alfcl:light" in cached_ids
+        assert "stop:place-alfcl-entrance:light" not in cached_ids
+
+    @patch("mbta_client_extended.get_cache", new_callable=AsyncMock)
+    async def test_fetch_route_stops_skips_when_already_fetched(
+        self,
+        mock_get_cache: AsyncMock,
+    ) -> None:
+        mock_get_cache.return_value = "1"
+        mock_redis = AsyncMock()
+
+        result = await fetch_route_stops(mock_redis, "Red")
+
+        assert result == {}
+
+
+@pytest.mark.anyio("asyncio")
+class TestQueueEventCommuterRailId:
+    async def _build_cr_vehicle(self) -> VehicleResource:
+        return VehicleResource(
+            id="y1817",
+            type="vehicle",
+            attributes=VehicleAttributes(
+                current_status="IN_TRANSIT_TO",
+                direction_id=0,
+                latitude=42.0,
+                longitude=-71.0,
+                speed=10.0,
+                occupancy_status="FEW_SEATS_AVAILABLE",
+                bearing=180,
+            ),
+            relationships=VehicleRelationships(
+                route=TypeAndIDinData(data=TypeAndID(type="route", id="CR-Worcester")),
+                trip=TypeAndIDinData(
+                    data=TypeAndID(
+                        type="trip",
+                        id="CR-Worcester-CR-Weekday-Jul14-25-Express-503",
+                    )
+                ),
+            ),
+        )
+
+    async def test_cr_vehicle_headsign_uses_trip_id_not_route_fallback(self) -> None:
+        """Regression: vehicles must resolve headsign from the trip (specific
+        terminus, e.g. a Franklin train short-turning at Walpole) rather than
+        the generic route direction destination. Previously queue_event passed
+        trip_id=None to get_headsign even though the trip was already fetched.
+        """
+        trip_id = "CR-Worcester-CR-Weekday-Jul14-25-Express-503"
+        vehicle = VehicleResource(
+            id="y1817",
+            type="vehicle",
+            attributes=VehicleAttributes(
+                current_status="IN_TRANSIT_TO",
+                direction_id=0,
+                latitude=42.0,
+                longitude=-71.0,
+                speed=10.0,
+                occupancy_status="FEW_SEATS_AVAILABLE",
+                bearing=180,
+            ),
+            relationships=VehicleRelationships(
+                route=TypeAndIDinData(data=TypeAndID(type="route", id="CR-Worcester")),
+                trip=TypeAndIDinData(data=TypeAndID(type="trip", id=trip_id)),
+            ),
+        )
+
+        send_stream = MagicMock()
+        sent: list = []
+        send_stream.send = AsyncMock(side_effect=lambda ev: sent.append(ev))
+
+        api = MBTAApi(
+            cast(RedisClient, AsyncMock()),
+            watcher_type=TaskType.VEHICLES,
+        )
+        api.get_trip = AsyncMock(
+            return_value=Trips(
+                data=[
+                    TripResource(
+                        type="trip",
+                        relationships={},
+                        attributes=TripAttributes(
+                            wheelchair_accessible=0,
+                            name="503",
+                            headsign="Worcester",
+                            direction_id=0,
+                        ),
+                    )
+                ]
+            )
+        )
+        api.get_headsign = AsyncMock(return_value="Worcester")
+        api.get_route = AsyncMock(return_value=None)
+
+        await api.queue_event(
+            vehicle,
+            "update",
+            send_stream,
+            cast(Any, MagicMock(closed=False)),
+            cast(Any, MagicMock(start_soon=lambda *_a, **_kw: None)),
+        )
+
+        assert len(sent) == 1
+        event = sent[0]
+        assert isinstance(event, VehicleRedisSchema)
+        assert event.headsign == "Worcester"
+        api.get_headsign.assert_awaited_once()
+        args, _kwargs = api.get_headsign.call_args
+        # positional: session, tg, trip_id, route_id, direction_id
+        assert args[2] == trip_id
+        assert args[3] == "CR-Worcester"
+        assert args[4] == 0
+        # must not have fallen back to the route direction destination
+        api.get_route.assert_not_awaited()
+
+    async def test_non_cr_vehicle_has_no_short_name(self) -> None:
+        vehicle = VehicleResource(
+            id="y1817",
+            type="vehicle",
+            attributes=VehicleAttributes(
+                current_status="IN_TRANSIT_TO",
+                direction_id=0,
+                latitude=42.0,
+                longitude=-71.0,
+                speed=10.0,
+                occupancy_status="FEW_SEATS_AVAILABLE",
+            ),
+            relationships=VehicleRelationships(
+                route=TypeAndIDinData(data=TypeAndID(type="route", id="Red")),
+                trip=TypeAndIDinData(data=TypeAndID(type="trip", id="trip-1")),
+            ),
+        )
+
+        send_stream = MagicMock()
+        sent: list = []
+        send_stream.send = AsyncMock(side_effect=lambda ev: sent.append(ev))
+
+        api = MBTAApi(
+            cast(RedisClient, AsyncMock()),
+            watcher_type=TaskType.VEHICLES,
+        )
+        api.get_trip = AsyncMock(
+            return_value=Trips(
+                data=[
+                    TripResource(
+                        type="trip",
+                        relationships={},
+                        attributes=TripAttributes(
+                            wheelchair_accessible=0,
+                            name="",
+                            headsign="Ashmont/Braintree",
+                            direction_id=0,
+                        ),
+                    )
+                ]
+            )
+        )
+
+        await api.queue_event(
+            vehicle,
+            "update",
+            send_stream,
+            cast(Any, MagicMock(closed=False)),
+            cast(Any, MagicMock(start_soon=lambda *_a, **_kw: None)),
+        )
+
+        assert len(sent) == 1
+        event = sent[0]
+        assert isinstance(event, VehicleRedisSchema)
+        assert event.id == "y1817"
+        assert event.short_name is None
 
 
 if __name__ == "__main__":

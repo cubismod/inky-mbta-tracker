@@ -29,15 +29,11 @@ def _redis_for(vehicles: list[VehicleRedisSchema]) -> Any:
     redis = MagicMock()
     keys = {f"vehicle:{v.id}".encode() for v in vehicles}
     redis.smembers = AsyncMock(return_value=keys)
-    pipeline = MagicMock()
-    pipeline.get = AsyncMock()
-    pipeline.execute = AsyncMock(
+    redis.mget = AsyncMock(
         return_value=[
             (v.model_dump_json().encode() if v is not None else None) for v in vehicles
         ]
     )
-    redis.pipeline.return_value = pipeline
-    redis.srem = AsyncMock()
     return redis
 
 
@@ -113,57 +109,20 @@ async def test_get_vehicle_route_counts_empty_pos_data_returns_zeros() -> None:
 
 
 @pytest.mark.anyio("asyncio")
-async def test_get_vehicle_route_counts_prunes_stale_keys() -> None:
-    payloads = {
-        b"vehicle:stale": None,
-        b"vehicle:live": _vehicle("live", "Red").model_dump_json().encode(),
-    }
-    redis = MagicMock()
-    redis.smembers = AsyncMock(return_value=set(payloads))
-    pipeline = MagicMock()
-    recorded_gets: list[bytes] = []
-
-    async def _record_get(vk: bytes) -> None:
-        recorded_gets.append(vk)
-
-    pipeline.get = AsyncMock(side_effect=_record_get)
-
-    async def _execute() -> list[bytes | None]:
-        return [payloads[vk] for vk in recorded_gets]
-
-    pipeline.execute = AsyncMock(side_effect=_execute)
-    redis.pipeline.return_value = pipeline
-    redis.srem = AsyncMock()
-
-    counts, totals = await get_vehicle_route_counts(
-        cast(Redis, redis), Config(vehicles_by_route=["Red"])
-    )
-
-    redis.srem.assert_awaited_once_with("pos-data", b"vehicle:stale")
-    assert totals.RL == 1
-    assert totals.total == 1
-
-
-@pytest.mark.anyio("asyncio")
 async def test_get_vehicle_route_counts_skips_invalid_payloads() -> None:
     redis = MagicMock()
     redis.smembers = AsyncMock(return_value={b"vehicle:bad", b"vehicle:good"})
-    pipeline = MagicMock()
-    pipeline.get = AsyncMock()
-    pipeline.execute = AsyncMock(
+    redis.mget = AsyncMock(
         return_value=[
             b"not-json",
             _vehicle("good", "Orange").model_dump_json().encode(),
         ]
     )
-    redis.pipeline.return_value = pipeline
-    redis.srem = AsyncMock()
 
     counts, totals = await get_vehicle_route_counts(
         cast(Redis, redis), Config(vehicles_by_route=["Orange"])
     )
 
-    redis.srem.assert_not_awaited()
     assert totals.OL == 1
     assert counts.heavy_rail.OL == 1
 

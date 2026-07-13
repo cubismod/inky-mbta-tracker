@@ -9,10 +9,12 @@ from types import TracebackType
 from typing import Optional
 from zoneinfo import ZoneInfo
 
+import aiohttp
 from aiohttp import ClientSession
 from anyio import create_task_group, sleep
 from anyio.abc import TaskGroup
 from anyio.streams.memory import MemoryObjectSendStream
+from async_lru import alru_cache
 from config import Config
 from consts import (
     ALERTS_SET_KEY,
@@ -32,7 +34,6 @@ from mbta_responses import (
     Facilities,
     PredictionAttributes,
     PredictionResource,
-    Route,
     RouteResource,
     ScheduleAttributes,
     ScheduleResource,
@@ -130,10 +131,18 @@ class MBTAApi:
             or route_substring_filter
         ):
             logger.debug(
-                f"init MBTAApi {self.watcher_type} with {stop_id=} {route=} {direction_filter=} {expiration_time=} {schedule_only=} {route_substring_filter=}"
+                "init MBTAApi %s with stop_id=%r route=%r direction_filter=%r "
+                "expiration_time=%r schedule_only=%r route_substring_filter=%r",
+                self.watcher_type,
+                stop_id,
+                route,
+                direction_filter,
+                expiration_time,
+                schedule_only,
+                route_substring_filter,
             )
         else:
-            logger.debug(f"init MBTAApi {self.watcher_type}")
+            logger.debug("init MBTAApi %s", self.watcher_type)
 
         self.schedule_only = schedule_only
 
@@ -146,15 +155,15 @@ class MBTAApi:
         exc_value: Optional[BaseException],
         traceback: Optional[TracebackType],
     ):
-        logging.debug(f"Closing MBTAApi {self.watcher_type} {exc_type}")
+        logging.debug("Closing MBTAApi %s %s", self.watcher_type, exc_type)
         # Suppress noisy traces on cooperative cancellation
         if isinstance(exc_value, CancelledError):
-            logger.info(f"{self.watcher_type} cancelled; exiting cleanly")
+            logger.info("%s cancelled; exiting cleanly", self.watcher_type)
             return True
         if exc_value:
             # Log unexpected errors with stack for investigation
             logger.error(
-                f"Error in MBTAApi {exc_type}\n{traceback}", exc_info=exc_value
+                "Error in MBTAApi %s\n%s", exc_type, traceback, exc_info=exc_value
             )
             return True
         return False
@@ -292,7 +301,7 @@ class MBTAApi:
                         if not failtime:
                             failtime = now + timedelta(seconds=hc_fail_threshold)
                 except (ValueError, TypeError) as err:
-                    logger.debug(f"Error reading alerts heartbeat: {err}")
+                    logger.debug("Error reading alerts heartbeat: %s", err)
                     if not failtime:
                         failtime = now + timedelta(seconds=hc_fail_threshold)
         if self.route:
@@ -314,12 +323,16 @@ class MBTAApi:
                 and datetime.now(UTC) >= max_runtime_expiration
             ):
                 logger.info(
-                    f"Refreshing vehicle watcher (route={self.route}) due to scheduled restart."
+                    "Refreshing vehicle watcher (route=%s) due to scheduled restart.",
+                    self.route,
                 )
                 raise WatcherRefreshRequested
             if failtime and now >= failtime:
                 logger.info(
-                    f"Refreshing {self.watcher_type} watcher (route={self.route}, stop={self.stop_id}) due to health check failure/scheduled restart."
+                    "Refreshing %s watcher (route=%s, stop=%s) due to health check failure/scheduled restart.",
+                    self.watcher_type,
+                    self.route,
+                    self.stop_id,
                 )
                 raise WatcherRefreshRequested
             if self.get_service_status():
@@ -339,31 +352,53 @@ class MBTAApi:
                         if not failtime:
                             failtime = now + timedelta(seconds=hc_fail_threshold)
                 except (ValueError, TypeError) as err:
-                    logger.debug(f"Error reading heartbeat: {err}")
+                    logger.debug("Error reading heartbeat: %s", err)
                     if not failtime:
                         failtime = now + timedelta(seconds=hc_fail_threshold)
 
+    @alru_cache(maxsize=256)
     async def get_headsign(
-        self, trip_id: str, session: ClientSession, tg: TaskGroup
+        self,
+        session: ClientSession,
+        tg: TaskGroup,
+        trip_id: Optional[str] = None,
+        route_id: Optional[str] = None,
+        direction_id: Optional[int] = None,
     ) -> str:
         hs = ""
-        trip = await self.get_trip(trip_id, session, tg)
-        if trip and len(trip.data) > 0:
-            hs = trip.data[0].attributes.headsign
-            if trip.data[0].attributes.revenue_status == "NON_REVENUE":
-                return f"[NR] ${hs}"
+        if trip_id:
+            trip = await self.get_trip(trip_id, tg, session)
+            if trip and len(trip.data) > 0:
+                hs = trip.data[0].attributes.headsign
+                if trip.data[0].attributes.revenue_status == "NON_REVENUE":
+                    return f"[NR] ${hs}"
+        if hs == "" and route_id and direction_id is not None:
+            route = await self.get_route(route_id, self.r_client, session)
+            if route:
+                hs = (
+                    route.attributes.direction_destinations[direction_id]
+                    if route.attributes.direction_destinations
+                    and len(route.attributes.direction_destinations) > direction_id
+                    else ""
+                )
+        if hs == "":
+            logger.warning(
+                f"Could not determine headsign for trip {trip_id}, route/direction: {route_id}/{direction_id}"
+            )
         return hs
 
-    async def _save_live_negative_cache(self, data: str, event_type: str):
-        ex_time = 5
+    @staticmethod
+    def _live_cache_key(data: str, event_type: str) -> str:
+        return f"{event_type}:{hashlib.sha512(data.encode('utf-8')).hexdigest()}"
+
+    async def _save_live_negative_cache(self, cache_key: str) -> None:
+        ex_time = 15
         if self.watcher_type == TaskType.ALERTS:
             ex_time = HOUR
-        h = f"{event_type}:{hashlib.sha512(data.encode('utf-8')).hexdigest()}"
-        await self.r_client.hsetex(LIVE_NEGATIVE_CACHE_KEY, h, "", ex=ex_time)  # type: ignore[misc]
+        await self.r_client.hsetex(LIVE_NEGATIVE_CACHE_KEY, cache_key, "", ex=ex_time)  # type: ignore[misc]
 
-    async def _skip_live_negative_cache(self, data: str, event_type: str) -> bool:
-        h = f"{event_type}:{hashlib.sha512(data.encode('utf-8')).hexdigest()}"
-        return await self.r_client.hexists(LIVE_NEGATIVE_CACHE_KEY, h)  # type: ignore[misc]
+    async def _skip_live_negative_cache(self, cache_key: str) -> bool:
+        return await self.r_client.hexists(LIVE_NEGATIVE_CACHE_KEY, cache_key)  # type: ignore[misc]
 
     def _parses_prediction_events(self) -> bool:
         return self.watcher_type in (
@@ -466,7 +501,7 @@ class MBTAApi:
                 await self.r_client.hincrby(ALERTS_SET_KEY, self.route)  # type: ignore[misc]
             await process_alert_event(alert, self.r_client, config, item_tg)
             await self._save_alert_memberships(alert)
-            logger.debug(f"Alert: {self.route} | {alert.attributes.header}")
+            logger.debug("Alert: %s | %s", self.route, alert.attributes.header)
 
     async def _process_alert_remove(self, type_and_id: TypeAndID) -> None:
         try:
@@ -505,8 +540,9 @@ class MBTAApi:
         # https://www.mbta.com/developers/v3-api/streaming
         if data != "[]":
             try:
-                if await self._skip_live_negative_cache(data, event_type):
-                    logger.debug(f"Skipping live negative cache for data: {data}")
+                cache_key = self._live_cache_key(data, event_type)
+                if await self._skip_live_negative_cache(cache_key):
+                    logger.debug("Skipping live negative cache for data: %s", data)
                     return
                 # Handle Alerts stream separately
                 if self.watcher_type == TaskType.ALERTS:
@@ -582,7 +618,7 @@ class MBTAApi:
                             tg.start_soon(
                                 self._send_remove_event, type_and_id, send_stream
                             )
-                tg.start_soon(self._save_live_negative_cache, data, event_type)
+                tg.start_soon(self._save_live_negative_cache, cache_key)
             except ValidationError as err:
                 logger.error("Unable to parse schedule", exc_info=err)
             except KeyError as err:
@@ -673,15 +709,19 @@ class MBTAApi:
             ):
                 return
             if schedule_time and schedule_time > datetime.now().astimezone(UTC):
-                await self.save_route(item, session)
                 if (
                     item.relationships.route
                     and item.relationships.route.data
                     and item.relationships.trip.data
+                    and item.attributes.direction_id
                 ):
                     route_id = item.relationships.route.data.id
                     headsign = await self.get_headsign(
-                        item.relationships.trip.data.id, session, tg
+                        session,
+                        tg,
+                        item.relationships.trip.data.id,
+                        item.relationships.route.data.id,
+                        item.attributes.direction_id,
                     )
 
                     if route_id.startswith("Green"):
@@ -690,13 +730,18 @@ class MBTAApi:
                     if route_id.startswith("CR"):
                         line = route_id.split("-")
                         headsign = f"{headsign} - {line[1]} Ln"
-                    route_type = self.routes[route_id].attributes.type
+                    route_data = self.routes.get(route_id)
+                    if route_data is None:
+                        route_data = await self.get_route(route_id, self.r_client, session)
+                    if route_data is None:
+                        return
+                    route_type = route_data.attributes.type
                     alerting = False
                     bikes_allowed = False
                     trip_id = ""
                     if item.relationships.trip.data:
                         trip_id = item.relationships.trip.data.id
-                        trip = await self.get_trip(trip_id, session, tg)
+                        trip = await self.get_trip(trip_id, tg, session)
                         if trip and len(trip.data) > 0:
                             bikes_allowed = self.bikes_allowed(trip.data[0])
                             alerting = await self.get_alerting_state(trip_id, session)
@@ -729,7 +774,7 @@ class MBTAApi:
             if occupancy:
                 occupancy = occupancy_status_human_readable(occupancy)
             route = ""
-            trip_id = item.id
+            vehicle_id = item.id
             trip_info = None
             if (
                 item.relationships
@@ -742,20 +787,12 @@ class MBTAApi:
                 and item.relationships.trip
                 and item.relationships.trip.data
             ):
-                # save the trip name as this is what the T uses to refer to specific trains on commuter rail
+                # CR trains are referred to by the trip's short name; keep it on a
+                # dedicated display field so the storage/dedup key stays the
+                # vehicle id, matching the GTFS-rt VehiclePositions feed.
                 trip_info = await self.get_trip(
-                    item.relationships.trip.data.id, session, tg
+                    item.relationships.trip.data.id, tg, session
                 )
-                if (
-                    trip_info
-                    and "CR" in route
-                    and len(trip_info.data) > 0
-                    and trip_info.data[0].attributes.name != ""
-                ):
-                    trip_id = trip_info.data[0].attributes.name
-            headsign = None
-            if trip_info and len(trip_info.data) > 0:
-                headsign = trip_info.data[0].attributes.headsign
             trip_resource_id: str | None = None
             if (
                 item.relationships
@@ -763,9 +800,20 @@ class MBTAApi:
                 and item.relationships.trip.data
             ):
                 trip_resource_id = item.relationships.trip.data.id
+            short_name: str | None = None
+            if (
+                trip_info
+                and "CR" in route
+                and len(trip_info.data) > 0
+                and trip_info.data[0].attributes.name != ""
+            ):
+                short_name = trip_info.data[0].attributes.name
+            headsign = await self.get_headsign(
+                session, tg, trip_resource_id, route, item.attributes.direction_id
+            )
             event = VehicleRedisSchema(  # type: ignore
                 action=event_type,
-                id=trip_id,
+                id=vehicle_id,
                 current_status=item.attributes.current_status,
                 direction_id=item.attributes.direction_id,
                 latitude=item.attributes.latitude,
@@ -777,6 +825,7 @@ class MBTAApi:
                 occupancy_status=occupancy,
                 headsign=headsign,
                 trip_id=trip_resource_id,
+                short_name=short_name,
             )
             if (
                 item.relationships
@@ -786,7 +835,7 @@ class MBTAApi:
                 event.stop = item.relationships.stop.data.id
             if len(carriage_ids) > 0 and isinstance(event, VehicleRedisSchema):
                 event.carriages = carriage_ids
-            redis_vehicle_id = f"vehicle:{trip_id}"
+            redis_vehicle_id = f"vehicle:{vehicle_id}"
             tg.start_soon(
                 write_cache,
                 self.r_client,
@@ -801,8 +850,9 @@ class MBTAApi:
         before_sleep=before_sleep_log(logger, logging.WARNING, exc_info=True),
         retry=retry_if_not_exception_type(CancelledError),
     )
+    @alru_cache(maxsize=256)
     async def get_trip(
-        self, trip_id: str, session: ClientSession, tg: TaskGroup
+        self, trip_id: str, tg: TaskGroup, session: ClientSession
     ) -> Optional[Trips]:
         tracer = get_tracer(__name__) if is_otel_enabled() else None
         if tracer and should_trace_operation("high_volume"):
@@ -817,11 +867,6 @@ class MBTAApi:
     async def _get_trip_impl(
         self, trip_id: str, session: ClientSession, tg: TaskGroup, span: Optional[Span]
     ) -> Optional[Trips]:
-        if session.closed:
-            logger.debug("get_trip called with a closed session; skipping fetch")
-            if span:
-                span.set_attribute("session.closed", True)
-            return None
         key = f"trip:{trip_id}:full"
         trip_negative_cache = f"trip:{trip_id}:negative"
         cached = await get_cache(self.r_client, key)
@@ -841,10 +886,12 @@ class MBTAApi:
             else:
                 if span:
                     add_span_attributes(span, {"cache.hit": False})
+                params = [("api_key", MBTA_AUTH), ("filter[id]", trip_id)]
                 async with rate_limited_get(
                     session,
                     self.r_client,
-                    f"trips?filter[id]={trip_id}&api_key={MBTA_AUTH}",
+                    "trips",
+                    params=params,
                 ) as response:
                     add_span_attributes(
                         span,
@@ -855,8 +902,10 @@ class MBTAApi:
                     )
                     if response.status == 429:
                         raise RateLimitExceeded()
-                    if response.status == 403:
-                        logger.warning(f"Received 403 for trip {trip_id}")
+                    if response.status != 200:
+                        logger.warning(
+                            f"Unexpected status code: {response.status} on trip {id}"
+                        )
                         await write_cache(
                             self.r_client, trip_negative_cache, "negative", WEEK
                         )
@@ -876,37 +925,54 @@ class MBTAApi:
             add_span_attributes(span, {"error.type": "validation_error"})
         return None
 
-    # saves a route to the dict of routes rather than redis
     @retry(
         wait=wait_exponential_jitter(initial=5, jitter=20, max=60),
         before_sleep=before_sleep_log(logger, logging.WARNING, exc_info=True),
         retry=retry_if_not_exception_type(CancelledError),
     )
-    async def save_route(
-        self, prediction: PredictionResource | ScheduleResource, session: ClientSession
-    ) -> None:
-        if session.closed:
-            logger.debug("save_route called with a closed session; skipping fetch")
-            return
-        if prediction.relationships.route and prediction.relationships.route.data:
-            route_id = prediction.relationships.route.data.id
-            if route_id not in self.routes:
-                async with rate_limited_get(
-                    session,
-                    self.r_client,
-                    f"routes?filter[id]={route_id}&api_key={MBTA_AUTH}",
-                ) as response:
-                    try:
-                        if response.status == 429:
-                            raise RateLimitExceeded()
-                        body = await response.text()
-                        mbta_api_requests.labels("routes").inc()
-                        route = Route.model_validate_json(body, strict=False)
-                        for rd in route.data:
-                            logger.info(f"route {rd.id} saved")
-                            self.routes[route_id] = rd
-                    except ValidationError as err:
-                        logger.error("Unable to parse route", exc_info=err)
+    @alru_cache(maxsize=128)
+    async def get_route(
+        self, id: str, r_client: Redis, session: aiohttp.ClientSession
+    ) -> Optional[RouteResource]:
+        key = f"route:{id}"
+        negative_key = f"route:{id}:negative"
+        cached_negative = await get_cache(r_client, negative_key)
+        if cached_negative:
+            return None
+
+        cached = await r_client.get(key)
+        if cached:
+            try:
+                self.routes[id] = RouteResource.model_validate_json(
+                    cached, strict=False
+                )
+                return self.routes[id]
+            except ValidationError:
+                logger.error("Unable to parse cached route", exc_info=True)
+        else:
+            async with rate_limited_get(
+                session,
+                self.r_client,
+                f"routes/{id}",
+                params=[("api_key", MBTA_AUTH)],
+            ) as response:
+                try:
+                    if response.status == 429:
+                        raise RateLimitExceeded()
+                    if response.status != 200:
+                        logger.warning(
+                            f"Unexpected status code: {response.status} on route {id}"
+                        )
+                        await write_cache(r_client, negative_key, "negative", WEEK)
+                        return
+                    body = await response.json()
+                    mbta_api_requests.labels("routes").inc()
+                    route = RouteResource.model_validate(body["data"], strict=False)
+                    self.routes[id] = route
+                    await write_cache(r_client, key, route.model_dump_json(), WEEK)
+                    return route
+                except ValidationError as err:
+                    logger.error("Unable to parse route", exc_info=err)
 
     @retry(
         wait=wait_exponential_jitter(initial=5, jitter=20, max=60),
@@ -1010,11 +1076,18 @@ class MBTAApi:
         if session.closed:
             logger.debug("save_schedule called with a closed session; skipping fetch")
             return
-        endpoint = f"schedules?filter[stop]={self.stop_id}&sort=time&api_key={MBTA_AUTH}&filter[date]={datetime.now().date().isoformat()}"
+
+        endpoint = "schedules"
+        params = [
+            ("api_key", MBTA_AUTH),
+            ("filter[stop]", self.stop_id),
+            ("sort", "time"),
+            ("filter[date]", datetime.now().date().isoformat()),
+        ]
         if self.route != "":
-            endpoint += f"&filter[route]={self.route}"
+            params.append(("filter[route]", self.route))
         if self.direction_filter != "":
-            endpoint += f"&filter[direction_id]={self.direction_filter}"
+            params.append(("filter[direction_id]", self.direction_filter))
         if time_limit:
             diff = datetime.now().astimezone(ZoneInfo("America/New_York")) + time_limit
             if diff.hour >= 2:
@@ -1023,8 +1096,10 @@ class MBTAApi:
                 # For example, min_time=24:00 will return schedule information for the next calendar day, since that service is considered part of the current service day.
                 # Additionally, min_time=00:00&max_time=02:00 will not return anything. The time format is HH:MM.
                 # https://api-v3.mbta.com/docs/swagger/index.html#/Schedule/ApiWeb_ScheduleController_index
-                endpoint += f"&filter[max_time]={diff.strftime('%H:%M')}"
-        async with rate_limited_get(session, self.r_client, endpoint) as response:
+                params.append(("filter[max_time]", diff.strftime("%H:%M")))
+        async with rate_limited_get(
+            session, self.r_client, endpoint, params=params
+        ) as response:
             try:
                 if response.status == 429:
                     raise RateLimitExceeded()
@@ -1033,7 +1108,13 @@ class MBTAApi:
                 schedules = Schedules.model_validate_json(strict=False, json_data=body)
 
                 for item in schedules.data:
-                    tg.start_soon(self.save_route, item, session)
+                    if item.relationships.route and item.relationships.route.data:
+                        tg.start_soon(
+                            self.get_route,
+                            item.relationships.route.data.id,
+                            self.r_client,
+                            session,
+                        )
                     tg.start_soon(
                         self._queue_item_event,
                         item,
@@ -1057,6 +1138,7 @@ class MBTAApi:
         before_sleep=before_sleep_log(logger, logging.WARNING, exc_info=True),
         retry=retry_if_not_exception_type(CancelledError),
     )
+    @alru_cache(maxsize=256)
     async def get_stop(
         self,
         session: ClientSession,
@@ -1108,10 +1190,14 @@ class MBTAApi:
         else:
             if span:
                 span.set_attribute("cache.hit", False)
+
+            endpoint = f"/stops/{stop_id}"
+            params = [("api_key", MBTA_AUTH)]
             async with rate_limited_get(
                 session,
                 self.r_client,
-                f"/stops/{stop_id}?api_key={MBTA_AUTH}",
+                endpoint,
+                params=params,
             ) as response:
                 try:
                     if response.status == 429:
@@ -1130,10 +1216,17 @@ class MBTAApi:
                         span.set_attribute("error", True)
                         span.set_attribute("error.type", "validation_error")
             if include_facilities:
+                endpoint = "/facilities"
+                params = [
+                    ("api_key", MBTA_AUTH),
+                    ("filter[stop]", stop_id),
+                    ("filter[type]", "BIKE_STORAGE"),
+                ]
                 async with rate_limited_get(
                     session,
                     self.r_client,
-                    f"/facilities/?filter[stop]={stop_id}&filter[type]=BIKE_STORAGE",
+                    endpoint,
+                    params=params,
                 ) as response:
                     try:
                         if response.status == 429:

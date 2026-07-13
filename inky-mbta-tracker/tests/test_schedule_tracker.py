@@ -128,7 +128,7 @@ class TestTracker:
 
         assert approximate is False
         write_history.assert_awaited_once_with(
-            "vehicle:speed:history:vehicle-123", event, 25.123
+            "vehicle:speed:history:vehicle-123", event, 25.123, None
         )
 
     @pytest.mark.anyio("asyncio")
@@ -411,8 +411,8 @@ class TestTracker:
 
         await tracker.add(event, mock_pipeline, "add")
 
-        # Should set the trip key, event key, and zadd to time index
-        assert mock_pipeline.set.call_count == 2
+        # Should set the trip key, event key, heartbeat, and zadd to time index
+        assert mock_pipeline.set.call_count == 3
         mock_pipeline.zadd.assert_called_once()
 
     @pytest.mark.anyio("asyncio")
@@ -466,8 +466,8 @@ class TestTracker:
 
         await tracker.add(event, mock_pipeline, "add")
 
-        # Should set vehicle data and add to position set
-        mock_pipeline.set.assert_called_once()
+        # Should set speed history, vehicle data, heartbeat, and add to position set
+        assert mock_pipeline.set.call_count == 3
         mock_pipeline.sadd.assert_called_once()
 
     @pytest.mark.anyio("asyncio")

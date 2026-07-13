@@ -2,7 +2,6 @@ import os
 from contextlib import asynccontextmanager
 
 import aiohttp
-from anyio import create_task_group
 from api.core import RATE_LIMITING_ENABLED
 from api.endpoints.alerts import router as alerts_router
 
@@ -16,13 +15,13 @@ from api.limits import limiter
 from api.middleware.cache_middleware import create_cache_middleware
 from api.middleware.header_middleware import HeaderLoggingMiddleware
 from api.middleware.transaction_middleware import TransactionIDMiddleware
-from api.services.vehicle_stream import VehicleStreamManager
 from consts import MBTA_V3_ENDPOINT
 from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from logging_setup import setup_logging
 from otel_config import initialize_otel, is_otel_enabled, setup_pyroscope, shutdown_otel
+from prometheus_client.multiprocess import mark_process_dead
 from prometheus_fastapi_instrumentator import Instrumentator
 from redis.asyncio import Redis
 from sentry_config import initialize_sentry
@@ -41,29 +40,26 @@ def create_app() -> FastAPI:
     # Initialize OpenTelemetry for the API server
     initialize_otel()
 
+    prom_multiprocess = os.getenv("IMT_PROM_MULTIPROCESS", "false").lower() == "true"
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         app.state.session = aiohttp.ClientSession(base_url=MBTA_V3_ENDPOINT)
         app.state.r_client = Redis().from_url(
             f"redis://:{os.environ.get('IMT_REDIS_PASSWORD', '')}@{os.environ.get('IMT_REDIS_ENDPOINT', '')}:{int(os.environ.get('IMT_REDIS_PORT', '6379'))}"
         )
-        async with create_task_group() as tg:
-            app.state.vehicle_stream_manager = VehicleStreamManager(
-                app.state.session,
-                tg,
-                r_client=app.state.r_client,
-                interval_seconds=2,
-            )
-            try:
-                yield
-            finally:
-                await app.state.vehicle_stream_manager.aclose()
-                tg.cancel_scope.cancel()
-                await app.state.session.close()
-                await app.state.r_client.aclose()
-                # Ensure OTEL spans are flushed before exit
-                if is_otel_enabled():
-                    shutdown_otel()
+        try:
+            yield
+        finally:
+            await app.state.session.close()
+            await app.state.r_client.aclose()
+            # Ensure OTEL spans are flushed before exit
+            if is_otel_enabled():
+                shutdown_otel()
+            # In multiprocess mode, drop this worker's files so stale
+            # samples are not re-aggregated after the worker exits.
+            if prom_multiprocess:
+                mark_process_dead(os.getpid())
 
     app = FastAPI(
         title="MBTA Transit Data API",
@@ -128,6 +124,9 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
+    # prometheus_fastapi_instrumentator's expose() automatically serves
+    # multiprocess-aggregated metrics when PROMETHEUS_MULTIPROC_DIR is set,
+    # aggregating across all uvicorn workers on each scrape.
     Instrumentator().instrument(app).expose(app)
 
     # Apply FastAPI OTEL instrumentation if enabled

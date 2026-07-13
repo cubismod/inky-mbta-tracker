@@ -8,9 +8,12 @@ import aiohttp
 from anyio import sleep
 from anyio.abc import TaskGroup
 from anyio.streams.memory import MemoryObjectSendStream
+from config import Config
+from consts import MBTA_V3_ENDPOINT
 from google.protobuf.json_format import MessageToDict
 from google.transit import gtfs_realtime_pb2
 from mbta_client import MBTAApi, occupancy_status_human_readable
+from prometheus import mbta_gtfs_vehicle_event
 from pydantic import ValidationError
 from redis.asyncio import Redis
 from redis_cache import get_cache
@@ -21,7 +24,6 @@ from tenacity import (
     retry_if_not_exception_type,
     wait_exponential_jitter,
 )
-from utils import Config
 
 GTFS_BASE_URL = "https://cdn.mbta.com/"
 logger = logging.getLogger(__name__)
@@ -71,6 +73,7 @@ async def _process_gtfs_event(
     r_client: Redis,
     send_stream: MemoryObjectSendStream[ScheduleEvent | VehicleRedisSchema],
     session: aiohttp.ClientSession,
+    mbta_session: aiohttp.ClientSession,
     tg: TaskGroup,
     route_id: str,
 ):
@@ -102,11 +105,12 @@ async def _process_gtfs_event(
         )
 
     carriages = _process_cariages(vehicle_entity)
+    direction_id = fields.get("direction_id")
 
-    if fields.get("trip_id"):
+    if fields.get("trip_id") and direction_id is not None:
         async with MBTAApi(r_client) as mbta_client:
             fields["headsign"] = await mbta_client.get_headsign(
-                fields["trip_id"], session, tg
+                mbta_session, tg, fields["trip_id"], route_id, direction_id
             )
 
     vehicle = VehicleRedisSchema(
@@ -125,8 +129,10 @@ async def _process_gtfs_event(
         carriages=carriages,
         headsign=fields.get("headsign"),
         trip_id=fields.get("trip_id"),
+        source="MBTA Real-Time GTFS",
     )
     if await _should_replace_current_event(vehicle, r_client, fields["id"]):
+        mbta_gtfs_vehicle_event.labels(route_id=route_id).inc()
         await send_stream.send(vehicle)
 
 
@@ -143,31 +149,35 @@ async def gtfs_loop(
 ):
     if config.vehicles_by_route:
         async with aiohttp.ClientSession(base_url=GTFS_BASE_URL) as session:
-            vehicles_feed = gtfs_realtime_pb2.FeedMessage()  # type: ignore
-            while True:
-                async with session.get("realtime/VehiclePositions.pb") as response:
-                    if response.status == 200:
-                        vehicles_feed.ParseFromString(await response.read())
-                        for entity in vehicles_feed.entity:
-                            entity_dict = MessageToDict(
-                                entity, preserving_proto_field_name=True
-                            )
-                            if "vehicle" in entity_dict:
-                                vehicle = entity_dict["vehicle"]
-                                if "trip" in vehicle:
-                                    trip = vehicle["trip"]
-                                    if "route_id" in trip:
-                                        route_id = trip["route_id"]
-                                        if route_id in config.vehicles_by_route or (
-                                            config.frequent_bus_lines
-                                            and route_id in config.frequent_bus_lines
-                                        ):
-                                            await _process_gtfs_event(
-                                                entity_dict,
-                                                r_client,
-                                                send_stream,
-                                                session,
-                                                tg,
-                                                route_id,
-                                            )
-                await sleep(10 + randint(0, 5))
+            async with aiohttp.ClientSession(base_url=MBTA_V3_ENDPOINT) as mbta_session:
+                vehicles_feed = gtfs_realtime_pb2.FeedMessage()  # type: ignore
+                while True:
+                    async with session.get("realtime/VehiclePositions.pb") as response:
+                        if response.status == 200:
+                            vehicles_feed.ParseFromString(await response.read())
+                            for entity in vehicles_feed.entity:
+                                entity_dict = MessageToDict(
+                                    entity, preserving_proto_field_name=True
+                                )
+                                if "vehicle" in entity_dict:
+                                    vehicle = entity_dict["vehicle"]
+                                    if "trip" in vehicle:
+                                        trip = vehicle["trip"]
+                                        if "route_id" in trip:
+                                            route_id = trip["route_id"]
+                                            if route_id in config.vehicles_by_route or (
+                                                config.frequent_bus_lines
+                                                and route_id
+                                                in config.frequent_bus_lines
+                                            ):
+                                                tg.start_soon(
+                                                    _process_gtfs_event,
+                                                    entity_dict,
+                                                    r_client,
+                                                    send_stream,
+                                                    session,
+                                                    mbta_session,
+                                                    tg,
+                                                    route_id,
+                                                )
+                    await sleep(randint(1, 8))

@@ -2,7 +2,6 @@ import logging
 import os
 from dataclasses import dataclass
 from datetime import datetime
-from urllib.parse import urlencode
 
 import aiohttp
 import anyio
@@ -69,10 +68,11 @@ async def fetch_predictions(
             params["filter[radius]"] = str(radius)
         if MBTA_AUTH:
             params["api_key"] = MBTA_AUTH
-        endpoint = f"/predictions?{urlencode(params)}"
-
+        endpoint = "/predictions"
         try:
-            async with rate_limited_get(session, r_client, endpoint) as response:
+            async with rate_limited_get(
+                session, r_client, endpoint, params=params
+            ) as response:
                 add_span_attributes(span, {"http.status_code": response.status})
                 if response.status != 200:
                     raise MBTAUpstreamError(response.status)
@@ -144,13 +144,11 @@ async def batch_fetch_trip_predictions(
                         )
                 return
 
-        api_key_param = f"&api_key={MBTA_AUTH}" if MBTA_AUTH else ""
+        params = [("api_key", MBTA_AUTH), ("filter[stop]", stop_id)]
         async with limiter:
             try:
                 async with rate_limited_get(
-                    client,
-                    r_client,
-                    f"/predictions?filter[stop]={stop_id}{api_key_param}",
+                    client, r_client, "/predictions", params=params
                 ) as response:
                     if response.status != 200:
                         logger.warning(

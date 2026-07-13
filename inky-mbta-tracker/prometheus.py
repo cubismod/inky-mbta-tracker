@@ -21,13 +21,20 @@ vehicle_speeds = Gauge(
 tracker_executions = Counter("imt_tracker_executions", "Tracker Executions", ["stop"])
 
 mbta_api_requests = Gauge(
-    "mbta_api_requests", "Requests we are making to the MBTA API", ["endpoint"]
+    "mbta_api_requests",
+    "Requests we are making to the MBTA API",
+    ["endpoint"],
+    multiprocess_mode="livesum",
 )
 
 mbta_api_rate_limit_hits = Counter(
     "mbta_api_rate_limit_hits",
     "MBTA API responses that returned HTTP 429 rate limits",
     ["endpoint"],
+)
+
+mbta_gtfs_vehicle_event = Counter(
+    "imt_mbta_gtfs_vehicle_event", "Vehicle events from MBTA GTFS", ["route_id"]
 )
 
 
@@ -44,7 +51,12 @@ def record_mbta_api_rate_limit_hit(url: str) -> None:
 
 running_threads = Gauge("imt_active_threads", "Active Threads")
 
-redis_commands = Gauge("imt_redis_cmds", "Redis commands made", ["name"])
+redis_commands = Gauge(
+    "imt_redis_cmds",
+    "Redis commands made",
+    ["name"],
+    multiprocess_mode="livesum",
+)
 
 schema_key_counts = Gauge(
     "imt_schema_key_counts",
@@ -83,36 +95,6 @@ server_side_events = Counter(
     "imt_server_side_events", "Number of server-side events", ["id"]
 )
 
-vehicle_stream_connected_clients = Gauge(
-    "imt_vehicle_stream_connected_clients",
-    "Current connected vehicle SSE clients",
-    ["mode", "frequent_buses"],
-)
-
-vehicle_stream_active_producers = Gauge(
-    "imt_vehicle_stream_active_producers",
-    "Current active vehicle SSE producers",
-    ["frequent_buses"],
-)
-
-vehicle_stream_stale_clients = Counter(
-    "imt_vehicle_stream_stale_clients_total",
-    "Vehicle SSE clients dropped while broadcasting",
-    ["mode", "frequent_buses", "reason"],
-)
-
-vehicle_stream_producer_iterations = Counter(
-    "imt_vehicle_stream_producer_iterations_total",
-    "Vehicle SSE producer loop iterations by outcome",
-    ["frequent_buses", "outcome"],
-)
-
-vehicle_stream_payload_vehicles = Gauge(
-    "imt_vehicle_stream_payload_vehicles",
-    "Vehicles included in the latest vehicle SSE payload",
-    ["frequent_buses"],
-)
-
 vehicle_batch_items = Gauge(
     "imt_vehicle_batch_items", "Vehicles processed in last batch", ["name"]
 )
@@ -139,6 +121,19 @@ last_batch_flush_ts = Gauge(
     "imt_last_batch_flush_ts_seconds",
     "Epoch seconds of last batch flush",
     ["name"],
+)
+
+vehicle_stream_pubsub = Gauge(
+    "imt_vehicle_stream_pubsub",
+    "Pub/sub events around vehicle stream diffing",
+    ["event_type"],
+    multiprocess_mode="livesum",
+)
+
+vehicle_stream_subsribers = Gauge(
+    "imt_vehicle_stream_subscribers",
+    "Active subscribers to the vehicle stream",
+    multiprocess_mode="livesum",
 )
 
 pos_data_count = Gauge("imt_pos_data_count", "Count of members in pos-data", ["name"])

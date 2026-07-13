@@ -53,6 +53,11 @@ async def test_batch_fetch_returns_predicted_arrival_times(
     async def fake_rate_limited_get(
         session: ClientSession, redis: Redis, url: str, **kwargs: Any
     ) -> AsyncIterator[FakeResponse]:
+        params = kwargs.pop("params", None)
+        if params:
+            from urllib.parse import urlencode
+
+            url = f"{url}?{urlencode(params)}"
         api_calls.append(url)
         yield FakeResponse(200, PREDICTION_BODY)
 
@@ -71,7 +76,8 @@ async def test_batch_fetch_returns_predicted_arrival_times(
         "2026-06-06T12:00:00-04:00"
     )
     assert len(api_calls) == 1
-    assert "filter[stop]=stop-1" in api_calls[0]
+    assert "filter%5Bstop%5D" in api_calls[0]
+    assert "stop-1" in api_calls[0]
 
 
 @pytest.mark.anyio

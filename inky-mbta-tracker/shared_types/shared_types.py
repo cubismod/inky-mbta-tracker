@@ -1,9 +1,9 @@
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from geojson import Feature
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, field_serializer, field_validator
 
 
 class ScheduleEvent(BaseModel):
@@ -39,9 +39,11 @@ class VehicleRedisSchema(BaseModel):
     occupancy_status: Optional[str] = None
     carriages: Optional[list[str]] = None
     headsign: Optional[str] = None
+    source: str = "MBTA V3 API"
     # OpenTelemetry trace context for distributed tracing
     trace_context: Optional[str] = None
     trip_id: Optional[str] = None
+    short_name: Optional[str] = None
 
 
 class TaskType(Enum):
@@ -78,10 +80,14 @@ class LightStop(BaseModel):
 class DiffApiResponse(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    updated: dict[
-        str, Feature
-    ]  # keys are the vehicle IDs, values are the full updated vehicle object
+    updated: dict[str, Any]  # keys are the vehicle IDs, values are Feature or dict
     removed: Set[str]  # keys are vehicle ids
+
+    @field_serializer("updated")
+    def _serialize_updated(self, _value: Any) -> dict[str, Any]:
+        return {
+            k: dict(v) if isinstance(v, Feature) else v for k, v in self.updated.items()
+        }
 
 
 class VehicleSpeedHistory(BaseModel):

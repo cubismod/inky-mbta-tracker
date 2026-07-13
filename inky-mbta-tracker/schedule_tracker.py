@@ -46,7 +46,7 @@ from prometheus import (
 from pydantic import ValidationError
 from redis import ResponseError
 from redis.asyncio.client import Pipeline, Redis
-from redis_cache import get_cache, write_cache
+from redis_cache import get_cache
 from redis_lock.asyncio import RedisLock
 from shared_types.shared_types import (
     ScheduleEvent,
@@ -97,21 +97,38 @@ class Tracker:
     @staticmethod
     def log_prediction(event: ScheduleEvent) -> None:
         logger.debug(
-            f"action={event.action} time={event.time.astimezone(ZoneInfo('America/New_York')).strftime('%c')} route_id={event.route_id} route_type={event.route_type} headsign={event.headsign} stop={event.stop} id={event.id}, transit_time_min={event.transit_time_min}, alerting={event.alerting}, bikes_allowed={event.bikes_allowed}"
+            "action=%s time=%s route_id=%s route_type=%s headsign=%s stop=%s id=%s, "
+            "transit_time_min=%s, alerting=%s, bikes_allowed=%s",
+            event.action,
+            event.time.astimezone(ZoneInfo("America/New_York")).strftime("%c"),
+            event.route_id,
+            event.route_type,
+            event.headsign,
+            event.stop,
+            event.id,
+            event.transit_time_min,
+            event.alerting,
+            event.bikes_allowed,
         )
 
     @staticmethod
     def log_vehicle(event: VehicleRedisSchema) -> None:
         logger.debug(
-            f"action={event.action} route={event.route} vehicle_id={event.id} lat={event.latitude} long={event.longitude} status={event.current_status} speed={event.speed}"
+            "action=%s route=%s vehicle_id=%s lat=%s long=%s status=%s speed=%s",
+            event.action,
+            event.route,
+            event.id,
+            event.latitude,
+            event.longitude,
+            event.current_status,
+            event.speed,
         )
 
-    async def write_event_heartbeat(self, route_id: str) -> None:
+    async def write_event_heartbeat(self, route_id: str, pipeline: Optional[Pipeline] = None) -> None:
         heartbeat_key = f"heartbeat:events:{route_id}"
         try:
-            await self.redis.set(
-                heartbeat_key, datetime.now(UTC).isoformat(), ex=2 * HOUR
-            )
+            target = pipeline or self.redis
+            await target.set(heartbeat_key, datetime.now(UTC).isoformat(), ex=2 * HOUR)
             redis_commands.labels("set").inc()
         except ResponseError as err:
             logger.error("Failed to write event heartbeat", exc_info=err)
@@ -131,41 +148,40 @@ class Tracker:
         return False
 
     async def write_vehicle_speed_history(
-        self, cache_id: str, event: VehicleRedisSchema, speed: float
+        self, cache_id: str, event: VehicleRedisSchema, speed: float,
+        pipeline: Optional[Pipeline] = None,
     ) -> None:
-        await write_cache(
-            self.redis,
-            cache_id,
-            VehicleSpeedHistory(
-                long=event.longitude,
-                lat=event.latitude,
-                speed=speed,
-                update_time=event.update_time,
-            ).model_dump_json(),
-            exp_sec=SPEED_HISTORY_TTL_SECONDS,
-        )
+        data = VehicleSpeedHistory(
+            long=event.longitude,
+            lat=event.latitude,
+            speed=speed,
+            update_time=event.update_time,
+        ).model_dump_json()
+        target = pipeline or self.redis
+        await target.set(cache_id, value=data, ex=SPEED_HISTORY_TTL_SECONDS)
+        redis_commands.labels("set").inc()
 
     # calculate an approximate vehicle speed using the previous position and timestamp
     # returns (the speed, if this was an approximate calculation)
     async def calculate_vehicle_speed(
-        self, event: VehicleRedisSchema
+        self, event: VehicleRedisSchema, pipeline: Optional[Pipeline] = None
     ) -> tuple[Optional[float], bool]:
         try:
             cache_id = f"vehicle:speed:history:{event.id}"
 
             if event.speed is not None:
-                await self.write_vehicle_speed_history(cache_id, event, event.speed)
+                await self.write_vehicle_speed_history(cache_id, event, event.speed, pipeline)
                 return event.speed, False
 
             if event.current_status == "STOPPED_AT":
-                await self.write_vehicle_speed_history(cache_id, event, 0)
+                await self.write_vehicle_speed_history(cache_id, event, 0, pipeline)
                 return None, False
 
             last_event = await get_cache(self.redis, cache_id)
             redis_commands.labels("get").inc()
 
             if not last_event:
-                await self.write_vehicle_speed_history(cache_id, event, 0)
+                await self.write_vehicle_speed_history(cache_id, event, 0, pipeline)
                 return None, False
 
             last_event_validated = VehicleSpeedHistory.model_validate_json(
@@ -177,8 +193,11 @@ class Tracker:
             ).total_seconds()
             if duration_seconds <= 0:
                 logger.debug(
-                    f"Skipping speed calculation for {event.route} vehicle {event.id}: "
-                    f"non-positive duration {duration_seconds} seconds"
+                    "Skipping speed calculation for %s vehicle %s: "
+                    "non-positive duration %s seconds",
+                    event.route,
+                    event.id,
+                    duration_seconds,
                 )
                 return None, False
 
@@ -199,7 +218,7 @@ class Tracker:
 
             distance_meters = distance(start, end, "m")
             if distance_meters == 0:
-                await self.write_vehicle_speed_history(cache_id, event, 0)
+                await self.write_vehicle_speed_history(cache_id, event, 0, pipeline)
                 return 0, True
 
             meters_per_second = distance_meters / duration_seconds
@@ -213,14 +232,17 @@ class Tracker:
 
             if not self.is_speed_reasonable(speed, event.route):
                 logger.debug(
-                    f"Rejecting speed calculation for {event.route} vehicle {event.id}: speed {speed} mph is unreasonable"
+                    "Rejecting speed calculation for %s vehicle %s: speed %s mph is unreasonable",
+                    event.route,
+                    event.id,
+                    speed,
                 )
                 # throw out insane predictions
                 if last_event_validated.speed > 0:
                     return (last_event_validated.speed, True)
                 return None, False
 
-            await self.write_vehicle_speed_history(cache_id, event, speed)
+            await self.write_vehicle_speed_history(cache_id, event, speed, pipeline)
             return speed, True
         except ResponseError as err:
             logger.error("unable to get redis event", exc_info=err)
@@ -257,7 +279,8 @@ class Tracker:
                             pipeline = self.redis.pipeline()
                         except ResponseError as err:
                             logger.error(
-                                f"Unable to execute cleanup batch {i // batch_size}",
+                                "Unable to execute cleanup batch %s",
+                                i // batch_size,
                                 exc_info=err,
                             )
                             break
@@ -278,7 +301,10 @@ class Tracker:
                     dec_ee = existing_event.decode("utf-8")
                     if dec_ee != event.id and dec_ee.startswith("schedule"):
                         logger.info(
-                            f"Removing existing schedule entry with id {dec_ee} as it has been replaced with {event.id}, trip_id={event.trip_id}"
+                            "Removing existing schedule entry with id %s as it has been replaced with %s, trip_id=%s",
+                            dec_ee,
+                            event.id,
+                            event.trip_id,
                         )
                         await self.rm(dummy_schedule_event(existing_event), pipeline)
                     if dec_ee.startswith("prediction") and event.id.startswith(
@@ -306,16 +332,18 @@ class Tracker:
 
                 schedule_events.labels(action, event.route_id, event.stop).inc()
                 self.log_prediction(event)
-                await self.write_event_heartbeat(event.route_id)
+                await self.write_event_heartbeat(event.route_id, pipeline)
         if isinstance(event, VehicleRedisSchema):
             # Generate vehicle tracking transaction ID for individual vehicle updates
             vehicle_track_txn_id = set_vehicle_track_transaction_id(event.id)
             logger.debug(
-                f"Processing vehicle {event.id} with transaction ID: {vehicle_track_txn_id}"
+                "Processing vehicle %s with transaction ID: %s",
+                event.id,
+                vehicle_track_txn_id,
             )
 
             redis_key = f"vehicle:{event.id}"
-            event.speed, approximate = await self.calculate_vehicle_speed(event)
+            event.speed, approximate = await self.calculate_vehicle_speed(event, pipeline)
             event.approximate_speed = approximate
 
             exp_min = 4
@@ -345,7 +373,7 @@ class Tracker:
             last_vehicle_write_ts.labels("tracker").set(time.time())
 
             self.log_vehicle(event)
-            await self.write_event_heartbeat(event.route)
+            await self.write_event_heartbeat(event.route, pipeline)
 
     async def rm(
         self, event: ScheduleEvent | VehicleRedisSchema, pipeline: Pipeline

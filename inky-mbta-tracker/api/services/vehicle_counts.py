@@ -1,11 +1,12 @@
 import logging
+from datetime import datetime
 from typing import Optional
 
+import orjson
 from api.models import TotalsByLine, VehicleCountsByType, VehicleLineTotals
 from config import Config
 from mbta_client_extended import silver_line_lookup
 from prometheus import redis_commands
-from pydantic import ValidationError
 from redis.asyncio import Redis
 from shared_types.shared_types import VehicleRedisSchema
 
@@ -104,39 +105,27 @@ async def get_vehicle_route_counts(
     into a ``VehicleRedisSchema`` exactly once, applies the frequent-bus filter,
     and classifies routes into the RL/GL/BL/OL/SL/CR line columns and the
     light/heavy/regional-rail/bus type rows.
-
-    Stale keys (expired GETs) are pruned from the ``pos-data`` set, mirroring
-    ``get_vehicle_features``.
     """
     counts = _empty_counts()
 
-    vehicle_keys_bytes: set[bytes] = await r_client.smembers("pos-data")  # type: ignore[misc]
+    vehicle_keys: list[bytes] = list(await r_client.smembers("pos-data"))  # type: ignore[misc]
     redis_commands.labels("smembers").inc()
-    if not vehicle_keys_bytes:
+    if not vehicle_keys:
         return counts, _totals_by_line(counts)
 
-    vehicle_keys_list: list[bytes] = []
-    pl = r_client.pipeline()
-    for vk in vehicle_keys_bytes:
-        if vk.decode("utf-8"):
-            await pl.get(vk)
-            redis_commands.labels("get").inc()
-            vehicle_keys_list.append(vk)
-    results: list[bytes | None] = await pl.execute()
-    redis_commands.labels("execute").inc()
+    results: list[bytes | None] = await r_client.mget(*vehicle_keys)
+    redis_commands.labels("mget").inc()
 
     frequent_lines = config.frequent_bus_lines
-    stale_keys: list[bytes] = []
-    for vk_bytes, result in zip(vehicle_keys_list, results):
+    for result in results:
         if not result:
-            stale_keys.append(vk_bytes)
             continue
         try:
-            vehicle_info = VehicleRedisSchema.model_validate_json(
-                strict=False, json_data=result
-            )
-        except ValidationError:
+            raw = orjson.loads(result)
+            raw["update_time"] = datetime.fromisoformat(raw["update_time"])
+        except (orjson.JSONDecodeError, KeyError, ValueError):
             continue
+        vehicle_info = VehicleRedisSchema.model_construct(**raw)
         route = vehicle_info.route
         if frequent_lines:
             if frequent_buses and route not in frequent_lines:
@@ -151,9 +140,5 @@ async def get_vehicle_route_counts(
         row = getattr(counts, vtype)
         setattr(row, line, getattr(row, line) + 1)
         row.total += 1
-
-    if stale_keys:
-        await r_client.srem("pos-data", *stale_keys)  # type: ignore[misc]
-        redis_commands.labels("srem").inc()
 
     return counts, _totals_by_line(counts)

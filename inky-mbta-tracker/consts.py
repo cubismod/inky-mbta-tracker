@@ -7,3 +7,4 @@ WEEK = 604800
 MINUTE = 60
 ALERTS_SET_KEY = "alerts:stats"
 LIVE_NEGATIVE_CACHE_KEY = "live_negative_cache"
+VEHICLE_STREAM_KEY = "vehicle_stream_diff"
