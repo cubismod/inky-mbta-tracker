@@ -840,6 +840,11 @@ class MBTAApi:
             )
             await send_stream.send(event)
 
+    @retry(
+        wait=wait_exponential_jitter(initial=5, jitter=20, max=60),
+        before_sleep=before_sleep_log(logger, logging.WARNING, exc_info=True),
+        retry=retry_if_not_exception_type(CancelledError),
+    )
     @alru_cache(maxsize=256)
     async def get_trip(
         self, trip_id: str, tg: TaskGroup, session: ClientSession
@@ -915,6 +920,11 @@ class MBTAApi:
             add_span_attributes(span, {"error.type": "validation_error"})
         return None
 
+    @retry(
+        wait=wait_exponential_jitter(initial=5, jitter=20, max=60),
+        before_sleep=before_sleep_log(logger, logging.WARNING, exc_info=True),
+        retry=retry_if_not_exception_type(CancelledError),
+    )
     @alru_cache(maxsize=128)
     async def get_route(
         self, id: str, r_client: Redis, session: aiohttp.ClientSession
@@ -959,6 +969,11 @@ class MBTAApi:
                 except ValidationError as err:
                     logger.error("Unable to parse route", exc_info=err)
 
+    @retry(
+        wait=wait_exponential_jitter(initial=5, jitter=20, max=60),
+        before_sleep=before_sleep_log(logger, logging.WARNING, exc_info=True),
+        retry=retry_if_not_exception_type(CancelledError),
+    )
     async def get_alerts(
         self,
         session: ClientSession,
@@ -1113,6 +1128,11 @@ class MBTAApi:
             self.facilities = stop_and_facilities[1]
 
     # 3 weeks of caching in redis as maybe a stop will change? idk
+    @retry(
+        wait=wait_exponential_jitter(initial=2, jitter=50, max=120),
+        before_sleep=before_sleep_log(logger, logging.WARNING, exc_info=True),
+        retry=retry_if_not_exception_type(CancelledError),
+    )
     @alru_cache(maxsize=256)
     async def get_stop(
         self,
