@@ -730,7 +730,12 @@ class MBTAApi:
                     if route_id.startswith("CR"):
                         line = route_id.split("-")
                         headsign = f"{headsign} - {line[1]} Ln"
-                    route_type = self.routes[route_id].attributes.type
+                    route_data = self.routes.get(route_id)
+                    if route_data is None:
+                        route_data = await self.get_route(route_id, self.r_client, session)
+                    if route_data is None:
+                        return
+                    route_type = route_data.attributes.type
                     alerting = False
                     bikes_allowed = False
                     trip_id = ""
