@@ -13,7 +13,7 @@ from anyio.streams.memory import MemoryObjectSendStream
 from config import Config, StopSetup, load_config
 from consts import MBTA_V3_ENDPOINT
 from dotenv import load_dotenv
-from geojson_utils import get_vehicle_features
+from geojson_utils import background_refresh
 from logging_setup import setup_logging
 from mbta_client_extended import (
     watch_alerts,
@@ -314,15 +314,8 @@ async def __main__() -> None:
                     run_vehicle_stream_diff, get_redis(redis_pool), config, tg, True
                 )
 
-            tg.start_soon(
-                get_vehicle_features,
-                get_redis(redis_pool),
-                config,
-                tg,
-                False,
-                session,
-                True,
-            )
+            tg.start_soon(background_refresh, get_redis(redis_pool), config, tg)
+
             # consumer
             tg.start_soon(process_queue_async, receive_stream, tg)
 

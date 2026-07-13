@@ -100,6 +100,15 @@ class VehicleStreamDiff:
     async def watch(self, frequent_buses: bool = False) -> None:
         key = f"{VEHICLE_STREAM_KEY}:{'buses' if frequent_buses else 'rapid'}"
         while True:
+            try:
+                subscribers = await self.r_client.pubsub_numsub(key)
+            except RedisError:
+                subscribers = None
+
+            if subscribers is not None and subscribers[0][1] == 0:
+                await sleep(SLEEP_DURATION)
+                continue
+
             with tracer.start_as_current_span(
                 "vehicle_stream_diff.watch_iteration"
             ) as span:
@@ -168,7 +177,7 @@ class VehicleStreamDiff:
                 add_current_span_attributes({"vehicle_stream.iteration_complete": True})
             if features:
                 self._save_snapshot(features)
-            await sleep(randint(1, 3))
+            await sleep(randint(1, SLEEP_DURATION))
 
 
 async def run_vehicle_stream_diff(
