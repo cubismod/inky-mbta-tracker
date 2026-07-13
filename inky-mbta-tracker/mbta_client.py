@@ -387,17 +387,19 @@ class MBTAApi:
             )
         return hs
 
-    async def _save_live_negative_cache(self, data: str, event_type: str):
+    @staticmethod
+    def _live_cache_key(data: str, event_type: str) -> str:
+        return f"{event_type}:{hashlib.sha512(data.encode('utf-8')).hexdigest()}"
+
+    async def _save_live_negative_cache(self, cache_key: str) -> None:
         ex_time = 15
         if self.watcher_type == TaskType.ALERTS:
             ex_time = HOUR
-        h = f"{event_type}:{hashlib.sha512(data.encode('utf-8')).hexdigest()}"
-        await self.r_client.hsetex(LIVE_NEGATIVE_CACHE_KEY, h, "", ex=ex_time)  # type: ignore[misc]
+        await self.r_client.hsetex(LIVE_NEGATIVE_CACHE_KEY, cache_key, "", ex=ex_time)  # type: ignore[misc]
 
     @alru_cache(maxsize=128)
-    async def _skip_live_negative_cache(self, data: str, event_type: str) -> bool:
-        h = f"{event_type}:{hashlib.sha512(data.encode('utf-8')).hexdigest()}"
-        return await self.r_client.hexists(LIVE_NEGATIVE_CACHE_KEY, h)  # type: ignore[misc]
+    async def _skip_live_negative_cache(self, cache_key: str) -> bool:
+        return await self.r_client.hexists(LIVE_NEGATIVE_CACHE_KEY, cache_key)  # type: ignore[misc]
 
     def _parses_prediction_events(self) -> bool:
         return self.watcher_type in (
@@ -539,7 +541,8 @@ class MBTAApi:
         # https://www.mbta.com/developers/v3-api/streaming
         if data != "[]":
             try:
-                if await self._skip_live_negative_cache(data, event_type):
+                cache_key = self._live_cache_key(data, event_type)
+                if await self._skip_live_negative_cache(cache_key):
                     logger.debug("Skipping live negative cache for data: %s", data)
                     return
                 # Handle Alerts stream separately
@@ -616,7 +619,7 @@ class MBTAApi:
                             tg.start_soon(
                                 self._send_remove_event, type_and_id, send_stream
                             )
-                tg.start_soon(self._save_live_negative_cache, data, event_type)
+                tg.start_soon(self._save_live_negative_cache, cache_key)
             except ValidationError as err:
                 logger.error("Unable to parse schedule", exc_info=err)
             except KeyError as err:
