@@ -5,7 +5,6 @@ from typing import Optional
 
 import orjson
 from api.middleware.cache_middleware import cache_ttl
-from api.services.vehicle_counts import get_vehicle_route_counts
 from consts import VEHICLE_STREAM_KEY
 from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import RedirectResponse
@@ -15,6 +14,7 @@ from otel_utils import add_span_attributes, add_transaction_ids_to_span, set_spa
 from prometheus import vehicle_stream_pubsub, vehicle_stream_subsribers
 from shared_types.shared_types import DiffApiResponse
 from starlette.responses import StreamingResponse
+from vehicle_counting import get_vehicle_route_counts
 from zlib_ng import zlib_ng
 
 from ..core import GET_DI, SSE_ENABLED

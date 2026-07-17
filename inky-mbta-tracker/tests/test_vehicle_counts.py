@@ -3,10 +3,10 @@ from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from api.services.vehicle_counts import _classify_route, get_vehicle_route_counts
 from config import Config
 from redis.asyncio import Redis
 from shared_types.shared_types import VehicleRedisSchema
+from vehicle_counting import _classify_route, get_vehicle_route_counts
 
 
 def _vehicle(vid: str, route: str) -> VehicleRedisSchema:

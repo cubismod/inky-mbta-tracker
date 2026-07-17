@@ -18,10 +18,6 @@ _SILVER_NUMERIC_PREFIXES = ("741", "742", "743", "746", "749", "751")
 
 
 def _classify_route(route: str) -> tuple[Optional[str], Optional[str]]:
-    """Classify a route id into a (line, vehicle_type) bucket.
-
-    Returns (None, None) for routes that are not part of a tracked line.
-    """
     route_lower = (route or "").strip().lower()
 
     if route_lower.startswith("mattapan") or route_lower.startswith("red"):
@@ -98,14 +94,6 @@ def _totals_by_line(counts: VehicleCountsByType) -> TotalsByLine:
 async def get_vehicle_route_counts(
     r_client: Redis, config: Config, frequent_buses: bool = False
 ) -> tuple[VehicleCountsByType, TotalsByLine]:
-    """Tally vehicles by line and vehicle type directly from Redis, without
-    building GeoJSON features.
-
-    Pipeline-GETs every member of the ``pos-data`` set, validates each payload
-    into a ``VehicleRedisSchema`` exactly once, applies the frequent-bus filter,
-    and classifies routes into the RL/GL/BL/OL/SL/CR line columns and the
-    light/heavy/regional-rail/bus type rows.
-    """
     counts = _empty_counts()
 
     vehicle_keys: list[bytes] = list(await r_client.smembers("pos-data"))  # type: ignore[misc]
