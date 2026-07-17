@@ -732,7 +732,9 @@ class MBTAApi:
                         headsign = f"{headsign} - {line[1]} Ln"
                     route_data = self.routes.get(route_id)
                     if route_data is None:
-                        route_data = await self.get_route(route_id, self.r_client, session)
+                        route_data = await self.get_route(
+                            route_id, self.r_client, session
+                        )
                     if route_data is None:
                         return
                     route_type = route_data.attributes.type

@@ -124,7 +124,9 @@ class Tracker:
             event.speed,
         )
 
-    async def write_event_heartbeat(self, route_id: str, pipeline: Optional[Pipeline] = None) -> None:
+    async def write_event_heartbeat(
+        self, route_id: str, pipeline: Optional[Pipeline] = None
+    ) -> None:
         heartbeat_key = f"heartbeat:events:{route_id}"
         try:
             target = pipeline or self.redis
@@ -148,7 +150,10 @@ class Tracker:
         return False
 
     async def write_vehicle_speed_history(
-        self, cache_id: str, event: VehicleRedisSchema, speed: float,
+        self,
+        cache_id: str,
+        event: VehicleRedisSchema,
+        speed: float,
         pipeline: Optional[Pipeline] = None,
     ) -> None:
         data = VehicleSpeedHistory(
@@ -170,7 +175,9 @@ class Tracker:
             cache_id = f"vehicle:speed:history:{event.id}"
 
             if event.speed is not None:
-                await self.write_vehicle_speed_history(cache_id, event, event.speed, pipeline)
+                await self.write_vehicle_speed_history(
+                    cache_id, event, event.speed, pipeline
+                )
                 return event.speed, False
 
             if event.current_status == "STOPPED_AT":
@@ -343,7 +350,9 @@ class Tracker:
             )
 
             redis_key = f"vehicle:{event.id}"
-            event.speed, approximate = await self.calculate_vehicle_speed(event, pipeline)
+            event.speed, approximate = await self.calculate_vehicle_speed(
+                event, pipeline
+            )
             event.approximate_speed = approximate
 
             exp_min = 4
