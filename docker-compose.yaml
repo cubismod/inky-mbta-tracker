@@ -4,6 +4,8 @@ services:
     restart: unless-stopped
     container_name: tracker-redis
     command: [ "redis-server", "--requirepass", "mbta"]
+    volumes:
+      - redis:/data
     ports:
       - "6379:6379"
   mosquitto:
@@ -15,3 +17,6 @@ services:
     volumes:
       - "./mosquitto/passwd:/etc/mosquitto/password_file"
       - "./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf"
+
+volumes:
+    redis:
