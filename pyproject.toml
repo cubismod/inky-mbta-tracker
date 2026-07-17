@@ -82,7 +82,6 @@ dev = [
 
 [project.scripts]
 inky-mbta-tracker = "main:run_main"
-api-server = "api_server:run_main"
 
 [tool.ruff]
 # Exclude a variety of commonly ignored directories.

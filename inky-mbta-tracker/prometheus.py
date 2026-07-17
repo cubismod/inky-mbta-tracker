@@ -15,7 +15,10 @@ vehicle_events = Counter(
 )
 
 vehicle_speeds = Gauge(
-    "imt_vehicle_speeds", "Vehicle speeds", ["route_id", "vehicle_id"]
+    "imt_vehicle_speeds",
+    "Vehicle speeds",
+    ["route_id", "vehicle_id"],
+    multiprocess_mode="liveall",
 )
 
 tracker_executions = Counter("imt_tracker_executions", "Tracker Executions", ["stop"])
@@ -49,7 +52,9 @@ def record_mbta_api_rate_limit_hit(url: str) -> None:
     mbta_api_rate_limit_hits.labels(mbta_api_endpoint_label(url)).inc()
 
 
-running_threads = Gauge("imt_active_threads", "Active Threads")
+running_threads = Gauge(
+    "imt_active_threads", "Active Threads", multiprocess_mode="livesum"
+)
 
 redis_commands = Gauge(
     "imt_redis_cmds",
@@ -62,33 +67,44 @@ schema_key_counts = Gauge(
     "imt_schema_key_counts",
     "Number of keys in each Redis schema namespace",
     ["schema_id"],
+    multiprocess_mode="livesum",
 )
 
 current_buffer_used = Gauge(
-    "imt_current_buffer_used", "number of items stored in the buffer", ["name"]
+    "imt_current_buffer_used",
+    "number of items stored in the buffer",
+    ["name"],
+    multiprocess_mode="livesum",
 )
 max_buffer_size = Gauge(
     "imt_max_buffer_size",
     "maximum number of items that can be stored on this stream (or math.inf)",
     ["name"],
+    multiprocess_mode="liveall",
 )
 open_receive_streams = Gauge(
     "imt_open_receive_streams",
     "number of unclosed clones of the receive stream",
     ["name"],
+    multiprocess_mode="livesum",
 )
 open_send_streams = Gauge(
-    "imt_open_send_streams", "number of unclosed clones of the send stream", ["name"]
+    "imt_open_send_streams",
+    "number of unclosed clones of the send stream",
+    ["name"],
+    multiprocess_mode="livesum",
 )
 tasks_waiting_receive = Gauge(
     "imt_tasks_waiting_receive",
     "number of tasks blocked on MemoryObjectReceiveStream.receive()",
     ["name"],
+    multiprocess_mode="livesum",
 )
 tasks_waiting_send = Gauge(
     "imt_tasks_waiting_send",
     "number of tasks blocked on MemoryObjectSendStream.send()",
     ["name"],
+    multiprocess_mode="livesum",
 )
 
 server_side_events = Counter(
@@ -96,7 +112,10 @@ server_side_events = Counter(
 )
 
 vehicle_batch_items = Gauge(
-    "imt_vehicle_batch_items", "Vehicles processed in last batch", ["name"]
+    "imt_vehicle_batch_items",
+    "Vehicles processed in last batch",
+    ["name"],
+    multiprocess_mode="livesum",
 )
 
 alerts_counter = Counter(
@@ -104,7 +123,10 @@ alerts_counter = Counter(
 )
 
 schedule_batch_items = Gauge(
-    "imt_schedule_batch_items", "Schedule events processed in last batch", ["name"]
+    "imt_schedule_batch_items",
+    "Schedule events processed in last batch",
+    ["name"],
+    multiprocess_mode="livesum",
 )
 
 batch_flushes = Counter(
@@ -115,12 +137,14 @@ last_vehicle_write_ts = Gauge(
     "imt_last_vehicle_write_ts_seconds",
     "Epoch seconds of last vehicle write",
     ["name"],
+    multiprocess_mode="livemax",
 )
 
 last_batch_flush_ts = Gauge(
     "imt_last_batch_flush_ts_seconds",
     "Epoch seconds of last batch flush",
     ["name"],
+    multiprocess_mode="livemax",
 )
 
 vehicle_stream_pubsub = Gauge(
@@ -136,9 +160,14 @@ vehicle_stream_subsribers = Gauge(
     multiprocess_mode="livesum",
 )
 
-pos_data_count = Gauge("imt_pos_data_count", "Count of members in pos-data", ["name"])
+pos_data_count = Gauge(
+    "imt_pos_data_count",
+    "Count of members in pos-data",
+    ["name"],
+    multiprocess_mode="livesum",
+)
 
-running_tasks = Gauge("imt_tasks", "Number of anyio tasks")
+running_tasks = Gauge("imt_tasks", "Number of anyio tasks", multiprocess_mode="livesum")
 
 
 async def watch_running_tasks():

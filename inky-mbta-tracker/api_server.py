@@ -1,3 +1,4 @@
+import logging
 import os
 from contextlib import asynccontextmanager
 
@@ -28,6 +29,8 @@ from sentry_config import initialize_sentry
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
+logger = logging.getLogger(__name__)
+
 
 def create_app() -> FastAPI:
     load_dotenv()
@@ -42,8 +45,18 @@ def create_app() -> FastAPI:
 
     prom_multiprocess = os.getenv("IMT_PROM_MULTIPROCESS", "false").lower() == "true"
 
+    if prom_multiprocess:
+        mp_dir = os.getenv("PROMETHEUS_MULTIPROC_DIR", "/tmp/imt-prom-mp")
+        os.environ.setdefault("PROMETHEUS_MULTIPROC_DIR", mp_dir)
+        os.makedirs(mp_dir, exist_ok=True)
+        logger.info("Prometheus multiprocess mode enabled, using dir: %s", mp_dir)
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        # Clean up any stale per-PID metric files from a previous process
+        # that reused this PID before starting fresh.
+        if prom_multiprocess:
+            mark_process_dead(os.getpid())
         app.state.session = aiohttp.ClientSession(base_url=MBTA_V3_ENDPOINT)
         app.state.r_client = Redis().from_url(
             f"redis://:{os.environ.get('IMT_REDIS_PASSWORD', '')}@{os.environ.get('IMT_REDIS_ENDPOINT', '')}:{int(os.environ.get('IMT_REDIS_PORT', '6379'))}"
