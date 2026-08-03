@@ -4,12 +4,14 @@ from api.core import GET_DI
 from api.middleware.cache_middleware import cache_ttl
 from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import RedirectResponse
+from mbta_responses import Alerts
 from opentelemetry import trace
 from otel_utils import add_span_attributes, add_transaction_ids_to_span, set_span_error
 from pydantic import ValidationError
 from redis.exceptions import RedisError
 
 from ..limits import limiter
+from ..models import ErrorResponse
 from ..services.alerts import fetch_alerts_with_retry
 
 router = APIRouter()
@@ -23,6 +25,8 @@ tracer = trace.get_tracer(__name__)
     description=(
         "Get current MBTA alerts. ⚠️ WARNING: Do not use 'Try it out' - large response may crash browser!"
     ),
+    response_model=Alerts,
+    responses={500: {"model": ErrorResponse, "description": "Internal server error"}},
 )
 @limiter.limit("100/minute")
 @cache_ttl(60)

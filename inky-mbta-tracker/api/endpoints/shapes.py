@@ -12,6 +12,7 @@ from pydantic import ValidationError
 
 from ..core import GET_DI
 from ..limits import limiter
+from ..models import ErrorResponse, GeoJSONFeatureCollection
 
 router = APIRouter()
 
@@ -23,6 +24,8 @@ tracer = trace.get_tracer(__name__)
     "/shapes",
     summary="Get Route Shapes",
     description="Get route shapes as GeoJSON FeatureCollection.",
+    response_model=GeoJSONFeatureCollection,
+    responses={500: {"model": ErrorResponse, "description": "Internal server error"}},
 )
 @limiter.limit("70/minute")
 @cache_ttl(2 * WEEK)

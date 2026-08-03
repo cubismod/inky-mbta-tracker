@@ -19,7 +19,7 @@ from zlib_ng import zlib_ng
 
 from ..core import GET_DI, SSE_ENABLED
 from ..limits import limiter
-from ..models import VehiclesCountResponse
+from ..models import ErrorResponse, GeoJSONFeatureCollection, VehiclesCountResponse
 
 router = APIRouter()
 
@@ -33,6 +33,8 @@ tracer = trace.get_tracer(__name__)
     description=(
         "Get current vehicle positions as GeoJSON FeatureCollection. ⚠️ WARNING: Do not use 'Try it out' - large response may crash browser!"
     ),
+    response_model=GeoJSONFeatureCollection,
+    responses={500: {"model": ErrorResponse, "description": "Internal server error"}},
 )
 @cache_ttl(2)
 @limiter.limit("70/minute")
@@ -89,6 +91,19 @@ async def get_vehicles(
     "/vehicles/stream",
     summary="Stream Vehicle Positions",
     description="Server-sent events stream of vehicle position deltas",
+    responses={
+        200: {
+            "content": {
+                "text/event-stream": {"schema": DiffApiResponse.model_json_schema()},
+            },
+            "description": (
+                "SSE stream. Comment lines (those starting with `:`) carry no data. "
+                "Each `data:` line is a JSON-serialized `DiffApiResponse`."
+            ),
+        },
+        500: {"model": ErrorResponse, "description": "Internal server error"},
+        503: {"model": ErrorResponse, "description": "SSE streaming disabled"},
+    },
 )
 @limiter.limit("70/minute")
 async def get_vehicles_sse(
@@ -239,6 +254,7 @@ async def get_vehicles_json(request: Request):
     summary="Get counts of vehicles by MBTA line and vehicle type",
     description="Return counts grouped by vehicle type (light rail, heavy rail, regional rail, bus) across main line groups (RL, GL, BL, OL, SL, CR)",
     response_model=Optional[VehiclesCountResponse],
+    responses={500: {"model": ErrorResponse, "description": "Internal server error"}},
 )
 @limiter.limit("70/minute")
 @cache_ttl(30)

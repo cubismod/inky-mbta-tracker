@@ -3,19 +3,29 @@ import logging
 from api.core import GET_DI
 from api.limits import limiter
 from api.middleware.cache_middleware import cache_ttl
+from api.models import ErrorResponse
 from fastapi import APIRouter, HTTPException, Request, Response
 from mbta_client_extended import light_get_stop
 from opentelemetry import trace
 from otel_utils import add_span_attributes, add_transaction_ids_to_span, set_span_error
 from pydantic import ValidationError
 from redis import RedisError
+from shared_types.shared_types import LightStop
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
 
 
-@router.get("/stop", summary="Get limited information about an MBTA stop")
+@router.get(
+    "/stop",
+    summary="Get limited information about an MBTA stop",
+    response_model=LightStop,
+    responses={
+        404: {"description": "Stop not found", "content": {}},
+        500: {"model": ErrorResponse, "description": "Internal server error"},
+    },
+)
 @limiter.limit("10/minute")
 @cache_ttl(20 * 60)
 async def get_stop(request: Request, commons: GET_DI, id: str) -> Response:

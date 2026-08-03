@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Any
 
 from pydantic import BaseModel
 
@@ -57,3 +58,16 @@ class VehiclesCountResponse(BaseModel):
     counts: VehicleCountsByType
     totals_by_line: TotalsByLine
     generated_at: datetime
+
+
+class ErrorResponse(BaseModel):
+    """Error body returned by HTTPException-raise validators (matches FastAPI's {detail: ...} shape)."""
+
+    detail: str
+
+
+class GeoJSONFeatureCollection(BaseModel):
+    """OpenAPI schema for GeoJSON FeatureCollection responses (vehicles, shapes)."""
+
+    type: str = "FeatureCollection"
+    features: list[dict[str, Any]]

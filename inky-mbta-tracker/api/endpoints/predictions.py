@@ -4,8 +4,10 @@ from typing import Annotated
 from api.core import GET_DI
 from api.limits import limiter
 from api.middleware.cache_middleware import cache_ttl
+from api.models import ErrorResponse
 from api.services.predictions import MBTAUpstreamError, fetch_predictions
 from fastapi import APIRouter, HTTPException, Query, Request, Response
+from mbta_responses import Predictions
 from opentelemetry import trace
 from otel_utils import add_span_attributes, add_transaction_ids_to_span, set_span_error
 from pydantic import ValidationError
@@ -22,6 +24,11 @@ tracer = trace.get_tracer(__name__)
     description=(
         "Get current MBTA predictions filtered by trip_id, latitude/longitude, or both."
     ),
+    response_model=Predictions,
+    responses={
+        400: {"model": ErrorResponse, "description": "Invalid filter combination"},
+        500: {"model": ErrorResponse, "description": "Internal server error"},
+    },
 )
 @limiter.limit("70/minute")
 @cache_ttl(5)
