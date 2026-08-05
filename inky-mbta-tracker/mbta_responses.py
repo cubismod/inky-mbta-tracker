@@ -148,6 +148,7 @@ class TripResource(BaseModel):
     type: str
     relationships: dict
     attributes: TripAttributes
+    id: Optional[str] = None
 
 
 class Trips(BaseModel):
@@ -231,6 +232,7 @@ class PredictionResource(BaseModel):
 
 class Predictions(BaseModel):
     data: list[PredictionResource]
+    included: Optional[list[TripResource | StopResource | RouteResource]] = None
 
 
 class FacilityRelationships(BaseModel):

@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Any
+from typing import Any, Optional
 
 from pydantic import BaseModel
 
@@ -71,3 +71,35 @@ class GeoJSONFeatureCollection(BaseModel):
 
     type: str = "FeatureCollection"
     features: list[dict[str, Any]]
+
+
+class DepartureStop(BaseModel):
+    """Stop the departures were requested for.
+
+    `name` is only populated when MBTA inlines the matching stop resource
+    (parent-station queries return platform stops instead)."""
+
+    id: str
+    name: Optional[str] = None
+
+
+class Departure(BaseModel):
+    """A single upcoming departure, enriched with tracker data."""
+
+    trip_id: Optional[str] = None
+    route_id: str
+    route_type: Optional[int] = None
+    direction_id: Optional[int] = None
+    headsign: Optional[str] = None
+    arrival_time: Optional[datetime] = None
+    departure_time: Optional[datetime] = None
+    status: Optional[str] = None
+    alerting: bool = False
+    bikes_allowed: bool = False
+
+
+class DeparturesResponse(BaseModel):
+    """Typed response for GET /predictions/departures."""
+
+    stop: DepartureStop
+    departures: list[Departure]

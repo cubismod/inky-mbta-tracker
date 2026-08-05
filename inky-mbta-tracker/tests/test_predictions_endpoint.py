@@ -148,3 +148,19 @@ def test_api_server_registers_predictions_route(
         for route in app.routes
         if isinstance(route, APIRoute)
     )
+
+
+def test_api_server_registers_departures_route(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("IMT_RATE_LIMITING_ENABLED", "false")
+
+    from api_server import create_app
+
+    app = create_app()
+
+    assert any(
+        route.path == "/predictions/departures"
+        for route in app.routes
+        if isinstance(route, APIRoute)
+    )

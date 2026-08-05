@@ -114,7 +114,7 @@ def create_app() -> FastAPI:
             include_paths={
                 "/alerts*",
                 "/alerts.json",
-                "/predictions",
+                "/predictions*",
                 "/shapes*",
                 "/vehicles*",
                 "/stop",
