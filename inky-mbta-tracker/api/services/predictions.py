@@ -241,8 +241,10 @@ def _parse_time(value: str | None) -> datetime | None:
 def _effective_time(departure: Departure) -> datetime:
     # arrival preferred, departure fallback (matches tracker determine_time);
     # time-less entries sort last
-    return departure.arrival_time or departure.departure_time or datetime.max.replace(
-        tzinfo=UTC
+    return (
+        departure.arrival_time
+        or departure.departure_time
+        or datetime.max.replace(tzinfo=UTC)
     )
 
 

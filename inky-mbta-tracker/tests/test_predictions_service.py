@@ -301,9 +301,7 @@ async def test_fetch_stop_departures_marks_alerting_for_matching_route(
 async def test_fetch_stop_departures_marks_alerting_for_matching_trip(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _departures_patch(
-        monkeypatch, [_alert("a1", [{"route": "Red", "trip": "trip-1"}])]
-    )
+    _departures_patch(monkeypatch, [_alert("a1", [{"route": "Red", "trip": "trip-1"}])])
 
     result = await predictions.fetch_stop_departures(
         cast(ClientSession, FakeSession()), cast(Redis, None), stop="place-pktrm"
