@@ -567,7 +567,7 @@ async def watch_mbta_server_side_events(
                     logger.warning("SSE client payload error", exc_info=err)
             except* WatcherRefreshRequested:
                 reconnect_reason = "watcher_refresh_requested"
-                logger.info(
+                logger.debug(
                     "Reconnecting MBTA SSE watcher after health monitor refresh request"
                 )
             finally:
