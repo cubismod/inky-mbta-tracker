@@ -2,6 +2,7 @@ import logging
 import os
 import socket
 from datetime import UTC, datetime
+from zoneinfo import ZoneInfo
 
 import aiohttp
 from anyio import sleep
@@ -83,7 +84,9 @@ async def service_start_stop_watcher(r_client: Redis, config: Config) -> None:
             service_statuses[line] = active
             if confirmed is not None:
                 action = "started" if active else "stopped"
-                await send_ntfy_message(f"Service {line} {action}")
+                await send_ntfy_message(
+                    f"Service {line} {action} at {datetime.now(ZoneInfo('America/New_York')).strftime('%Y-%m-%d %H:%M:%S')}"
+                )
 
     while True:
         counts = await get_vehicle_route_counts(r_client, config)
