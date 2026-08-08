@@ -40,7 +40,7 @@ from shared_types.schema_versioner import schema_versioner
 from shared_types.shared_types import TaskType
 from utils import get_redis
 from vehicle_stream_diff import run_vehicle_stream_diff
-from webhook.ntfy import notify_startup
+from webhook.ntfy import notify_startup, service_start_stop_watcher
 
 load_dotenv()
 setup_logging()
@@ -335,6 +335,7 @@ async def __main__() -> None:
                 tg.start_soon(gtfs_loop, r_client, send_stream, tg, config)
 
             next_backup = get_next_backup_time()
+            tg.start_soon(service_start_stop_watcher, get_redis(redis_pool), config)
             # cron/timed tasks
             while True:
                 now = datetime.now(ZoneInfo("America/New_York"))
