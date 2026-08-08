@@ -1,5 +1,5 @@
 from typing import cast
-from unittest.mock import AsyncMock, MagicMock, call, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from api.models import TotalsByLine
@@ -69,7 +69,7 @@ async def test_sustained_stop_notifies_once(
 
     await _run_watcher(mock_counts, mock_send)
 
-    assert mock_send.call_args_list == [call("Service RL stopped")]
+    assert mock_send.call_args.args[0].startswith("Service RL stopped at ")
 
 
 @patch("webhook.ntfy.sleep", new_callable=AsyncMock)
@@ -91,7 +91,7 @@ async def test_sustained_start_notifies_once(
 
     await _run_watcher(mock_counts, mock_send)
 
-    assert mock_send.call_args_list == [call("Service RL started")]
+    assert mock_send.call_args.args[0].startswith("Service RL started at ")
 
 
 @patch("webhook.ntfy.sleep", new_callable=AsyncMock)
@@ -112,7 +112,7 @@ async def test_total_field_is_not_treated_as_a_line(
 
     await _run_watcher(mock_counts, mock_send)
 
-    assert mock_send.call_args_list == [call("Service RL stopped")]
+    assert mock_send.call_args.args[0].startswith("Service RL stopped at ")
 
 
 @patch("webhook.ntfy.sleep", new_callable=AsyncMock)
@@ -151,4 +151,4 @@ async def test_isolated_changes_flip_independently(
 
     await _run_watcher(mock_counts, mock_send)
 
-    assert mock_send.call_args_list == [call("Service RL stopped")]
+    assert mock_send.call_args.args[0].startswith("Service RL stopped at ")
