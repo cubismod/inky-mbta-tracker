@@ -15,6 +15,9 @@ logger = logging.getLogger(__name__)
 NTFY_LIFECYCLE_URL = os.getenv("NTFY_LIFECYCLE_URL")
 NTFY_BEARER_TOKEN = os.getenv("NTFY_BEARER_TOKEN")
 
+SERVICE_LINES = ("RL", "GL", "BL", "OL", "SL", "CR")
+CONFIRMATION_SAMPLES = 3
+
 
 async def send_ntfy_message(message: str) -> None:
     if not NTFY_LIFECYCLE_URL:
@@ -59,26 +62,30 @@ async def notify_startup() -> None:
 async def service_start_stop_watcher(r_client: Redis, config: Config) -> None:
     # delay 10 min for vehicle data to load on cold boot
     await sleep(10 * 60)
-    counts = await get_vehicle_route_counts(r_client, config)
 
     service_statuses: dict[str, bool] = {}
+    candidate_states: dict[str, bool] = {}
+    candidate_counts: dict[str, int] = {}
 
-    async def update_service_statuses(
-        counts: TotalsByLine, statuses: dict[str, bool], send: bool
-    ) -> None:
-        for k, v in counts.model_dump().items():
-            existing = statuses.get(k)
-            if v > 0:
-                statuses[k] = True
-                if send and existing is not None and not existing:
-                    await send_ntfy_message(f"Service {k} started")
+    async def update_service_statuses(counts: TotalsByLine) -> None:
+        for line in SERVICE_LINES:
+            active = getattr(counts, line) > 0
+            if candidate_states.get(line) != active:
+                candidate_states[line] = active
+                candidate_counts[line] = 1
             else:
-                statuses[k] = False
-                if send and existing is not None and existing:
-                    await send_ntfy_message(f"Service {k} stopped")
+                candidate_counts[line] += 1
+            if candidate_counts[line] < CONFIRMATION_SAMPLES:
+                continue
+            confirmed = service_statuses.get(line)
+            if confirmed == active:
+                continue
+            service_statuses[line] = active
+            if confirmed is not None:
+                action = "started" if active else "stopped"
+                await send_ntfy_message(f"Service {line} {action}")
 
-    await update_service_statuses(counts[1], service_statuses, False)
     while True:
         counts = await get_vehicle_route_counts(r_client, config)
-        await update_service_statuses(counts[1], service_statuses, True)
+        await update_service_statuses(counts[1])
         await sleep(5 * 60)

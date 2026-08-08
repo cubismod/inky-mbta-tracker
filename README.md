@@ -55,6 +55,7 @@ IMT_MQTT_PASS=mqtt_pass # change this!
 # Feature Flags
 IMT_RATE_LIMITING_ENABLED=true # Enable/disable rate limiting
 IMT_SSE_ENABLED=true # Enable/disable Server-Sent Events
+IMT_ENABLE_SERVICE_NOTIFICATIONS=false # Enable ntfy service start/stop notifications
 
 
 ```

@@ -335,7 +335,8 @@ async def __main__() -> None:
                 tg.start_soon(gtfs_loop, r_client, send_stream, tg, config)
 
             next_backup = get_next_backup_time()
-            tg.start_soon(service_start_stop_watcher, get_redis(redis_pool), config)
+            if os.getenv("IMT_ENABLE_SERVICE_NOTIFICATIONS", "false") == "true":
+                tg.start_soon(service_start_stop_watcher, get_redis(redis_pool), config)
             # cron/timed tasks
             while True:
                 now = datetime.now(ZoneInfo("America/New_York"))
