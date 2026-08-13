@@ -103,3 +103,16 @@ class DeparturesResponse(BaseModel):
 
     stop: DepartureStop
     departures: list[Departure]
+
+
+class HistoricalSnapshot(BaseModel):
+    """A snapshot of vehicle positions recorded at a single point in time."""
+
+    timestamp: str
+    vehicles: dict[str, Any]
+
+
+class HistoricalVehiclesResponse(BaseModel):
+    """Typed response for GET /historical/vehicles."""
+
+    snapshots: list[HistoricalSnapshot]

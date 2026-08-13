@@ -13,7 +13,7 @@ MBTA API available at <https://api-v3.mbta.com/docs/swagger/swagger.json>
 
 ## Build, Test, and Development Commands
 - Setup (uses Astral UV): `uv run python -V` to confirm env; install handled on demand.
-- Lint + type check: `task check` (ruff + pyright).
+- Lint + type check: `task check` (ruff + basedpyright).
 - Auto-fix + format: `task fix` then `task format`.
 - Run app: `task run` or `uv run inky-mbta-tracker`.
 - Run API server: `task api-server` (uvicorn via entrypoint).
@@ -37,7 +37,7 @@ Key modules:
 ## Coding Style & Naming Conventions
 - Language: Python 3.13. Indent 4 spaces, line length 88, double quotes.
 - Lint/format: Ruff enforces imports, errors, and formatting (`pyproject.toml`).
-- Types: Pyright in basic mode; add precise `typing`/`pydantic` annotations for new code.
+- Types: Basedpyright in basic mode; add precise `typing`/`pydantic` annotations for new code.
 - Naming: modules_snake_case, functions_snake_case, ClassesCamelCase, constants UPPER_SNAKE.
 
 ## Testing Guidelines
