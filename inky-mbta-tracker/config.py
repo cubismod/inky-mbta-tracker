@@ -32,6 +32,8 @@ class Config(BaseModel):
     vehicle_git_token: Optional[str] = None
     # deprecated
     vehicle_git_email: Optional[str] = None
+    # whether to follow bus line alerts via a route_type=3 SSE watcher
+    track_bus_alerts: bool = False
     # web links to status icons to use for Discord ordered in severity from 1-10
     severity_icons: Optional[list[str]] = None
     # whether to use MBTA's GTFS feed in addition to the V3 API

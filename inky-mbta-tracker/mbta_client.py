@@ -90,6 +90,7 @@ class MBTAApi:
     watcher_type: TaskType
     stop_id: Optional[str]
     route: Optional[str]
+    route_type: Optional[int] = None
     direction_filter: Optional[int]
     routes: dict[str, RouteResource]
     stop: Optional[Stop] = None
@@ -111,9 +112,11 @@ class MBTAApi:
         watcher_type: TaskType = TaskType.SCHEDULE_PREDICTIONS,
         show_on_display: bool = True,
         route_substring_filter: Optional[str] = None,
+        route_type: Optional[int] = None,
     ):
         self.stop_id = stop_id
         self.route = route
+        self.route_type = route_type
         self.direction_filter = direction_filter
         self.routes = dict()
         self.expiration_time = expiration_time
@@ -466,6 +469,10 @@ class MBTAApi:
         for ent in alert.attributes.informed_entity:
             if ent.route:
                 await self.r_client.sadd(f"alerts:route:{ent.route}", alert.id)  # type: ignore[misc]
+                if self.route_type is not None:
+                    await self.r_client.sadd(
+                        f"alerts:route_type:{self.route_type}", ent.route
+                    )  # type: ignore[misc]
             if ent.trip:
                 await self.r_client.sadd(f"alerts:trip:{ent.trip}", alert.id)  # type: ignore[misc]
                 await self.r_client.expire(f"alerts:trip:{ent.trip}", WEEK)
@@ -499,7 +506,8 @@ class MBTAApi:
                 < timedelta(minutes=4)
             ):
                 await self.r_client.hincrby(ALERTS_SET_KEY, self.route)  # type: ignore[misc]
-            await process_alert_event(alert, self.r_client, config, item_tg)
+            if self.route_type is None:
+                await process_alert_event(alert, self.r_client, config, item_tg)
             await self._save_alert_memberships(alert)
             logger.debug("Alert: %s | %s", self.route, alert.attributes.header)
 
@@ -553,6 +561,17 @@ class MBTAApi:
                         # If filtering by a single route, reset that set first
                         if self.route:
                             await self.r_client.delete(f"alerts:route:{self.route}")
+                        elif self.route_type is not None:
+                            # Clear all bus-route sets tracked in the registry
+                            registry_key = f"alerts:route_type:{self.route_type}"
+                            routes = await self.r_client.smembers(registry_key)  # type: ignore[misc]
+                            for route in routes:
+                                route_id = (
+                                    route.decode("utf-8")
+                                    if isinstance(route, (bytes, bytearray))
+                                    else route
+                                )
+                                await self.r_client.delete(f"alerts:route:{route_id}")  # type: ignore[misc]
                         for alert in alerts:
                             tg.start_soon(
                                 self._process_alert_item,
