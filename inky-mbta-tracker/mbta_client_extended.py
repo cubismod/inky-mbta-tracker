@@ -860,12 +860,18 @@ async def _watch_station_impl(
     retry=retry_if_not_exception_type(CancelledError),
 )
 async def watch_alerts(
-    r_client: Redis, route_id: Optional[str], session: ClientSession, config: Config
+    r_client: Redis,
+    route_id: Optional[str],
+    session: ClientSession,
+    config: Config,
+    route_type: Optional[int] = None,
 ) -> None:
     """Watch MBTA Alerts via SSE and persist to Redis.
 
     - If `route_id` is provided, filters alerts for that route and maintains
       `alerts:route:{route_id}` set membership.
+    - If `route_type` is provided, filters alerts by route type (e.g. 3 for
+      buses) and tracks `alerts:route_type:{route_type}` for reset handling.
     - Stores individual alerts under `alert:{id}` with a short TTL.
     """
     params: dict[str, str] = {
@@ -874,7 +880,9 @@ async def watch_alerts(
     }
     if MBTA_AUTH:
         params["api_key"] = MBTA_AUTH
-    if route_id is not None:
+    if route_type is not None:
+        params["filter[route_type]"] = str(route_type)
+    elif route_id is not None:
         params["filter[route]"] = route_id
     endpoint = str(URL(MBTA_V3_ENDPOINT) / "alerts" % dict(params))
     headers = {"accept": "text/event-stream"}
@@ -893,6 +901,7 @@ async def watch_alerts(
             span,
             {
                 "route.id": route_id or "all",
+                "route.type": route_type if route_type is not None else "all",
                 "task.type": "alerts_sse_watcher",
             },
         )
@@ -900,6 +909,7 @@ async def watch_alerts(
             r_client,
             route=route_id,
             watcher_type=TaskType.ALERTS,
+            route_type=route_type,
         ) as watcher:
             tracker_executions.labels("alerts").inc()
             await sleep(randint(1, 15))
@@ -908,6 +918,8 @@ async def watch_alerts(
                 heartbeat_key = "heartbeat:events:alerts"
                 if route_id:
                     heartbeat_key = f"heartbeat:events:alerts:{route_id}"
+                elif route_type is not None:
+                    heartbeat_key = f"heartbeat:events:alerts:route_type:{route_type}"
                 while True:
                     try:
                         await r_client.set(

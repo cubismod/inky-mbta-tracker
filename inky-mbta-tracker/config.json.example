@@ -13,5 +13,6 @@
   "vehicle_git_repo": null,
   "vehicle_git_user": null,
   "vehicle_git_token": null,
-  "vehicle_git_email": null
+  "vehicle_git_email": null,
+  "track_bus_alerts": false
 }

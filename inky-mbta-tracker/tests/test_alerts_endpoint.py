@@ -3,7 +3,7 @@ from typing import Any, cast
 
 import pytest
 from aiohttp import ClientSession
-from api.services.alerts import AlertsResult, fetch_alerts_with_retry
+from api.services.alerts import AlertsResult, fetch_alerts_with_retry, fetch_bus_alerts
 from config import Config
 from fastapi.routing import APIRoute
 from geojson_utils import collect_alerts
@@ -151,4 +151,71 @@ def test_api_server_registers_alerts_route(monkeypatch: pytest.MonkeyPatch) -> N
 
     assert any(
         route.path == "/alerts" for route in app.routes if isinstance(route, APIRoute)
+    )
+
+
+class FakeRedisPipeline:
+    def __init__(self, store: dict[str, str]) -> None:
+        self.store = store
+        self.ids: list[str] = []
+
+    def get(self, key: str) -> "FakeRedisPipeline":
+        self.ids.append(key)
+        return self
+
+    async def execute(self) -> list[str | None]:
+        return [self.store.get(key) for key in self.ids]
+
+
+class FakeRedis:
+    def __init__(self, members: set[str], store: dict[str, str]) -> None:
+        self.members = members
+        self.store = store
+
+    async def smembers(self, key: str) -> set[bytes]:
+        return {m.encode() for m in self.members}
+
+    def pipeline(self) -> FakeRedisPipeline:
+        return FakeRedisPipeline(self.store)
+
+
+@pytest.mark.anyio("asyncio")
+async def test_fetch_bus_alerts_returns_serialized_body() -> None:
+    alert = make_alert(
+        "BA1",
+        updated_at="2026-06-27T12:00:00-04:00",
+        informed_entity=[{"route": "77"}],
+    )
+    r_client = FakeRedis(members={"BA1"}, store={"alert:BA1": json.dumps(alert)})
+
+    result = await fetch_bus_alerts(cast(Redis, r_client), "77")
+
+    assert isinstance(result, AlertsResult)
+    assert result.count == 1
+    assert json.loads(result.body)["data"][0]["id"] == "BA1"
+
+
+@pytest.mark.anyio("asyncio")
+async def test_fetch_bus_alerts_missing_route_returns_empty() -> None:
+    r_client = FakeRedis(members=set(), store={})
+
+    result = await fetch_bus_alerts(cast(Redis, r_client), "77")
+
+    assert result.count == 0
+    assert json.loads(result.body) == {"data": []}
+
+
+def test_api_server_registers_bus_alerts_route(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("IMT_RATE_LIMITING_ENABLED", "false")
+
+    from api_server import create_app
+
+    app = create_app()
+
+    assert any(
+        route.path == "/alerts/bus/{route_id}"
+        for route in app.routes
+        if isinstance(route, APIRoute)
     )

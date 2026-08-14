@@ -313,6 +313,15 @@ async def __main__() -> None:
                 tg.start_soon(
                     run_vehicle_stream_diff, get_redis(redis_pool), config, tg, True
                 )
+            if config.track_bus_alerts:
+                tg.start_soon(
+                    watch_alerts,
+                    get_redis(redis_pool),
+                    None,
+                    session,
+                    config,
+                    3,
+                )
 
             tg.start_soon(background_refresh, get_redis(redis_pool), config, tg)
 
