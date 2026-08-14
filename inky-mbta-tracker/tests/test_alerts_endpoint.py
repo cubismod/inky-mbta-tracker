@@ -219,3 +219,15 @@ def test_api_server_registers_bus_alerts_route(
         for route in app.routes
         if isinstance(route, APIRoute)
     )
+
+
+@pytest.mark.anyio("asyncio")
+async def test_get_bus_alerts_rejects_non_numeric_route_id() -> None:
+    from api.endpoints.alerts import ROUTE_ID_PATTERN, get_bus_alerts
+
+    assert ROUTE_ID_PATTERN.fullmatch("77")
+    assert not ROUTE_ID_PATTERN.fullmatch("Red")
+    assert not ROUTE_ID_PATTERN.fullmatch("")
+
+    response = await get_bus_alerts(None, "Red", cast(Any, object()))  # type: ignore[arg-type]
+    assert response.status_code == 400

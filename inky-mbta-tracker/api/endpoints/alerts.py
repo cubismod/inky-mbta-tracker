@@ -18,7 +18,7 @@ from ..services.alerts import fetch_alerts_with_retry, fetch_bus_alerts
 router = APIRouter()
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
-ROUTE_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
+ROUTE_ID_PATTERN = re.compile(r"^[0-9]+$")
 
 
 @router.get(
@@ -96,6 +96,12 @@ async def get_alerts_json(request: Request) -> RedirectResponse:
 @limiter.limit("100/minute")
 @cache_ttl(60)
 async def get_bus_alerts(request: Request, route_id: str, commons: GET_DI) -> Response:
+    if not ROUTE_ID_PATTERN.fullmatch(route_id):
+        return Response(
+            content='{"detail": "Invalid route_id"}',
+            status_code=400,
+            media_type="application/json",
+        )
     with tracer.start_as_current_span("api.alerts.get_bus_alerts") as span:
         # Add transaction IDs to the span
         add_transaction_ids_to_span(span)
@@ -149,7 +155,11 @@ async def get_bus_alerts(request: Request, route_id: str, commons: GET_DI) -> Re
     response_class=RedirectResponse,
 )
 @limiter.limit("100/minute")
-async def get_bus_alerts_json(request: Request, route_id: str) -> RedirectResponse:
+async def get_bus_alerts_json(request: Request, route_id: str) -> Response:
     if not ROUTE_ID_PATTERN.fullmatch(route_id):
-        raise HTTPException(status_code=400, detail="Invalid route_id")
+        return Response(
+            content='{"detail": "Invalid route_id"}',
+            status_code=400,
+            media_type="application/json",
+        )
     return RedirectResponse(url=f"/alerts/bus/{route_id}", status_code=302)
