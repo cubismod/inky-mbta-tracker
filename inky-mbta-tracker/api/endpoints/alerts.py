@@ -1,4 +1,5 @@
 import logging
+import re
 
 from api.core import GET_DI
 from api.middleware.cache_middleware import cache_ttl
@@ -17,6 +18,7 @@ from ..services.alerts import fetch_alerts_with_retry, fetch_bus_alerts
 router = APIRouter()
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
+ROUTE_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
 @router.get(
@@ -148,4 +150,6 @@ async def get_bus_alerts(request: Request, route_id: str, commons: GET_DI) -> Re
 )
 @limiter.limit("100/minute")
 async def get_bus_alerts_json(request: Request, route_id: str) -> RedirectResponse:
+    if not ROUTE_ID_PATTERN.fullmatch(route_id):
+        raise HTTPException(status_code=400, detail="Invalid route_id")
     return RedirectResponse(url=f"/alerts/bus/{route_id}", status_code=302)
