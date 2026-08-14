@@ -224,10 +224,22 @@ def test_api_server_registers_bus_alerts_route(
 @pytest.mark.anyio("asyncio")
 async def test_get_bus_alerts_rejects_non_numeric_route_id() -> None:
     from api.endpoints.alerts import ROUTE_ID_PATTERN, get_bus_alerts
+    from starlette.requests import Request
 
     assert ROUTE_ID_PATTERN.fullmatch("77")
     assert not ROUTE_ID_PATTERN.fullmatch("Red")
     assert not ROUTE_ID_PATTERN.fullmatch("")
 
-    response = await get_bus_alerts(None, "Red", cast(Any, object()))  # type: ignore[arg-type]
+    scope: dict[str, object] = {
+        "type": "http",
+        "method": "GET",
+        "path": "/alerts/bus/Red",
+        "headers": [],
+        "query_string": b"",
+        "server": ("testserver", 80),
+        "client": ("127.0.0.1", 1234),
+        "scheme": "http",
+    }
+    request = Request(scope)
+    response = await get_bus_alerts(request, "Red", cast(Any, object()))  # type: ignore[arg-type]
     assert response.status_code == 400
