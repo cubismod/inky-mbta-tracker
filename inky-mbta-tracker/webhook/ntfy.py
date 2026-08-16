@@ -91,4 +91,4 @@ async def service_start_stop_watcher(r_client: Redis, config: Config) -> None:
     while True:
         counts = await get_vehicle_route_counts(r_client, config)
         await update_service_statuses(counts[1])
-        await sleep(5 * 60)
+        await sleep(120)
