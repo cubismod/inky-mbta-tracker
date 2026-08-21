@@ -260,7 +260,7 @@ class MBTAApi:
             # includes a random offset to prevent an API thundering herd
             max_runtime_expiration = (
                 datetime.now(UTC)
-                + timedelta(hours=1)
+                + timedelta(hours=3)
                 + timedelta(minutes=randint(0, 45))
             )
             if self.expiration_time:
@@ -320,13 +320,9 @@ class MBTAApi:
         while True:
             await sleep(randint(20, 90))
             now = datetime.now(ny_tz)
-            if (
-                self.watcher_type == TaskType.VEHICLES
-                and max_runtime_expiration
-                and datetime.now(UTC) >= max_runtime_expiration
-            ):
+            if max_runtime_expiration and datetime.now(UTC) >= max_runtime_expiration:
                 logger.debug(
-                    "Refreshing vehicle watcher (route=%s) due to scheduled restart.",
+                    "Refreshing watcher (route=%s) due to scheduled restart.",
                     self.route,
                 )
                 raise WatcherRefreshRequested
