@@ -35,6 +35,7 @@ from pydantic import ValidationError
 from redis.asyncio import Redis
 from redis_cache import get_cache, write_cache
 from redis_lock.asyncio import RedisLock
+from redis_lock.exceptions import LockNotOwnedError
 from schedule_tracker import VehicleRedisSchema
 from shapely.geometry import LineString as ShapelyLineString
 from shared_types.shared_types import LightStop
@@ -411,9 +412,8 @@ async def get_vehicle_features(
         if cached:
             return orjson.loads(cached)
 
+    features = dict[str, Feature]()
     try:
-        features = dict[str, Feature]()
-
         vehicle_keys: list[bytes] = list(await r_client.smembers("pos-data"))  # type: ignore[misc]
         redis_commands.labels("smembers").inc()
         add_current_span_attributes(
@@ -624,6 +624,11 @@ async def get_vehicle_features(
             DAY,
         )
 
+        return features
+    except LockNotOwnedError:
+        logger.warning(
+            "Vehicle features lock expired before release; returning computed features"
+        )
         return features
     except Exception:
         logger.error("Error getting vehicle features", exc_info=True)

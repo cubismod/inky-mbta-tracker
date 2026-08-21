@@ -15,6 +15,7 @@ from geojson_utils import (
     lookup_vehicle_color,
     vehicle_display_point,
 )
+from redis_lock.exceptions import LockNotOwnedError
 from shared_types.shared_types import LightStop, VehicleRedisSchema
 
 
@@ -373,6 +374,53 @@ async def test_get_vehicle_features_keeps_in_transit_vehicle_coordinates(
         -71.1218,
         42.3967,
     )
+
+
+@pytest.mark.anyio("asyncio")
+@patch("geojson_utils.RedisLock")
+@patch("geojson_utils.light_get_stops")
+async def test_get_vehicle_features_returns_features_when_lock_expires(
+    mock_light_get_stops: AsyncMock,
+    mock_redis_lock: MagicMock,
+) -> None:
+    vehicle = VehicleRedisSchema(
+        action="add",
+        id="vehicle-456",
+        current_status="IN_TRANSIT_TO",
+        direction_id=0,
+        latitude=42.0,
+        longitude=-71.0,
+        speed=15,
+        bearing=0,
+        stop="place-davis",
+        route="Red",
+        update_time=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+    redis = MagicMock()
+    redis.get = AsyncMock(return_value=None)
+    redis.smembers = AsyncMock(return_value={b"vehicle:vehicle-456"})
+    redis.mget = AsyncMock(return_value=[vehicle.model_dump_json().encode()])
+    redis.set = AsyncMock()
+    mock_light_get_stops.return_value = {
+        "place-davis": LightStop(
+            stop_id="Davis",
+            mbta_stop_id="place-davis",
+            parent_stop_id=None,
+            long=-71.1218,
+            lat=42.3967,
+        )
+    }
+    mock_redis_lock.return_value.__aexit__.side_effect = LockNotOwnedError(
+        "Unable to release non-owned lock."
+    )
+
+    features = await get_vehicle_features(
+        redis,
+        Config(vehicles_by_route=["Red"]),
+        cast(Any, MagicMock(start_soon=lambda *_a, **_kw: None)),
+    )
+
+    assert features["vehicle-456"]["geometry"]["coordinates"] == [-71.0, 42.0]
 
 
 @pytest.mark.anyio("asyncio")
