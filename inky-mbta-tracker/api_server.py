@@ -20,6 +20,7 @@ from consts import MBTA_V3_ENDPOINT
 from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from logging_setup import setup_logging
 from otel_config import initialize_otel, is_otel_enabled, setup_pyroscope, shutdown_otel
 from prometheus_client.multiprocess import mark_process_dead
@@ -122,6 +123,7 @@ def create_app() -> FastAPI:
             exclude_paths={"/vehicles/stream"},
         )
     )
+    app.add_middleware(GZipMiddleware)
 
     origins = [
         origin.strip()
