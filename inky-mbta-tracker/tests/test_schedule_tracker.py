@@ -33,6 +33,32 @@ class TestDummyScheduleEvent:
 
 
 class TestTracker:
+    @pytest.mark.anyio("asyncio")
+    async def test_process_event_executes_one_pipeline_for_event(self) -> None:
+        tracker = Tracker()
+        mock_redis = AsyncMock()
+        mock_pipeline = AsyncMock()
+        mock_pipeline.zremrangebyscore = MagicMock()
+        mock_redis.pipeline = MagicMock(return_value=mock_pipeline)
+        tracker.redis = mock_redis
+        event = VehicleRedisSchema(
+            longitude=-71.0589,
+            latitude=42.3601,
+            direction_id=0,
+            current_status="IN_TRANSIT_TO",
+            id="vehicle-123",
+            action="add",
+            route="Red",
+            update_time=datetime.now(UTC),
+            speed=25.0,
+        )
+
+        with patch.object(tracker, "process_queue_item") as process_item:
+            await tracker.process_event(event)
+
+        process_item.assert_awaited_once_with(event, mock_pipeline)
+        mock_pipeline.execute.assert_awaited_once()
+
     @patch.dict(
         os.environ,
         {

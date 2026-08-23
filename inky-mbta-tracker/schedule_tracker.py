@@ -6,40 +6,17 @@ from statistics import fmean
 from typing import Optional
 from zoneinfo import ZoneInfo
 
-import anyio
 import humanize
 from anyio import to_thread
-from anyio.abc import TaskGroup
-from anyio.streams.memory import MemoryObjectReceiveStream
 from consts import HOUR
 from geo_math import distance
 from geojson import Feature, Point
-from otel_config import get_tracer, is_otel_enabled
-from otel_utils import (
-    add_entity_id_attribute,
-    add_event_to_span,
-    add_span_attributes,
-    add_transaction_ids_to_span,
-    set_span_error,
-    set_vehicle_track_transaction_id,
-    should_trace_operation,
-)
+from otel_utils import set_vehicle_track_transaction_id
 from paho.mqtt import MQTTException, publish
 from prometheus import (
-    batch_flushes,
-    current_buffer_used,
-    last_batch_flush_ts,
     last_vehicle_write_ts,
-    max_buffer_size,
-    open_receive_streams,
-    open_send_streams,
-    pos_data_count,
     redis_commands,
-    schedule_batch_items,
     schedule_events,
-    tasks_waiting_receive,
-    tasks_waiting_send,
-    vehicle_batch_items,
     vehicle_events,
     vehicle_speeds,
 )
@@ -79,8 +56,8 @@ def dummy_schedule_event(event_id: str) -> ScheduleEvent:
 class Tracker:
     redis: Redis
 
-    def __init__(self) -> None:
-        r = Redis(
+    def __init__(self, redis: Optional[Redis] = None) -> None:
+        r = redis or Redis(
             host=os.environ.get("IMT_REDIS_ENDPOINT") or "",
             port=int(os.environ.get("IMT_REDIS_PORT", "6379") or ""),
             password=os.environ.get("IMT_REDIS_PASSWORD") or "",
@@ -526,244 +503,20 @@ class Tracker:
             case "remove":
                 await self.rm(event, pipeline)
 
-
-async def process_queue_async(
-    receive_stream: MemoryObjectReceiveStream[ScheduleEvent | VehicleRedisSchema],
-    tg: TaskGroup,
-) -> None:
-    """Async consumer that micro-batches stream items into Redis pipelines.
-
-    Improves throughput and correctness by:
-    - Building a single pipeline per batch (transaction=False)
-    - Processing items sequentially to avoid pipeline race conditions
-    - Flushing on size or latency thresholds
-    - Throttling MQTT/cleanup to a minimum interval
-
-    Note: This is a long-running background task. Individual operations are traced
-    via flush_batch spans rather than a single root span for the entire task.
-    """
-    tracker = Tracker()
-
-    batch_max_items = int(os.getenv("IMT_QUEUE_BATCH_SIZE", "256"))
-    batch_latency_ms = int(os.getenv("IMT_QUEUE_BATCH_LATENCY_MS", "50"))
-    mqtt_min_interval = int(os.getenv("IMT_MQTT_MIN_INTERVAL_SEC", "5"))
-    last_mqtt_ts = 0.0
-
-    async def flush_batch(items: list[ScheduleEvent | VehicleRedisSchema]) -> None:
-        if not items:
-            return
-
-        # Generate route monitoring transaction ID for this batch processing cycle
-        route_ids = set()
-        vehicle_count = 0
-        schedule_count = 0
-        for item in items:
-            if isinstance(item, ScheduleEvent):
-                route_ids.add(item.route_id)
-                schedule_count += 1
-            elif isinstance(item, VehicleRedisSchema):
-                route_ids.add(item.route)
-                vehicle_count += 1
-
-        # Create transaction ID with multiple routes if applicable
-        route_context = "_".join(sorted(route_ids)) if route_ids else "batch"
-        vehicle_batch_items.labels("tracker").set(vehicle_count)
-        schedule_batch_items.labels("tracker").set(schedule_count)
-
-        # Use OTEL tracing with high-volume sampling for batch processing
-        tracer = get_tracer(__name__) if is_otel_enabled() else None
-        should_trace = tracer and should_trace_operation("high_volume")
-
-        pipeline: Pipeline = tracker.redis.pipeline(transaction=False)
-
-        if should_trace and tracer:
-            with tracer.start_as_current_span("schedule_tracker.flush_batch") as span:
-                add_span_attributes(
-                    span,
-                    {
-                        "batch.size": len(items),
-                        "batch.has_schedule_events": any(
-                            isinstance(it, ScheduleEvent) for it in items
-                        ),
-                        "batch.has_vehicle_events": any(
-                            isinstance(it, VehicleRedisSchema) for it in items
-                        ),
-                        "batch.route_context": route_context,
-                    },
-                )
-
-                # Add transaction IDs to the span
-                add_transaction_ids_to_span(span)
-
-                try:
-                    for it in items:
-                        # Create individual spans for vehicle events to enable transaction visibility
-                        if isinstance(it, VehicleRedisSchema):
-                            with tracer.start_as_current_span(
-                                "schedule_tracker.process_vehicle"
-                            ) as vehicle_span:
-                                # Set vehicle-specific transaction ID for this span
-                                set_vehicle_track_transaction_id(it.id)
-                                add_transaction_ids_to_span(vehicle_span)
-                                add_entity_id_attribute(
-                                    vehicle_span,
-                                    "vehicle.id",
-                                    it.id,
-                                    entity_type="vehicle",
-                                )
-                                add_span_attributes(
-                                    vehicle_span,
-                                    {
-                                        "vehicle.route": it.route,
-                                        "vehicle.action": it.action,
-                                        "vehicle.has_stop": bool(it.stop),
-                                        "vehicle.has_occupancy": bool(
-                                            it.occupancy_status
-                                        ),
-                                    },
-                                )
-                                await tracker.process_queue_item(it, pipeline)
-                        else:
-                            # Process non-vehicle events normally
-                            add_event_to_span(
-                                span,
-                                "schedule_event_processed",
-                                {
-                                    "route.id": it.route_id,
-                                    "event.action": it.action,
-                                },
-                            )
-                            await tracker.process_queue_item(it, pipeline)
-
-                    # Housekeeping: prune expired entries in the same round trip
-                    pipeline.zremrangebyscore(
-                        "time", "-inf", str(datetime.now().timestamp())
-                    )
-                    redis_commands.labels("zremrangebyscore").inc()
-
-                    await pipeline.execute()
-                    redis_commands.labels("execute").inc()
-                    batch_flushes.labels("tracker", "ok").inc()
-                    last_batch_flush_ts.labels("tracker").set(time.time())
-                    try:
-                        pos_data_size = await tracker.redis.scard("pos-data")  # type: ignore[misc]
-                        pos_data_count.labels("tracker").set(pos_data_size)
-                        redis_commands.labels("scard").inc()
-                        span.set_attribute("redis.pos_data.size", pos_data_size)
-                    except ResponseError as err:
-                        logger.error("Unable to read pos-data size", exc_info=err)
-
-                    add_event_to_span(
-                        span, "batch_flushed", {"items_processed": len(items)}
-                    )
-                except ResponseError as err:
-                    set_span_error(span, err)
-                    logger.error(
-                        "Unable to communicate with Redis during batch flush",
-                        exc_info=err,
-                    )
-                    batch_flushes.labels("tracker", "redis_error").inc()
-                except (
-                    AttributeError,
-                    TypeError,
-                    ValueError,
-                    RuntimeError,
-                    OSError,
-                ) as err:
-                    set_span_error(span, err)
-                    logger.error("Unexpected error during batch flush", exc_info=err)
-                    batch_flushes.labels("tracker", "error").inc()
-        else:
-            # No tracing - original logic
-            try:
-                for it in items:
-                    await tracker.process_queue_item(it, pipeline)
-
-                pipeline.zremrangebyscore(
-                    "time", "-inf", str(datetime.now().timestamp())
-                )
-                redis_commands.labels("zremrangebyscore").inc()
-
-                await pipeline.execute()
-                redis_commands.labels("execute").inc()
-                batch_flushes.labels("tracker", "ok").inc()
-                last_batch_flush_ts.labels("tracker").set(time.time())
-                try:
-                    pos_data_count.labels("tracker").set(
-                        await tracker.redis.scard("pos-data")  # type: ignore[misc]
-                    )
-                    redis_commands.labels("scard").inc()
-                except ResponseError as err:
-                    logger.error("Unable to read pos-data size", exc_info=err)
-            except ResponseError as err:
-                logger.error(
-                    "Unable to communicate with Redis during batch flush", exc_info=err
-                )
-                batch_flushes.labels("tracker", "redis_error").inc()
-            except (
-                AttributeError,
-                TypeError,
-                ValueError,
-                RuntimeError,
-                OSError,
-            ) as err:
-                logger.error("Unexpected error during batch flush", exc_info=err)
-                batch_flushes.labels("tracker", "error").inc()
-
-    # Main consumer loop: receive, then drain to form a batch
-    while True:
+    async def process_event(self, event: ScheduleEvent | VehicleRedisSchema) -> None:
+        pipeline = self.redis.pipeline(transaction=False)
         try:
-            # Block for the first item to start a batch
-            first = await receive_stream.receive()
-            batch: list[ScheduleEvent | VehicleRedisSchema] = [first]
-
-            # Compute deadline for latency-bounded batching
-            deadline = anyio.current_time() + (batch_latency_ms / 1000.0)
-            while len(batch) < batch_max_items:
-                remaining = deadline - anyio.current_time()
-                if remaining <= 0:
-                    break
-                # Try to pull more items until either batch is full or latency budget expires
-                with anyio.move_on_after(remaining):
-                    nxt = await receive_stream.receive()
-                    batch.append(nxt)
-                    continue
-                break
-
-            await flush_batch(batch)
-
-            # Throttle MQTT/cleanup by time rather than per-item randomness
-            now = time.time()
-            if now - last_mqtt_ts >= mqtt_min_interval:
-                try:
-                    async with RedisLock(
-                        tracker.redis,
-                        "send_mqtt",
-                        blocking_timeout=5,
-                        expire_timeout=10,
-                    ):
-                        cleanup_pipeline = tracker.redis.pipeline(transaction=False)
-                        await tracker.cleanup(cleanup_pipeline)
-                        await cleanup_pipeline.execute()
-                        redis_commands.labels("execute").inc()
-                        await tracker.send_mqtt()
-
-                        stats = receive_stream.statistics()
-
-                        current_buffer_used.labels("main").set(
-                            stats.current_buffer_used
-                        )
-                        max_buffer_size.labels("main").set(stats.max_buffer_size)
-                        open_receive_streams.labels("main").set(
-                            stats.open_receive_streams
-                        )
-                        open_send_streams.labels("main").set(stats.open_send_streams)
-                        tasks_waiting_receive.labels("main").set(
-                            stats.tasks_waiting_receive
-                        )
-                        tasks_waiting_send.labels("main").set(stats.tasks_waiting_send)
-                    last_mqtt_ts = now
-                except ResponseError:
-                    logger.error("Error during MQTT/cleanup cycle", exc_info=True)
-        except (RuntimeError, OSError) as err:
-            logger.error("Failed in queue consumer loop", exc_info=err)
+            await self.process_queue_item(event, pipeline)
+            pipeline.zremrangebyscore("time", "-inf", str(datetime.now().timestamp()))
+            redis_commands.labels("zremrangebyscore").inc()
+            await pipeline.execute()
+            redis_commands.labels("execute").inc()
+        except (
+            ResponseError,
+            AttributeError,
+            TypeError,
+            ValueError,
+            RuntimeError,
+            OSError,
+        ) as err:
+            logger.error("Unable to process Redis event", exc_info=err)

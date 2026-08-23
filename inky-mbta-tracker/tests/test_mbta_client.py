@@ -67,7 +67,6 @@ async def test_watch_mbta_server_side_events_records_rate_limit_hit() -> None:
                 watcher,
                 endpoint,
                 {},
-                None,
                 MagicMock(),
                 0,
                 MagicMock(),
@@ -104,7 +103,6 @@ async def test_watch_mbta_server_side_events_reconnects_after_health_refresh() -
                 watcher,
                 "https://api-v3.mbta.com/vehicles?filter[route]=Red",
                 {},
-                None,
                 MagicMock(),
                 0,
                 MagicMock(),
@@ -747,9 +745,7 @@ class TestQueueEventCommuterRailId:
             ),
         )
 
-        send_stream = MagicMock()
-        sent: list = []
-        send_stream.send = AsyncMock(side_effect=lambda ev: sent.append(ev))
+        task_group = MagicMock()
 
         api = MBTAApi(
             cast(RedisClient, AsyncMock()),
@@ -773,17 +769,16 @@ class TestQueueEventCommuterRailId:
         )
         api.get_headsign = AsyncMock(return_value="Worcester")
         api.get_route = AsyncMock(return_value=None)
+        api.tracker.process_event = AsyncMock()
 
         await api.queue_event(
             vehicle,
             "update",
-            send_stream,
             cast(Any, MagicMock(closed=False)),
-            cast(Any, MagicMock(start_soon=lambda *_a, **_kw: None)),
+            task_group,
         )
 
-        assert len(sent) == 1
-        event = sent[0]
+        event = task_group.start_soon.call_args.args[1]
         assert isinstance(event, VehicleRedisSchema)
         assert event.headsign == "Worcester"
         api.get_headsign.assert_awaited_once()
@@ -813,9 +808,7 @@ class TestQueueEventCommuterRailId:
             ),
         )
 
-        send_stream = MagicMock()
-        sent: list = []
-        send_stream.send = AsyncMock(side_effect=lambda ev: sent.append(ev))
+        task_group = MagicMock()
 
         api = MBTAApi(
             cast(RedisClient, AsyncMock()),
@@ -837,17 +830,16 @@ class TestQueueEventCommuterRailId:
                 ]
             )
         )
+        api.tracker.process_event = AsyncMock()
 
         await api.queue_event(
             vehicle,
             "update",
-            send_stream,
             cast(Any, MagicMock(closed=False)),
-            cast(Any, MagicMock(start_soon=lambda *_a, **_kw: None)),
+            task_group,
         )
 
-        assert len(sent) == 1
-        event = sent[0]
+        event = task_group.start_soon.call_args.args[1]
         assert isinstance(event, VehicleRedisSchema)
         assert event.id == "y1817"
         assert event.short_name is None

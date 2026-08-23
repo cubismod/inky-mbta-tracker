@@ -7,9 +7,8 @@ from zoneinfo import ZoneInfo
 
 import aiohttp
 import click
-from anyio import create_memory_object_stream, create_task_group, run, sleep
+from anyio import create_task_group, run, sleep
 from anyio.abc import TaskGroup
-from anyio.streams.memory import MemoryObjectSendStream
 from config import Config, StopSetup, load_config
 from consts import MBTA_V3_ENDPOINT
 from dotenv import load_dotenv
@@ -30,11 +29,6 @@ from prometheus_client import start_http_server
 from redis.asyncio import Redis
 from redis.asyncio.connection import ConnectionPool
 from redis_backup import RedisBackup
-from schedule_tracker import (
-    ScheduleEvent,
-    VehicleRedisSchema,
-    process_queue_async,
-)
 from sentry_config import initialize_sentry
 from shared_types.schema_versioner import schema_versioner
 from shared_types.shared_types import TaskType
@@ -68,7 +62,6 @@ MAX_TASK_RESTART_MINS = 120
 def start_task(
     r_client: Redis,
     target: TaskType,
-    send_stream: MemoryObjectSendStream[ScheduleEvent | VehicleRedisSchema],
     tg: TaskGroup,
     session: aiohttp.ClientSession,
     config: Config,
@@ -90,7 +83,6 @@ def start_task(
                     stop.stop_id,
                     stop.route_filter,
                     direction_filter,
-                    send_stream,
                     stop.transit_time_min,
                     stop.show_on_display,
                     tg,
@@ -105,7 +97,6 @@ def start_task(
                     stop.stop_id,
                     stop.route_filter,
                     direction_filter,
-                    send_stream,
                     stop.transit_time_min,
                     exp_time,
                     stop.show_on_display,
@@ -118,7 +109,6 @@ def start_task(
             tg.start_soon(
                 watch_vehicles,
                 r_client,
-                send_stream,
                 exp_time,
                 route_id or "",
                 config,
@@ -239,10 +229,6 @@ async def stale_key_cleanup_task(r_client: Redis) -> None:
 async def __main__() -> None:
     config = load_config()
 
-    send_stream, receive_stream = create_memory_object_stream[
-        ScheduleEvent | VehicleRedisSchema
-    ](max_buffer_size=5000)
-
     redis_pool = ConnectionPool().from_url(create_redis_url())
 
     await schema_versioner(get_redis(redis_pool))
@@ -260,7 +246,6 @@ async def __main__() -> None:
                         start_task(
                             get_redis(redis_pool),
                             TaskType.SCHEDULES,
-                            send_stream,
                             tg,
                             session,
                             config,
@@ -270,7 +255,6 @@ async def __main__() -> None:
                         start_task(
                             get_redis(redis_pool),
                             TaskType.SCHEDULE_PREDICTIONS,
-                            send_stream,
                             tg,
                             session,
                             config,
@@ -284,7 +268,6 @@ async def __main__() -> None:
                     start_task(
                         get_redis(redis_pool),
                         TaskType.VEHICLES,
-                        send_stream,
                         tg,
                         session,
                         config,
@@ -301,7 +284,6 @@ async def __main__() -> None:
                     start_task(
                         get_redis(redis_pool),
                         TaskType.VEHICLES,
-                        send_stream,
                         tg,
                         session,
                         config,
@@ -323,9 +305,6 @@ async def __main__() -> None:
 
             tg.start_soon(background_refresh, get_redis(redis_pool), config, tg)
 
-            # consumer
-            tg.start_soon(process_queue_async, receive_stream, tg)
-
             # Start heartbeat task for healthcheck monitoring
             tg.start_soon(heartbeat_task, get_redis(redis_pool))
 
@@ -339,7 +318,7 @@ async def __main__() -> None:
 
             if config.gtfs:
                 r_client = get_redis(redis_pool)
-                tg.start_soon(gtfs_loop, r_client, send_stream, tg, config)
+                tg.start_soon(gtfs_loop, r_client, tg, config)
 
             next_backup = get_next_backup_time()
             if os.getenv("IMT_ENABLE_SERVICE_NOTIFICATIONS", "false") == "true":
