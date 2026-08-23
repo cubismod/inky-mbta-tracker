@@ -13,7 +13,6 @@ import aiohttp
 from aiohttp import ClientSession
 from anyio import create_task_group, sleep
 from anyio.abc import TaskGroup
-from anyio.streams.memory import MemoryObjectSendStream
 from async_lru import alru_cache
 from config import Config
 from consts import (
@@ -59,7 +58,12 @@ from pydantic import TypeAdapter, ValidationError
 from redis.asyncio.client import Redis
 from redis.exceptions import RedisError
 from redis_cache import get_cache, write_cache
-from schedule_tracker import ScheduleEvent, VehicleRedisSchema, dummy_schedule_event
+from schedule_tracker import (
+    ScheduleEvent,
+    Tracker,
+    VehicleRedisSchema,
+    dummy_schedule_event,
+)
 from shared_types.shared_types import TaskType
 from tenacity import (
     before_sleep_log,
@@ -100,6 +104,7 @@ class MBTAApi:
     r_client: Redis
     show_on_display: bool = True
     route_substring_filter: Optional[str] = None
+    tracker: Tracker
 
     def __init__(
         self,
@@ -124,6 +129,7 @@ class MBTAApi:
         self.r_client = r_client
         self.show_on_display = show_on_display
         self.route_substring_filter = route_substring_filter
+        self.tracker = Tracker(r_client)
 
         if (
             stop_id
@@ -423,29 +429,24 @@ class MBTAApi:
         self,
         item: PredictionResource | ScheduleResource | VehicleResource,
         event_type: str,
-        send_stream: MemoryObjectSendStream[ScheduleEvent | VehicleRedisSchema],
         session: ClientSession,
+        tg: TaskGroup,
         transit_time_min: Optional[int] = None,
     ) -> None:
-        async with create_task_group() as item_tg:
-            await self.queue_event(
-                item,
-                event_type,
-                send_stream,
-                session,
-                item_tg,
-                transit_time_min,
-            )
+        await self.queue_event(item, event_type, session, tg, transit_time_min)
 
     async def _send_remove_event(
         self,
         type_and_id: TypeAndID,
-        send_stream: MemoryObjectSendStream[ScheduleEvent | VehicleRedisSchema],
+        tg: TaskGroup,
     ) -> None:
         if self._parses_prediction_events():
-            await send_stream.send(dummy_schedule_event(type_and_id.id))
+            tg.start_soon(
+                self.tracker.process_event, dummy_schedule_event(type_and_id.id)
+            )
         elif self.route:
-            await send_stream.send(
+            tg.start_soon(
+                self.tracker.process_event,
                 VehicleRedisSchema(
                     longitude=0,
                     latitude=0,
@@ -456,7 +457,7 @@ class MBTAApi:
                     route=self.route,
                     update_time=datetime.now().astimezone(UTC),
                     bearing=0,
-                )
+                ),
             )
 
     async def _save_alert_memberships(self, alert: AlertResource) -> None:
@@ -535,7 +536,6 @@ class MBTAApi:
         self,
         data: str,
         event_type: str,
-        send_stream: MemoryObjectSendStream[ScheduleEvent | VehicleRedisSchema] | None,
         transit_time_min: int,
         session: ClientSession,
         tg: TaskGroup,
@@ -595,44 +595,37 @@ class MBTAApi:
                 match event_type:
                     case "reset":
                         items = self._parse_live_reset_items(data)
-                        if send_stream is not None:
-                            for item in items:
-                                tg.start_soon(
-                                    self._queue_item_event,
-                                    item,
-                                    event_type,
-                                    send_stream,
-                                    session,
-                                    transit_time_min,
-                                )
-                            if self._parses_prediction_events() and len(items) == 0:
-                                tg.start_soon(
-                                    self.save_schedule,
-                                    transit_time_min,
-                                    send_stream,
-                                    session,
-                                    tg,
-                                    timedelta(hours=4),
-                                )
-
-                    case "add" | "update":
-                        item = self._parse_live_item(data)
-                        if send_stream is not None:
+                        for item in items:
                             tg.start_soon(
                                 self._queue_item_event,
                                 item,
                                 event_type,
-                                send_stream,
                                 session,
+                                tg,
                                 transit_time_min,
                             )
+                        if self._parses_prediction_events() and len(items) == 0:
+                            tg.start_soon(
+                                self.save_schedule,
+                                transit_time_min,
+                                session,
+                                tg,
+                                timedelta(hours=4),
+                            )
+
+                    case "add" | "update":
+                        item = self._parse_live_item(data)
+                        tg.start_soon(
+                            self._queue_item_event,
+                            item,
+                            event_type,
+                            session,
+                            tg,
+                            transit_time_min,
+                        )
                     case "remove":
                         type_and_id = TypeAndID.model_validate_json(data, strict=False)
-                        # directly interact with the queue here to use a dummy object
-                        if send_stream is not None:
-                            tg.start_soon(
-                                self._send_remove_event, type_and_id, send_stream
-                            )
+                        tg.start_soon(self._send_remove_event, type_and_id, tg)
                 tg.start_soon(self._save_live_negative_cache, cache_key)
             except ValidationError as err:
                 logger.error("Unable to parse schedule", exc_info=err)
@@ -708,7 +701,6 @@ class MBTAApi:
         self,
         item: PredictionResource | ScheduleResource | VehicleResource,
         event_type: str,
-        send_stream: MemoryObjectSendStream[ScheduleEvent | VehicleRedisSchema],
         session: ClientSession,
         tg: TaskGroup,
         transit_time_min: Optional[int] = None,
@@ -782,7 +774,7 @@ class MBTAApi:
                         bikes_allowed=bikes_allowed,
                         show_on_display=self.show_on_display,
                     )
-                    await send_stream.send(event)
+                    tg.start_soon(self.tracker.process_event, event)
         else:
             occupancy = item.attributes.occupancy_status
             carriage_ids = list[str]()
@@ -852,15 +844,7 @@ class MBTAApi:
                 event.stop = item.relationships.stop.data.id
             if len(carriage_ids) > 0 and isinstance(event, VehicleRedisSchema):
                 event.carriages = carriage_ids
-            redis_vehicle_id = f"vehicle:{vehicle_id}"
-            tg.start_soon(
-                write_cache,
-                self.r_client,
-                redis_vehicle_id,
-                event.model_dump_json(),
-                10,
-            )
-            await send_stream.send(event)
+            tg.start_soon(self.tracker.process_event, event)
 
     @retry(
         wait=wait_exponential_jitter(initial=5, jitter=20, max=60),
@@ -1085,7 +1069,6 @@ class MBTAApi:
     async def save_schedule(
         self,
         transit_time_min: int,
-        send_stream: MemoryObjectSendStream[ScheduleEvent | VehicleRedisSchema],
         session: ClientSession,
         tg: TaskGroup,
         time_limit: Optional[timedelta] = None,
@@ -1136,8 +1119,8 @@ class MBTAApi:
                         self._queue_item_event,
                         item,
                         "reset",
-                        send_stream,
                         session,
+                        tg,
                         transit_time_min,
                     )
             except ValidationError as err:

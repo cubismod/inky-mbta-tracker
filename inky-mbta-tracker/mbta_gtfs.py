@@ -7,7 +7,6 @@ from typing import Any, Optional
 import aiohttp
 from anyio import sleep
 from anyio.abc import TaskGroup
-from anyio.streams.memory import MemoryObjectSendStream
 from config import Config
 from consts import MBTA_V3_ENDPOINT
 from google.protobuf.json_format import MessageToDict
@@ -17,7 +16,7 @@ from prometheus import mbta_gtfs_vehicle_event
 from pydantic import ValidationError
 from redis.asyncio import Redis
 from redis_cache import get_cache
-from shared_types.shared_types import ScheduleEvent, VehicleRedisSchema
+from shared_types.shared_types import VehicleRedisSchema
 from tenacity import (
     before_sleep_log,
     retry,
@@ -71,7 +70,6 @@ async def _should_replace_current_event(
 async def _process_gtfs_event(
     vehicle_entity: dict[str, Any],
     r_client: Redis,
-    send_stream: MemoryObjectSendStream[ScheduleEvent | VehicleRedisSchema],
     session: aiohttp.ClientSession,
     mbta_session: aiohttp.ClientSession,
     tg: TaskGroup,
@@ -133,7 +131,8 @@ async def _process_gtfs_event(
     )
     if await _should_replace_current_event(vehicle, r_client, fields["id"]):
         mbta_gtfs_vehicle_event.labels(route_id=route_id).inc()
-        await send_stream.send(vehicle)
+        async with MBTAApi(r_client) as mbta_client:
+            tg.start_soon(mbta_client.tracker.process_event, vehicle)
 
 
 @retry(
@@ -143,7 +142,6 @@ async def _process_gtfs_event(
 )
 async def gtfs_loop(
     r_client: Redis,
-    send_stream: MemoryObjectSendStream[ScheduleEvent | VehicleRedisSchema],
     tg: TaskGroup,
     config: Config,
 ):
@@ -174,7 +172,6 @@ async def gtfs_loop(
                                                     _process_gtfs_event,
                                                     entity_dict,
                                                     r_client,
-                                                    send_stream,
                                                     session,
                                                     mbta_session,
                                                     tg,

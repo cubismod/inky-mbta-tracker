@@ -70,67 +70,12 @@ schema_key_counts = Gauge(
     multiprocess_mode="livesum",
 )
 
-current_buffer_used = Gauge(
-    "imt_current_buffer_used",
-    "number of items stored in the buffer",
-    ["name"],
-    multiprocess_mode="livesum",
-)
-max_buffer_size = Gauge(
-    "imt_max_buffer_size",
-    "maximum number of items that can be stored on this stream (or math.inf)",
-    ["name"],
-    multiprocess_mode="liveall",
-)
-open_receive_streams = Gauge(
-    "imt_open_receive_streams",
-    "number of unclosed clones of the receive stream",
-    ["name"],
-    multiprocess_mode="livesum",
-)
-open_send_streams = Gauge(
-    "imt_open_send_streams",
-    "number of unclosed clones of the send stream",
-    ["name"],
-    multiprocess_mode="livesum",
-)
-tasks_waiting_receive = Gauge(
-    "imt_tasks_waiting_receive",
-    "number of tasks blocked on MemoryObjectReceiveStream.receive()",
-    ["name"],
-    multiprocess_mode="livesum",
-)
-tasks_waiting_send = Gauge(
-    "imt_tasks_waiting_send",
-    "number of tasks blocked on MemoryObjectSendStream.send()",
-    ["name"],
-    multiprocess_mode="livesum",
-)
-
 server_side_events = Counter(
     "imt_server_side_events", "Number of server-side events", ["id"]
 )
 
-vehicle_batch_items = Gauge(
-    "imt_vehicle_batch_items",
-    "Vehicles processed in last batch",
-    ["name"],
-    multiprocess_mode="livesum",
-)
-
 alerts_counter = Counter(
     "imt_alerts", "Counts of Alerts", ["route", "severity", "effect"]
-)
-
-schedule_batch_items = Gauge(
-    "imt_schedule_batch_items",
-    "Schedule events processed in last batch",
-    ["name"],
-    multiprocess_mode="livesum",
-)
-
-batch_flushes = Counter(
-    "imt_batch_flushes", "Batch flushes by outcome", ["name", "outcome"]
 )
 
 last_vehicle_write_ts = Gauge(
@@ -140,12 +85,6 @@ last_vehicle_write_ts = Gauge(
     multiprocess_mode="livemax",
 )
 
-last_batch_flush_ts = Gauge(
-    "imt_last_batch_flush_ts_seconds",
-    "Epoch seconds of last batch flush",
-    ["name"],
-    multiprocess_mode="livemax",
-)
 
 vehicle_stream_pubsub = Gauge(
     "imt_vehicle_stream_pubsub",
@@ -157,13 +96,6 @@ vehicle_stream_pubsub = Gauge(
 vehicle_stream_subsribers = Gauge(
     "imt_vehicle_stream_subscribers",
     "Active subscribers to the vehicle stream",
-    multiprocess_mode="livesum",
-)
-
-pos_data_count = Gauge(
-    "imt_pos_data_count",
-    "Count of members in pos-data",
-    ["name"],
     multiprocess_mode="livesum",
 )
 

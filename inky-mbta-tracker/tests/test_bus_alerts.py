@@ -92,7 +92,7 @@ async def test_alerts_reset_clears_registry_backed_route_sets() -> None:
     tg = MagicMock()
 
     await api.parse_live_api_response(
-        reset_body, "reset", None, 0, MagicMock(closed=False), tg, Config()
+        reset_body, "reset", 0, MagicMock(closed=False), tg, Config()
     )
 
     assert any(

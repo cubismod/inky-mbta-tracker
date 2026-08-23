@@ -12,7 +12,6 @@ from aiohttp.client_exceptions import ClientPayloadError, ClientResponseError
 from aiosseclient import aiosseclient
 from anyio import create_task_group, sleep
 from anyio.abc import TaskGroup
-from anyio.streams.memory import MemoryObjectSendStream
 from config import Config
 from consts import (
     HOUR,
@@ -42,7 +41,6 @@ from prometheus import (
 from pydantic import ValidationError
 from redis.asyncio.client import Redis
 from redis_cache import get_cache, write_cache
-from schedule_tracker import ScheduleEvent, VehicleRedisSchema
 from shared_types.shared_types import LightStop, LineRoute, RouteShapes, TaskType
 from tenacity import (
     before_log,
@@ -482,7 +480,6 @@ async def watch_mbta_server_side_events(
     watcher: "MBTAApi",
     endpoint: str,
     headers: dict[str, str],
-    send_stream: MemoryObjectSendStream[ScheduleEvent | VehicleRedisSchema] | None,
     session: ClientSession,
     transit_time_min: int,
     config: Config,
@@ -500,7 +497,7 @@ async def watch_mbta_server_side_events(
                 span,
                 {
                     "mbta.sse.watcher": watcher.gen_unique_id(),
-                    "mbta.sse.has_send_stream": send_stream is not None,
+                    "mbta.sse.event_processing": "task_group",
                     "mbta.sse.transit_time_min": transit_time_min,
                 },
             )
@@ -520,7 +517,6 @@ async def watch_mbta_server_side_events(
                                     watcher.parse_live_api_response,
                                     event.data,
                                     event.event,
-                                    send_stream,
                                     transit_time_min,
                                     session,
                                     tg,
@@ -592,7 +588,6 @@ async def watch_static_schedule(
     stop_id: str,
     route: str | None,
     direction: int | None,
-    send_stream: MemoryObjectSendStream[ScheduleEvent | VehicleRedisSchema],
     transit_time_min: int,
     show_on_display: bool,
     tg: TaskGroup,
@@ -643,9 +638,7 @@ async def watch_static_schedule(
                         route_substring_filter=route_substring_filter,
                     ) as watcher:
                         await watcher.save_own_stop(session, tg)
-                        await watcher.save_schedule(
-                            transit_time_min, send_stream, session, tg
-                        )
+                        await watcher.save_schedule(transit_time_min, session, tg)
                         refresh_time = datetime.now().astimezone(UTC) + timedelta(
                             hours=randint(2, 6)
                         )
@@ -670,7 +663,6 @@ async def watch_static_schedule(
 )
 async def watch_vehicles(
     r_client: Redis,
-    send_stream: MemoryObjectSendStream[ScheduleEvent | VehicleRedisSchema],
     expiration_time: Optional[datetime],
     route_id: str,
     config: Config,
@@ -729,7 +721,6 @@ async def watch_vehicles(
                     watcher,
                     endpoint,
                     headers,
-                    send_stream,
                     session=session,
                     transit_time_min=0,
                     config=config,
@@ -744,7 +735,6 @@ async def watch_station(
     stop_id: str,
     route: str | None,
     direction_filter: Optional[int],
-    send_stream: MemoryObjectSendStream[ScheduleEvent | VehicleRedisSchema],
     transit_time_min: int,
     expiration_time: Optional[datetime],
     show_on_display: bool,
@@ -774,7 +764,6 @@ async def watch_station(
                 stop_id,
                 route,
                 direction_filter,
-                send_stream,
                 transit_time_min,
                 expiration_time,
                 show_on_display,
@@ -789,7 +778,6 @@ async def watch_station(
             stop_id,
             route,
             direction_filter,
-            send_stream,
             transit_time_min,
             expiration_time,
             show_on_display,
@@ -805,7 +793,6 @@ async def _watch_station_impl(
     stop_id: str,
     route: str | None,
     direction_filter: Optional[int],
-    send_stream: MemoryObjectSendStream[ScheduleEvent | VehicleRedisSchema],
     transit_time_min: int,
     expiration_time: Optional[datetime],
     show_on_display: bool,
@@ -849,7 +836,7 @@ async def _watch_station_impl(
         if watcher.stop:
             tracker_executions.labels(watcher.stop.data.attributes.name).inc()
         await watch_mbta_server_side_events(
-            watcher, endpoint, headers, send_stream, session, transit_time_min, config
+            watcher, endpoint, headers, session, transit_time_min, config
         )
 
 
@@ -937,7 +924,6 @@ async def watch_alerts(
                         watcher,
                         endpoint,
                         headers,
-                        None,
                         session=session,
                         transit_time_min=0,
                         config=config,

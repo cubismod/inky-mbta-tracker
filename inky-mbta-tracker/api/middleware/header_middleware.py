@@ -67,6 +67,9 @@ R = TypeVar("R")
 class NoOpLimiter:
     """No-op limiter for when rate limiting is disabled"""
 
+    def exempt(self, func: Callable[P, R]) -> Callable[P, R]:
+        return func
+
     def limit(self, rate: str) -> Callable[[Callable[P, R]], Callable[P, R]]:
         def decorator(func: Callable[P, R]) -> Callable[P, R]:
             # Preserve sync/async behavior of the wrapped function
