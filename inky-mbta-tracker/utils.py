@@ -1,3 +1,4 @@
+import os
 from typing import TYPE_CHECKING
 
 from redis.asyncio import Redis
@@ -9,6 +10,10 @@ if TYPE_CHECKING:
 
 def get_redis(pool: ConnectionPool) -> Redis:
     return Redis().from_pool(pool)
+
+
+def create_redis_url() -> str:
+    return f"redis://:{os.environ.get('IMT_REDIS_PASSWORD', '')}@{os.environ.get('IMT_REDIS_ENDPOINT', '')}:{int(os.environ.get('IMT_REDIS_PORT', '6379'))}"
 
 
 def hex_color_to_int(hex_color: str, default: int = 0) -> int:

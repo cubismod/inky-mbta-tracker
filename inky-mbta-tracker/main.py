@@ -38,7 +38,7 @@ from schedule_tracker import (
 from sentry_config import initialize_sentry
 from shared_types.schema_versioner import schema_versioner
 from shared_types.shared_types import TaskType
-from utils import get_redis
+from utils import create_redis_url, get_redis
 from vehicle_stream_diff import run_vehicle_stream_diff
 from webhook.ntfy import notify_startup, service_start_stop_watcher
 
@@ -243,9 +243,7 @@ async def __main__() -> None:
         ScheduleEvent | VehicleRedisSchema
     ](max_buffer_size=5000)
 
-    redis_pool = ConnectionPool().from_url(
-        f"redis://:{os.environ.get('IMT_REDIS_PASSWORD', '')}@{os.environ.get('IMT_REDIS_ENDPOINT', '')}:{int(os.environ.get('IMT_REDIS_PORT', '6379'))}"
-    )
+    redis_pool = ConnectionPool().from_url(create_redis_url())
 
     await schema_versioner(get_redis(redis_pool))
 
