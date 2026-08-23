@@ -844,14 +844,6 @@ class MBTAApi:
                 event.stop = item.relationships.stop.data.id
             if len(carriage_ids) > 0 and isinstance(event, VehicleRedisSchema):
                 event.carriages = carriage_ids
-            redis_vehicle_id = f"vehicle:{vehicle_id}"
-            tg.start_soon(
-                write_cache,
-                self.r_client,
-                redis_vehicle_id,
-                event.model_dump_json(),
-                10,
-            )
             tg.start_soon(self.tracker.process_event, event)
 
     @retry(

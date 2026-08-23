@@ -778,6 +778,10 @@ class TestQueueEventCommuterRailId:
             task_group,
         )
 
+        task_group.start_soon.assert_called_once_with(
+            api.tracker.process_event,
+            task_group.start_soon.call_args.args[1],
+        )
         event = task_group.start_soon.call_args.args[1]
         assert isinstance(event, VehicleRedisSchema)
         assert event.headsign == "Worcester"
@@ -839,6 +843,10 @@ class TestQueueEventCommuterRailId:
             task_group,
         )
 
+        task_group.start_soon.assert_called_once_with(
+            api.tracker.process_event,
+            task_group.start_soon.call_args.args[1],
+        )
         event = task_group.start_soon.call_args.args[1]
         assert isinstance(event, VehicleRedisSchema)
         assert event.id == "y1817"
