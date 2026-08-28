@@ -361,6 +361,22 @@ class MBTAApi:
                     if not failtime:
                         failtime = now + timedelta(seconds=hc_fail_threshold)
 
+    async def write_event_heartbeat(self) -> None:
+        """Record SSE stream liveness so the health monitor can detect stalled streams."""
+        if self.watcher_type != TaskType.ALERTS:
+            return
+        heartbeat_key = "heartbeat:events:alerts"
+        if self.route:
+            heartbeat_key = f"heartbeat:events:alerts:{self.route}"
+        elif self.route_type is not None:
+            heartbeat_key = f"heartbeat:events:alerts:route_type:{self.route_type}"
+        try:
+            await self.r_client.set(
+                heartbeat_key, datetime.now(UTC).isoformat(), ex=2 * HOUR
+            )  # type: ignore[misc]
+        except RedisError as err:
+            logger.error("Failed to write alerts event heartbeat", exc_info=err)
+
     @alru_cache(maxsize=256)
     async def get_headsign(
         self,

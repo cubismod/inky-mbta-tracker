@@ -10,12 +10,12 @@ import aiohttp
 from aiohttp import ClientSession
 from aiohttp.client_exceptions import ClientPayloadError, ClientResponseError
 from aiosseclient import aiosseclient
-from anyio import create_task_group, sleep
+from anyio import create_task_group, fail_after, sleep
 from anyio.abc import TaskGroup
 from config import Config
 from consts import (
-    HOUR,
     MBTA_V3_ENDPOINT,
+    SSE_INACTIVITY_TIMEOUT,
     TWO_MONTHS,
     YEAR,
 )
@@ -508,11 +508,26 @@ async def watch_mbta_server_side_events(
                     async with create_task_group() as tg:
                         tg.start_soon(watcher._monitor_health, tg)
                         try:
-                            async for event in aiosseclient(
+                            events = aiosseclient(
                                 endpoint, headers=headers, raise_for_status=True
-                            ):
+                            )
+                            while True:
+                                try:
+                                    with fail_after(SSE_INACTIVITY_TIMEOUT):
+                                        event = await events.__anext__()
+                                except StopAsyncIteration:
+                                    reconnect_reason = "stream_ended"
+                                    break
+                                except TimeoutError:
+                                    reconnect_reason = "inactivity_timeout"
+                                    logger.warning(
+                                        "MBTA SSE stream idle for over %s seconds; reconnecting",
+                                        SSE_INACTIVITY_TIMEOUT,
+                                    )
+                                    break
                                 event_count += 1
                                 server_side_events.labels(watcher.gen_unique_id()).inc()
+                                await watcher.write_event_heartbeat()
                                 tg.start_soon(
                                     watcher.parse_live_api_response,
                                     event.data,
@@ -901,33 +916,17 @@ async def watch_alerts(
             tracker_executions.labels("alerts").inc()
             await sleep(randint(1, 15))
 
-            async def write_alerts_heartbeat() -> None:
-                heartbeat_key = "heartbeat:events:alerts"
-                if route_id:
-                    heartbeat_key = f"heartbeat:events:alerts:{route_id}"
-                elif route_type is not None:
-                    heartbeat_key = f"heartbeat:events:alerts:route_type:{route_type}"
-                while True:
-                    try:
-                        await r_client.set(
-                            heartbeat_key, datetime.now(UTC).isoformat(), ex=2 * HOUR
-                        )
-                    except Exception as e:
-                        set_span_error(span, e)
-                        logger.error("Failed to write alerts heartbeat", exc_info=e)
-                    await sleep(30)
-
+            # stream liveness is recorded via MBTAApi.write_event_heartbeat per SSE
+            # event, so the health monitor detects stalled connections
             try:
-                async with create_task_group() as tg:
-                    tg.start_soon(write_alerts_heartbeat)
-                    await watch_mbta_server_side_events(
-                        watcher,
-                        endpoint,
-                        headers,
-                        session=session,
-                        transit_time_min=0,
-                        config=config,
-                    )
+                await watch_mbta_server_side_events(
+                    watcher,
+                    endpoint,
+                    headers,
+                    session=session,
+                    transit_time_min=0,
+                    config=config,
+                )
             except Exception as exc:
                 set_span_error(span, exc)
                 raise
