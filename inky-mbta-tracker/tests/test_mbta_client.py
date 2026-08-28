@@ -1,12 +1,15 @@
 import json
 from asyncio import CancelledError
 from datetime import UTC
+from types import SimpleNamespace
 from typing import Any, Optional, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import anyio
+import mbta_client_extended
 import pytest
 from aiohttp import ClientResponseError
+from consts import HOUR
 from exceptions import WatcherRefreshRequested
 from mbta_client import (
     MBTAApi,
@@ -851,6 +854,159 @@ class TestQueueEventCommuterRailId:
         assert isinstance(event, VehicleRedisSchema)
         assert event.id == "y1817"
         assert event.short_name is None
+
+
+@pytest.mark.anyio("asyncio")
+class TestAlertsEventHeartbeat:
+    def _build_alerts_api(
+        self, route: Optional[str] = None, route_type: Optional[int] = None
+    ) -> MBTAApi:
+        return MBTAApi(
+            cast(RedisClient, AsyncMock()),
+            route=route,
+            route_type=route_type,
+            watcher_type=TaskType.ALERTS,
+        )
+
+    async def test_write_event_heartbeat_uses_alerts_key(self) -> None:
+        api = self._build_alerts_api(route="Red")
+        await api.write_event_heartbeat()
+        set_call = cast(Any, api.r_client.set).await_args
+        assert set_call.args[0] == "heartbeat:events:alerts:Red"
+        assert set_call.kwargs["ex"] == 2 * HOUR
+
+    async def test_write_event_heartbeat_uses_route_type_key(self) -> None:
+        api = self._build_alerts_api(route_type=3)
+        await api.write_event_heartbeat()
+        set_call = cast(Any, api.r_client.set).await_args
+        assert set_call.args[0] == "heartbeat:events:alerts:route_type:3"
+
+    async def test_write_event_heartbeat_uses_global_key_without_filters(self) -> None:
+        api = self._build_alerts_api()
+        await api.write_event_heartbeat()
+        set_call = cast(Any, api.r_client.set).await_args
+        assert set_call.args[0] == "heartbeat:events:alerts"
+
+    async def test_write_event_heartbeat_noop_for_non_alerts_watchers(self) -> None:
+        api = MBTAApi(cast(RedisClient, AsyncMock()), watcher_type=TaskType.VEHICLES)
+        await api.write_event_heartbeat()
+        cast(Any, api.r_client.set).assert_not_awaited()
+
+
+@pytest.mark.anyio("asyncio")
+async def test_alerts_sse_event_writes_heartbeat() -> None:
+    async def monitor_health(tg) -> None:  # type: ignore[no-untyped-def]
+        return None
+
+    async def fake_aiosseclient(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        yield SimpleNamespace(data="[]", event="reset")
+
+    api = MBTAApi(
+        cast(RedisClient, AsyncMock()),
+        route="Red",
+        watcher_type=TaskType.ALERTS,
+    )
+    api._monitor_health = monitor_health
+
+    with (
+        patch("mbta_client_extended.aiosseclient", new=fake_aiosseclient),
+        patch(
+            "mbta_client_extended.sleep",
+            new=AsyncMock(side_effect=[CancelledError]),
+        ),
+    ):
+        with pytest.raises(CancelledError):
+            await watch_mbta_server_side_events(
+                api,
+                "https://api-v3.mbta.com/alerts?filter[route]=Red",
+                {},
+                MagicMock(),
+                0,
+                MagicMock(),
+            )
+
+    set_call = cast(Any, api.r_client.set).await_args
+    assert set_call is not None
+    assert set_call.args[0] == "heartbeat:events:alerts:Red"
+
+
+@pytest.mark.anyio("asyncio")
+async def test_stalled_sse_stream_is_reconnected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(mbta_client_extended, "SSE_INACTIVITY_TIMEOUT", 0)
+    connect_count = 0
+
+    async def monitor_health(tg) -> None:  # type: ignore[no-untyped-def]
+        return None
+
+    async def fake_aiosseclient(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        nonlocal connect_count
+        connect_count += 1
+        await anyio.sleep(999)
+        yield
+
+    watcher = MagicMock()
+    watcher._monitor_health = monitor_health
+
+    with (
+        patch("mbta_client_extended.aiosseclient", new=fake_aiosseclient),
+        patch(
+            "mbta_client_extended.sleep",
+            new=AsyncMock(side_effect=[None, CancelledError]),
+        ),
+    ):
+        with pytest.raises(CancelledError):
+            await watch_mbta_server_side_events(
+                watcher,
+                "https://api-v3.mbta.com/alerts",
+                {},
+                MagicMock(),
+                0,
+                MagicMock(),
+            )
+
+    assert connect_count == 2
+
+
+@pytest.mark.anyio("asyncio")
+async def test_stalled_sse_stream_writes_no_heartbeat(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(mbta_client_extended, "SSE_INACTIVITY_TIMEOUT", 0)
+
+    async def monitor_health(tg) -> None:  # type: ignore[no-untyped-def]
+        return None
+
+    async def fake_aiosseclient(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        await anyio.sleep(999)
+        yield
+
+    api = MBTAApi(
+        cast(RedisClient, AsyncMock()),
+        route="Red",
+        watcher_type=TaskType.ALERTS,
+    )
+    api._monitor_health = monitor_health
+
+    with (
+        patch("mbta_client_extended.aiosseclient", new=fake_aiosseclient),
+        patch(
+            "mbta_client_extended.sleep",
+            new=AsyncMock(side_effect=[None, CancelledError]),
+        ),
+    ):
+        with pytest.raises(CancelledError):
+            await watch_mbta_server_side_events(
+                api,
+                "https://api-v3.mbta.com/alerts?filter[route]=Red",
+                {},
+                MagicMock(),
+                0,
+                MagicMock(),
+            )
+
+    cast(Any, api.r_client.set).assert_not_awaited()
 
 
 if __name__ == "__main__":
