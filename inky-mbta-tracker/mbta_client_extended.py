@@ -520,7 +520,7 @@ async def watch_mbta_server_side_events(
                                     break
                                 except TimeoutError:
                                     reconnect_reason = "inactivity_timeout"
-                                    logger.warning(
+                                    logger.info(
                                         "MBTA SSE stream idle for over %s seconds; reconnecting",
                                         SSE_INACTIVITY_TIMEOUT,
                                     )

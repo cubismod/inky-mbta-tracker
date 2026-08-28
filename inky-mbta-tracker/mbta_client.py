@@ -288,7 +288,7 @@ class MBTAApi:
                 await sleep(randint(20, 90))
                 now = datetime.now(ny_tz)
                 if failtime and now >= failtime:
-                    logger.warning(
+                    logger.info(
                         f"Refreshing alerts watcher (route={self.route}) due to health check failure/scheduled restart."
                     )
                     raise WatcherRefreshRequested
@@ -333,7 +333,7 @@ class MBTAApi:
                 )
                 raise WatcherRefreshRequested
             if failtime and now >= failtime:
-                logger.warning(
+                logger.info(
                     "Refreshing %s watcher (route=%s, stop=%s) due to health check failure/scheduled restart.",
                     self.watcher_type,
                     self.route,
