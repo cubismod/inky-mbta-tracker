@@ -1,4 +1,5 @@
 import logging
+from collections.abc import Iterable
 from datetime import datetime
 from typing import Optional
 
@@ -91,20 +92,33 @@ def _totals_by_line(counts: VehicleCountsByType) -> TotalsByLine:
     return totals
 
 
+def count_routes(routes: Iterable[str]) -> tuple[VehicleCountsByType, TotalsByLine]:
+    counts = _empty_counts()
+    for route in routes:
+        if route.startswith("74") or route.startswith("75"):
+            route = silver_line_lookup(route)
+        line, vtype = _classify_route(route)
+        if not line or not vtype:
+            continue
+        row = getattr(counts, vtype)
+        setattr(row, line, getattr(row, line) + 1)
+        row.total += 1
+    return counts, _totals_by_line(counts)
+
+
 async def get_vehicle_route_counts(
     r_client: Redis, config: Config, frequent_buses: bool = False
 ) -> tuple[VehicleCountsByType, TotalsByLine]:
-    counts = _empty_counts()
-
     vehicle_keys: list[bytes] = list(await r_client.smembers("pos-data"))  # type: ignore[misc]
     redis_commands.labels("smembers").inc()
     if not vehicle_keys:
-        return counts, _totals_by_line(counts)
+        return count_routes(())
 
     results: list[bytes | None] = await r_client.mget(*vehicle_keys)
     redis_commands.labels("mget").inc()
 
     frequent_lines = config.frequent_bus_lines
+    routes: list[str] = []
     for result in results:
         if not result:
             continue
@@ -120,13 +134,6 @@ async def get_vehicle_route_counts(
                 continue
             if not frequent_buses and route in frequent_lines:
                 continue
-        if route.startswith("74") or route.startswith("75"):
-            route = silver_line_lookup(route)
-        line, vtype = _classify_route(route)
-        if not line or not vtype:
-            continue
-        row = getattr(counts, vtype)
-        setattr(row, line, getattr(row, line) + 1)
-        row.total += 1
+        routes.append(route)
 
-    return counts, _totals_by_line(counts)
+    return count_routes(routes)

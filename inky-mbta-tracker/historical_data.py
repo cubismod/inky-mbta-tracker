@@ -32,7 +32,7 @@ def _strip_response_fields(vehicles: dict[str, Feature]) -> dict[str, Feature]:
 
 
 async def run(r_client: Redis, key: str, config: Config, tg: TaskGroup):
-    await sleep(10 * 60)
+    await sleep(60)
     while True:
         try:
             vehicles = _strip_response_fields(

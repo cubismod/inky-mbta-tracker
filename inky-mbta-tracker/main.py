@@ -7,7 +7,6 @@ from zoneinfo import ZoneInfo
 
 import aiohttp
 import click
-from anyio import create_task_group, run, sleep
 import historical_data
 from anyio import create_task_group, run, sleep
 from anyio.abc import TaskGroup

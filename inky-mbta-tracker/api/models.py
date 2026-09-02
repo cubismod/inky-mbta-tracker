@@ -116,3 +116,17 @@ class HistoricalVehiclesResponse(BaseModel):
     """Typed response for GET /historical/vehicles."""
 
     snapshots: list[HistoricalSnapshot]
+
+
+class HistoricalVehicleCountSnapshot(BaseModel):
+    """Vehicle counts computed from a single historical snapshot."""
+
+    timestamp: str
+    counts: VehicleCountsByType
+    totals_by_line: TotalsByLine
+
+
+class HistoricalVehicleCountsResponse(BaseModel):
+    """Typed response for GET /historical/vehicles/counts."""
+
+    snapshots: list[HistoricalVehicleCountSnapshot]
