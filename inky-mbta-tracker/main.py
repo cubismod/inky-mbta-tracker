@@ -7,10 +7,11 @@ from zoneinfo import ZoneInfo
 
 import aiohttp
 import click
+import historical_data
 from anyio import create_task_group, run, sleep
 from anyio.abc import TaskGroup
 from config import Config, StopSetup, load_config
-from consts import MBTA_V3_ENDPOINT
+from consts import HISTORICAL_V_DATA, MBTA_V3_ENDPOINT
 from dotenv import load_dotenv
 from geojson_utils import background_refresh
 from logging_setup import setup_logging
@@ -279,6 +280,13 @@ async def __main__() -> None:
                     tg.start_soon(
                         watch_alerts, get_redis(redis_pool), route_id, session, config
                     )
+                tg.start_soon(
+                    historical_data.run,
+                    get_redis(redis_pool),
+                    HISTORICAL_V_DATA,
+                    config,
+                    tg,
+                )
             if config.frequent_bus_lines:
                 for route_id in config.frequent_bus_lines:
                     start_task(

@@ -8,6 +8,7 @@ from api.endpoints.alerts import router as alerts_router
 
 # Routers
 from api.endpoints.health import router as health_router
+from api.endpoints.historical import router as historical_router
 from api.endpoints.predictions import router as predictions_router
 from api.endpoints.shapes import router as shapes_router
 from api.endpoints.stops import router as stops_router
@@ -115,6 +116,7 @@ def create_app() -> FastAPI:
             include_paths={
                 "/alerts*",
                 "/alerts.json",
+                "/historical*",
                 "/predictions*",
                 "/shapes*",
                 "/vehicles*",
@@ -160,6 +162,7 @@ def create_app() -> FastAPI:
     app.include_router(predictions_router)
     app.include_router(shapes_router)
     app.include_router(stops_router)
+    app.include_router(historical_router)
 
     return app
 

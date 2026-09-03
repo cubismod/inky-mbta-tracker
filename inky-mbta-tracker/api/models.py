@@ -103,3 +103,30 @@ class DeparturesResponse(BaseModel):
 
     stop: DepartureStop
     departures: list[Departure]
+
+
+class HistoricalSnapshot(BaseModel):
+    """A snapshot of vehicle positions recorded at a single point in time."""
+
+    timestamp: str
+    vehicles: dict[str, Any]
+
+
+class HistoricalVehiclesResponse(BaseModel):
+    """Typed response for GET /historical/vehicles."""
+
+    snapshots: list[HistoricalSnapshot]
+
+
+class HistoricalVehicleCountSnapshot(BaseModel):
+    """Vehicle counts computed from a single historical snapshot."""
+
+    timestamp: str
+    counts: VehicleCountsByType
+    totals_by_line: TotalsByLine
+
+
+class HistoricalVehicleCountsResponse(BaseModel):
+    """Typed response for GET /historical/vehicles/counts."""
+
+    snapshots: list[HistoricalVehicleCountSnapshot]
