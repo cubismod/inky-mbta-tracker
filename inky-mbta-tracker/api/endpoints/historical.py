@@ -83,9 +83,7 @@ async def get_historical_vehicles(request: Request, commons: GET_DI) -> Response
 )
 @limiter.limit("70/minute")
 @cache_ttl(15 * 60)
-async def get_historical_vehicle_counts(
-    request: Request, commons: GET_DI
-) -> Response:
+async def get_historical_vehicle_counts(request: Request, commons: GET_DI) -> Response:
     with tracer.start_as_current_span(
         "api.historical.get_historical_vehicle_counts"
     ) as span:
