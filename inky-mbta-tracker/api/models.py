@@ -130,3 +130,25 @@ class HistoricalVehicleCountsResponse(BaseModel):
     """Typed response for GET /historical/vehicles/counts."""
 
     snapshots: list[HistoricalVehicleCountSnapshot]
+
+
+class LineSpeedStats(BaseModel):
+    """Speed statistics for one line group within a single snapshot."""
+
+    avg_speed: float
+    min_speed: float
+    max_speed: float
+    vehicle_count: int
+
+
+class HistoricalVehicleSpeedSnapshot(BaseModel):
+    """Speed statistics computed from a single historical snapshot."""
+
+    timestamp: str
+    lines: dict[str, LineSpeedStats]
+
+
+class HistoricalVehicleSpeedsResponse(BaseModel):
+    """Typed response for GET /historical/vehicles/speeds."""
+
+    snapshots: list[HistoricalVehicleSpeedSnapshot]

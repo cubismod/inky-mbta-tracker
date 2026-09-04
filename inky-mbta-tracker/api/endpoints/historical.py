@@ -6,11 +6,13 @@ from api.middleware.cache_middleware import cache_ttl
 from api.models import (
     ErrorResponse,
     HistoricalVehicleCountsResponse,
+    HistoricalVehicleSpeedsResponse,
     HistoricalVehiclesResponse,
 )
 from api.services.historical import (
     fetch_historical_snapshots,
     fetch_historical_vehicle_counts,
+    fetch_historical_vehicle_speeds,
 )
 from fastapi import APIRouter, HTTPException, Request, Response
 from opentelemetry import trace
@@ -111,6 +113,55 @@ async def get_historical_vehicle_counts(request: Request, commons: GET_DI) -> Re
         except RedisError as exc:
             logger.error(
                 "Error getting historical counts due to Redis error", exc_info=exc
+            )
+            set_span_error(span, exc)
+            add_span_attributes(span, {"error.type": "redis"})
+            raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.get(
+    "/historical/vehicles/speeds",
+    summary="Get historical vehicle speed statistics by MBTA line",
+    description=(
+        "Return average, minimum, and maximum vehicle speeds per main line group "
+        "(RL, GL, BL, OL, SL, CR) for each historical snapshot, sorted by "
+        "recording timestamp. Stopped and speedless vehicles are excluded."
+    ),
+    response_model=HistoricalVehicleSpeedsResponse,
+    responses={
+        500: {"model": ErrorResponse, "description": "Internal server error"},
+    },
+)
+@limiter.limit("70/minute")
+@cache_ttl(15 * 60)
+async def get_historical_vehicle_speeds(request: Request, commons: GET_DI) -> Response:
+    with tracer.start_as_current_span(
+        "api.historical.get_historical_vehicle_speeds"
+    ) as span:
+        add_transaction_ids_to_span(span)
+        add_span_attributes(
+            span,
+            {
+                "api.endpoint": "historical.vehicles.speeds",
+                "response.format": "json",
+            },
+        )
+
+        try:
+            result = await fetch_historical_vehicle_speeds(commons.r_client)
+            add_span_attributes(
+                span,
+                {
+                    "historical.snapshots.count": len(result.snapshots),
+                    "api.response.success": True,
+                },
+            )
+            return Response(
+                content=result.model_dump_json(), media_type="application/json"
+            )
+        except RedisError as exc:
+            logger.error(
+                "Error getting historical speeds due to Redis error", exc_info=exc
             )
             set_span_error(span, exc)
             add_span_attributes(span, {"error.type": "redis"})
