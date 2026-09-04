@@ -12,7 +12,14 @@ from redis.asyncio import Redis
 
 logger = logging.getLogger(__name__)
 
-_RENDERED_PROPERTIES = ("route", "marker-symbol", "marker-color", "id", "marker-size")
+_RENDERED_PROPERTIES = (
+    "route",
+    "speed",
+    "marker-symbol",
+    "marker-color",
+    "id",
+    "marker-size",
+)
 
 
 # removes unnecessary fields that won't be rendered in the frontend
