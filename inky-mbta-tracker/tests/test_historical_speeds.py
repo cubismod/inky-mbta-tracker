@@ -90,6 +90,24 @@ async def test_speeds_map_silver_line_numeric_routes() -> None:
 
 
 @pytest.mark.anyio("asyncio")
+async def test_speeds_group_mattapan_separately_from_red() -> None:
+    redis = _redis_for(
+        {
+            "100.0": _snapshot(
+                {"v1": _feature("Mattapan", 20), "v2": _feature("Red", 30)}
+            )
+        }
+    )
+
+    result = await fetch_historical_vehicle_speeds(cast(Redis, redis))
+
+    lines = result.snapshots[0].lines
+    assert set(lines) == {"MT", "RL"}
+    assert lines["MT"].avg_speed == 20
+    assert lines["RL"].avg_speed == 30
+
+
+@pytest.mark.anyio("asyncio")
 async def test_snapshots_sorted_by_timestamp() -> None:
     redis = _redis_for(
         {

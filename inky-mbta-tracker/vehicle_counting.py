@@ -13,7 +13,7 @@ from shared_types.shared_types import VehicleRedisSchema
 
 logger = logging.getLogger(__name__)
 
-LINES = ("RL", "GL", "BL", "OL", "SL", "CR")
+LINES = ("RL", "MT", "GL", "BL", "OL", "SL", "CR")
 
 _SILVER_NUMERIC_PREFIXES = ("741", "742", "743", "746", "749", "751")
 
@@ -21,8 +21,10 @@ _SILVER_NUMERIC_PREFIXES = ("741", "742", "743", "746", "749", "751")
 def _classify_route(route: str) -> tuple[Optional[str], Optional[str]]:
     route_lower = (route or "").strip().lower()
 
-    if route_lower.startswith("mattapan") or route_lower.startswith("red"):
-        line: Optional[str] = "RL"
+    if route_lower.startswith("mattapan"):
+        line: Optional[str] = "MT"
+    elif route_lower.startswith("red"):
+        line = "RL"
     elif route_lower.startswith("green"):
         line = "GL"
     elif route_lower.startswith("blue"):

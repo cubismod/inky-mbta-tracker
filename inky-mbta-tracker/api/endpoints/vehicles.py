@@ -252,7 +252,7 @@ async def get_vehicles_json(request: Request):
 @router.get(
     "/vehicles/counts",
     summary="Get counts of vehicles by MBTA line and vehicle type",
-    description="Return counts grouped by vehicle type (light rail, heavy rail, regional rail, bus) across main line groups (RL, GL, BL, OL, SL, CR)",
+    description="Return counts grouped by vehicle type (light rail, heavy rail, regional rail, bus) across main line groups (RL, MT, GL, BL, OL, SL, CR)",
     response_model=Optional[VehiclesCountResponse],
     responses={500: {"model": ErrorResponse, "description": "Internal server error"}},
 )

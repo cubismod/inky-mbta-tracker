@@ -42,7 +42,7 @@ def _redis_for(vehicles: list[VehicleRedisSchema]) -> Any:
     [
         ("Red", "RL", "heavy_rail"),
         ("Red-1", "RL", "heavy_rail"),
-        ("Mattapan", "RL", "light_rail"),
+        ("Mattapan", "MT", "light_rail"),
         ("Green-B", "GL", "light_rail"),
         ("Blue", "BL", "heavy_rail"),
         ("Orange", "OL", "heavy_rail"),
@@ -92,6 +92,21 @@ async def test_get_vehicle_route_counts_tallies_by_route() -> None:
     assert totals.GL == 1
     assert totals.SL == 1
     assert totals.total == 3
+
+
+@pytest.mark.anyio("asyncio")
+async def test_get_vehicle_route_counts_mattapan_is_own_line() -> None:
+    redis = _redis_for([_vehicle("v1", "Mattapan"), _vehicle("v2", "Red")])
+
+    counts, totals = await get_vehicle_route_counts(
+        cast(Redis, redis), Config(vehicles_by_route=["Red"])
+    )
+
+    assert counts.light_rail.MT == 1
+    assert counts.heavy_rail.RL == 1
+    assert totals.MT == 1
+    assert totals.RL == 1
+    assert totals.total == 2
 
 
 @pytest.mark.anyio("asyncio")
