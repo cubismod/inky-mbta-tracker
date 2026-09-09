@@ -3,7 +3,7 @@ from enum import Enum
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from geojson import Feature
-from pydantic import BaseModel, ConfigDict, field_serializer, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator
 
 
 class ScheduleEvent(BaseModel):
@@ -95,6 +95,7 @@ class VehicleSpeedHistory(BaseModel):
     lat: float
     speed: float
     update_time: datetime
+    recent_speeds: list[float] = Field(default_factory=list)
 
     @field_validator("update_time", mode="after")
     @classmethod

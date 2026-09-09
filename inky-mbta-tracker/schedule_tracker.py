@@ -2,15 +2,17 @@ import logging
 import os
 import time
 from datetime import UTC, datetime, timedelta
-from statistics import fmean
+from statistics import median
 from typing import Optional
 from zoneinfo import ZoneInfo
 
 import humanize
+from aiohttp import ClientError, ClientSession
 from anyio import to_thread
-from consts import HOUR
-from geo_math import distance
+from consts import HOUR, MBTA_V3_ENDPOINT
+from geo_math import SnapResult, distance, snap_to_routes
 from geojson import Feature, Point
+from mbta_client_extended import get_shapes
 from otel_utils import set_vehicle_track_transaction_id
 from paho.mqtt import MQTTException, publish
 from prometheus import (
@@ -23,9 +25,11 @@ from prometheus import (
 from pydantic import ValidationError
 from redis import ResponseError
 from redis.asyncio.client import Pipeline, Redis
+from redis.exceptions import RedisError
 from redis_cache import get_cache
 from redis_lock.asyncio import RedisLock
 from shared_types.shared_types import (
+    LineRoute,
     ScheduleEvent,
     VehicleRedisSchema,
     VehicleSpeedHistory,
@@ -35,6 +39,12 @@ logger = logging.getLogger("schedule_tracker")
 SPEED_HISTORY_TTL_SECONDS = 300
 MIN_APPROXIMATE_SPEED_SAMPLE_SECONDS = 5
 METERS_PER_SECOND_TO_MPH = 2.2369362921
+SNAP_MAX_CROSS_TRACK_M = 100.0
+SPEED_NOISE_FLOOR_M = 20.0
+SNAP_NOISE_RAW_MAX_M = 50.0
+RECENT_SPEEDS_WINDOW = 4
+
+ROUTE_SHAPES: dict[str, LineRoute] = {}
 
 
 def dummy_schedule_event(event_id: str) -> ScheduleEvent:
@@ -55,6 +65,7 @@ def dummy_schedule_event(event_id: str) -> ScheduleEvent:
 
 class Tracker:
     redis: Redis
+    route_shapes: dict[str, LineRoute]
 
     def __init__(self, redis: Optional[Redis] = None) -> None:
         r = redis or Redis(
@@ -63,6 +74,26 @@ class Tracker:
             password=os.environ.get("IMT_REDIS_PASSWORD") or "",
         )
         self.redis = r
+        self.route_shapes = ROUTE_SHAPES
+        self._loading_routes: set[str] = set()
+
+    async def load_route_shapes(
+        self, routes: list[str], session: ClientSession
+    ) -> None:
+        shapes = await get_shapes(self.redis, routes, session)
+        self.route_shapes.update(shapes.lines)
+
+    async def ensure_route_shapes(self, route: str) -> None:
+        if not route or route in self.route_shapes or route in self._loading_routes:
+            return
+        self._loading_routes.add(route)
+        try:
+            async with ClientSession(base_url=MBTA_V3_ENDPOINT) as session:
+                await self.load_route_shapes([route], session)
+        except (ClientError, TimeoutError, ValidationError, RedisError) as err:
+            logger.warning("Failed to load shapes for route %s", route, exc_info=err)
+        finally:
+            self._loading_routes.discard(route)
 
     @staticmethod
     def calculate_time_diff(event: ScheduleEvent) -> timedelta:
@@ -132,12 +163,17 @@ class Tracker:
         event: VehicleRedisSchema,
         speed: float,
         pipeline: Optional[Pipeline] = None,
+        *,
+        long: Optional[float] = None,
+        lat: Optional[float] = None,
+        recent_speeds: Optional[list[float]] = None,
     ) -> None:
         data = VehicleSpeedHistory(
-            long=event.longitude,
-            lat=event.latitude,
+            long=long if long is not None else event.longitude,
+            lat=lat if lat is not None else event.latitude,
             speed=speed,
             update_time=event.update_time,
+            recent_speeds=recent_speeds or [],
         ).model_dump_json()
         target = pipeline or self.redis
         await target.set(cache_id, value=data, ex=SPEED_HISTORY_TTL_SECONDS)
@@ -190,29 +226,69 @@ class Tracker:
                     return last_event_validated.speed, True
                 return None, False
 
-            start = Feature(
-                geometry=Point(
-                    (
-                        last_event_validated.long,
-                        last_event_validated.lat,
-                    )
-                )
+            current_point = Point((event.longitude, event.latitude))
+            previous_point = Point(
+                (last_event_validated.long, last_event_validated.lat)
             )
-            end = Feature(geometry=Point((event.longitude, event.latitude)))
+
+            snapped = self._snap_interval(event, previous_point, current_point)
+            if snapped is not None:
+                prev_snap, curr_snap, raw_distance_meters = snapped
+                track_distance = abs(
+                    curr_snap.distance_along_m - prev_snap.distance_along_m
+                )
+                if (
+                    track_distance < SPEED_NOISE_FLOOR_M
+                    and raw_distance_meters < SNAP_NOISE_RAW_MAX_M
+                ):
+                    recent = list((*last_event_validated.recent_speeds, 0.0))[
+                        -RECENT_SPEEDS_WINDOW:
+                    ]
+                    await self.write_vehicle_speed_history(
+                        cache_id, event, 0.0, pipeline, recent_speeds=recent
+                    )
+                    return 0.0, True
+
+                speed, recent = self._smooth(
+                    last_event_validated.recent_speeds,
+                    track_distance / duration_seconds * METERS_PER_SECOND_TO_MPH,
+                )
+                if not self.is_speed_reasonable(speed, event.route):
+                    logger.debug(
+                        "Rejecting speed calculation for %s vehicle %s: "
+                        "speed %s mph is unreasonable",
+                        event.route,
+                        event.id,
+                        speed,
+                    )
+                    if last_event_validated.speed > 0:
+                        return (last_event_validated.speed, True)
+                    return None, False
+
+                snapped_long, snapped_lat = curr_snap.snapped
+                await self.write_vehicle_speed_history(
+                    cache_id,
+                    event,
+                    speed,
+                    pipeline,
+                    long=snapped_long,
+                    lat=snapped_lat,
+                    recent_speeds=list(recent),
+                )
+                return speed, True
+
+            start = Feature(geometry=previous_point)
+            end = Feature(geometry=current_point)
 
             distance_meters = distance(start, end, "m")
             if distance_meters == 0:
                 await self.write_vehicle_speed_history(cache_id, event, 0, pipeline)
                 return 0, True
 
-            meters_per_second = distance_meters / duration_seconds
-            speed = meters_per_second * METERS_PER_SECOND_TO_MPH
-            if (
-                last_event_validated.speed != 0
-                and duration_seconds < 30
-                and self.is_speed_reasonable(last_event_validated.speed, event.route)
-            ):
-                speed = fmean([speed, last_event_validated.speed])
+            speed, recent = self._smooth(
+                last_event_validated.recent_speeds,
+                distance_meters / duration_seconds * METERS_PER_SECOND_TO_MPH,
+            )
 
             if not self.is_speed_reasonable(speed, event.route):
                 logger.debug(
@@ -226,13 +302,49 @@ class Tracker:
                     return (last_event_validated.speed, True)
                 return None, False
 
-            await self.write_vehicle_speed_history(cache_id, event, speed, pipeline)
+            await self.write_vehicle_speed_history(
+                cache_id, event, speed, pipeline, recent_speeds=list(recent)
+            )
             return speed, True
         except ResponseError as err:
             logger.error("unable to get redis event", exc_info=err)
         except ValidationError as err:
             logger.error("unable to validate obj", exc_info=err)
         return None, False
+
+    def _snap_interval(
+        self,
+        event: VehicleRedisSchema,
+        previous_point: Point,
+        current_point: Point,
+    ) -> Optional[tuple[SnapResult, SnapResult, float]]:
+        polylines = self.route_shapes.get(event.route)
+        if not polylines:
+            return None
+
+        prev_snap = snap_to_routes(previous_point, polylines)
+        curr_snap = snap_to_routes(current_point, polylines)
+        if (
+            prev_snap.cross_track_m > SNAP_MAX_CROSS_TRACK_M
+            or curr_snap.cross_track_m > SNAP_MAX_CROSS_TRACK_M
+        ):
+            return None
+
+        raw_distance_meters = distance(
+            Feature(geometry=previous_point), Feature(geometry=current_point), "m"
+        )
+        return prev_snap, curr_snap, raw_distance_meters
+
+    @staticmethod
+    def _smooth(
+        recent_speeds: list[float], candidate: float
+    ) -> tuple[float, tuple[float, ...]]:
+        if recent_speeds:
+            speed = median([*recent_speeds, candidate])
+        else:
+            speed = candidate
+        recent = (*recent_speeds, speed)[-RECENT_SPEEDS_WINDOW:]
+        return speed, recent
 
     async def cleanup(self, pipeline: Pipeline) -> None:
         try:
@@ -504,6 +616,8 @@ class Tracker:
                 await self.rm(event, pipeline)
 
     async def process_event(self, event: ScheduleEvent | VehicleRedisSchema) -> None:
+        if isinstance(event, VehicleRedisSchema):
+            await self.ensure_route_shapes(event.route)
         pipeline = self.redis.pipeline(transaction=False)
         try:
             await self.process_queue_item(event, pipeline)

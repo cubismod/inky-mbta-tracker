@@ -1,17 +1,32 @@
 import os
+from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
+from statistics import median
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from consts import MBTA_V3_ENDPOINT
+from geo_math import distance
+from geojson import Point
 from schedule_tracker import (
+    METERS_PER_SECOND_TO_MPH,
+    ROUTE_SHAPES,
     Tracker,
     dummy_schedule_event,
 )
 from shared_types.shared_types import (
+    RouteShapes,
     ScheduleEvent,
     VehicleRedisSchema,
     VehicleSpeedHistory,
 )
+
+
+@pytest.fixture(autouse=True)
+def _reset_route_shapes() -> Iterator[None]:
+    ROUTE_SHAPES.clear()
+    yield
+    ROUTE_SHAPES.clear()
 
 
 class TestDummyScheduleEvent:
@@ -53,7 +68,13 @@ class TestTracker:
             speed=25.0,
         )
 
-        with patch.object(tracker, "process_queue_item") as process_item:
+        with (
+            patch.object(tracker, "process_queue_item") as process_item,
+            patch(
+                "schedule_tracker.get_shapes",
+                new=AsyncMock(return_value=RouteShapes(lines={})),
+            ),
+        ):
             await tracker.process_event(event)
 
         process_item.assert_awaited_once_with(event, mock_pipeline)
@@ -627,6 +648,321 @@ class TestTracker:
         await tracker.send_mqtt()
 
         mock_publish.multiple.assert_not_called()
+
+
+class TestApproximateSpeedGeometry:
+    RED_SHAPE = [
+        (-71.0600, 42.3601),
+        (-71.0585, 42.3601),
+        (-71.0585, 42.3620),
+    ]
+    BEND = Point((-71.0585, 42.3601))
+
+    def _tracker(self) -> Tracker:
+        tracker = Tracker()
+        tracker.redis = AsyncMock()
+        tracker.route_shapes = {"Red": [self.RED_SHAPE]}
+        return tracker
+
+    def _event(
+        self, longitude: float, latitude: float, update_time: datetime
+    ) -> VehicleRedisSchema:
+        return VehicleRedisSchema(
+            longitude=longitude,
+            latitude=latitude,
+            direction_id=0,
+            current_status="IN_TRANSIT_TO",
+            id="vehicle-123",
+            action="update",
+            route="Red",
+            update_time=update_time,
+            speed=None,
+        )
+
+    def _history(
+        self, longitude: float, latitude: float, update_time: datetime
+    ) -> VehicleSpeedHistory:
+        return VehicleSpeedHistory(
+            long=longitude,
+            lat=latitude,
+            speed=0,
+            update_time=update_time,
+        )
+
+    @pytest.mark.anyio("asyncio")
+    async def test_calculate_vehicle_speed_uses_track_distance_around_bend(
+        self,
+    ) -> None:
+        tracker = self._tracker()
+        previous_time = datetime(2026, 1, 1, tzinfo=UTC)
+        previous_event = self._history(-71.0590, 42.3601, previous_time)
+        event = self._event(-71.0585, 42.3610, previous_time + timedelta(seconds=60))
+
+        with patch(
+            "schedule_tracker.get_cache",
+            return_value=previous_event.model_dump_json(),
+        ):
+            speed, approximate = await tracker.calculate_vehicle_speed(event)
+
+        bend_start = distance(self._history_point(-71.0590, 42.3601), self.BEND, "m")
+        bend_end = distance(self.BEND, self._history_point(-71.0585, 42.3610), "m")
+        expected = (bend_start + bend_end) / 60 * METERS_PER_SECOND_TO_MPH
+        great_circle = (
+            distance(
+                self._history_point(-71.0590, 42.3601),
+                self._history_point(-71.0585, 42.3610),
+                "m",
+            )
+            / 60
+            * METERS_PER_SECOND_TO_MPH
+        )
+        assert approximate is True
+        assert speed == pytest.approx(expected, rel=0.02)
+        assert speed is not None and speed > great_circle
+
+    @staticmethod
+    def _history_point(longitude: float, latitude: float) -> Point:
+        return Point((longitude, latitude))
+
+    @pytest.mark.anyio("asyncio")
+    async def test_calculate_vehicle_speed_track_distance_on_reversal(self) -> None:
+        tracker = self._tracker()
+        previous_time = datetime(2026, 1, 1, tzinfo=UTC)
+        previous_event = self._history(-71.0585, 42.3610, previous_time)
+        event = self._event(-71.0590, 42.3601, previous_time + timedelta(seconds=60))
+
+        with patch(
+            "schedule_tracker.get_cache",
+            return_value=previous_event.model_dump_json(),
+        ):
+            speed, approximate = await tracker.calculate_vehicle_speed(event)
+
+        bend_start = distance(self._history_point(-71.0590, 42.3601), self.BEND, "m")
+        bend_end = distance(self.BEND, self._history_point(-71.0585, 42.3610), "m")
+        expected = (bend_start + bend_end) / 60 * METERS_PER_SECOND_TO_MPH
+        assert approximate is True
+        assert speed == pytest.approx(expected, rel=0.02)
+
+    @pytest.mark.anyio("asyncio")
+    async def test_calculate_vehicle_speed_rejects_jitter_below_noise_floor(
+        self,
+    ) -> None:
+        tracker = self._tracker()
+        previous_time = datetime(2026, 1, 1, tzinfo=UTC)
+        previous_event = self._history(-71.0590, 42.3601, previous_time)
+        event = self._event(-71.0588, 42.3601, previous_time + timedelta(seconds=60))
+
+        with patch(
+            "schedule_tracker.get_cache",
+            return_value=previous_event.model_dump_json(),
+        ):
+            speed, approximate = await tracker.calculate_vehicle_speed(event)
+
+        assert speed == 0.0
+        assert approximate is True
+
+    @pytest.mark.anyio("asyncio")
+    async def test_calculate_vehicle_speed_snap_gate_falls_back_to_great_circle(
+        self,
+    ) -> None:
+        tracker = self._tracker()
+        previous_time = datetime(2026, 1, 1, tzinfo=UTC)
+        previous_event = self._history(-71.0590, 42.3601, previous_time)
+        event = self._event(-71.0540, 42.3610, previous_time + timedelta(seconds=60))
+
+        with patch(
+            "schedule_tracker.get_cache",
+            return_value=previous_event.model_dump_json(),
+        ):
+            speed, approximate = await tracker.calculate_vehicle_speed(event)
+
+        expected = (
+            distance(
+                self._history_point(-71.0590, 42.3601),
+                self._history_point(-71.0540, 42.3610),
+                "m",
+            )
+            / 60
+            * METERS_PER_SECOND_TO_MPH
+        )
+        assert approximate is True
+        assert speed == pytest.approx(expected, rel=0.02)
+
+    @pytest.mark.anyio("asyncio")
+    async def test_calculate_vehicle_speed_median_smoothing(self) -> None:
+        tracker = self._tracker()
+        previous_time = datetime(2026, 1, 1, tzinfo=UTC)
+        previous_event = VehicleSpeedHistory(
+            long=-71.0600,
+            lat=42.3601,
+            speed=0,
+            update_time=previous_time,
+            recent_speeds=[10.0, 30.0],
+        )
+        event = self._event(-71.0580, 42.3601, previous_time + timedelta(seconds=60))
+
+        with (
+            patch(
+                "schedule_tracker.get_cache",
+                return_value=previous_event.model_dump_json(),
+            ),
+            patch.object(tracker, "write_vehicle_speed_history") as write_history,
+        ):
+            speed, approximate = await tracker.calculate_vehicle_speed(event)
+
+        candidate = (
+            distance(
+                self._history_point(-71.0600, 42.3601),
+                self._history_point(-71.0580, 42.3601),
+                "m",
+            )
+            / 60
+            * METERS_PER_SECOND_TO_MPH
+        )
+        expected = median([10.0, 30.0, candidate])
+        assert approximate is True
+        assert speed == pytest.approx(expected, rel=0.01)
+        assert write_history.await_args is not None
+        assert write_history.await_args.kwargs["recent_speeds"] == pytest.approx(
+            [10.0, 30.0, expected]
+        )
+
+    @pytest.mark.anyio("asyncio")
+    async def test_calculate_vehicle_speed_writes_snapped_position(self) -> None:
+        tracker = self._tracker()
+        previous_time = datetime(2026, 1, 1, tzinfo=UTC)
+        previous_event = self._history(-71.0590, 42.3601, previous_time)
+        # 24.6m east of the vertical leg; snapping pulls it back onto the line.
+        event = self._event(-71.0582, 42.3609, previous_time + timedelta(seconds=60))
+
+        with (
+            patch(
+                "schedule_tracker.get_cache",
+                return_value=previous_event.model_dump_json(),
+            ),
+            patch.object(tracker, "write_vehicle_speed_history") as write_history,
+        ):
+            await tracker.calculate_vehicle_speed(event)
+
+        assert write_history.await_args is not None
+        assert write_history.await_args.kwargs["long"] == pytest.approx(
+            -71.0585, abs=1e-6
+        )
+        assert write_history.await_args.kwargs["lat"] == pytest.approx(
+            42.3609, abs=1e-6
+        )
+
+    @pytest.mark.anyio("asyncio")
+    async def test_calculate_vehicle_speed_rejects_unreasonable_track_distance(
+        self,
+    ) -> None:
+        tracker = self._tracker()
+        # Longer straight leg so the second fix sits on the line, past the
+        # 56 mph Red Line limit at 5 seconds.
+        tracker.route_shapes = {"Red": [[(-71.0600, 42.3601), (-71.0570, 42.3601)]]}
+        previous_time = datetime(2026, 1, 1, tzinfo=UTC)
+        previous_event = self._history(-71.0600, 42.3601, previous_time)
+        event = self._event(-71.0578, 42.3601, previous_time + timedelta(seconds=5))
+
+        with patch(
+            "schedule_tracker.get_cache",
+            return_value=previous_event.model_dump_json(),
+        ):
+            speed, approximate = await tracker.calculate_vehicle_speed(event)
+
+        assert speed is None
+        assert approximate is False
+
+    @pytest.mark.anyio("asyncio")
+    async def test_calculate_vehicle_speed_jitter_appends_zero_sample(self) -> None:
+        tracker = self._tracker()
+        previous_time = datetime(2026, 1, 1, tzinfo=UTC)
+        previous_event = VehicleSpeedHistory(
+            long=-71.0590,
+            lat=42.3601,
+            speed=0,
+            update_time=previous_time,
+            recent_speeds=[10.0, 30.0],
+        )
+        event = self._event(-71.0588, 42.3601, previous_time + timedelta(seconds=60))
+
+        with (
+            patch(
+                "schedule_tracker.get_cache",
+                return_value=previous_event.model_dump_json(),
+            ),
+            patch.object(tracker, "write_vehicle_speed_history") as write_history,
+        ):
+            await tracker.calculate_vehicle_speed(event)
+
+        assert write_history.await_args is not None
+        assert write_history.await_args.args[2] == 0.0
+        assert write_history.await_args.kwargs["recent_speeds"] == [10.0, 30.0, 0.0]
+
+    @pytest.mark.anyio("asyncio")
+    async def test_load_route_shapes(self) -> None:
+        tracker = Tracker()
+        session = MagicMock()
+
+        with patch(
+            "schedule_tracker.get_shapes",
+            new=AsyncMock(return_value=RouteShapes(lines={"Red": [self.RED_SHAPE]})),
+        ) as get_shapes_mock:
+            await tracker.load_route_shapes(["Red"], session)
+
+        get_shapes_mock.assert_awaited_once()
+        assert tracker.route_shapes == {"Red": [self.RED_SHAPE]}
+
+    @pytest.mark.anyio("asyncio")
+    async def test_ensure_route_shapes_uses_mbta_base_url(self) -> None:
+        tracker = Tracker()
+        tracker.redis = AsyncMock()
+
+        session_cls = MagicMock()
+        session_cls.return_value.__aenter__ = AsyncMock(return_value=MagicMock())
+        session_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        with (
+            patch("schedule_tracker.ClientSession", session_cls),
+            patch(
+                "schedule_tracker.get_shapes",
+                new=AsyncMock(return_value=RouteShapes(lines={})),
+            ),
+        ):
+            await tracker.ensure_route_shapes("Red")
+
+        session_cls.assert_called_once_with(base_url=MBTA_V3_ENDPOINT)
+
+    @pytest.mark.anyio("asyncio")
+    async def test_process_event_loads_missing_route_shapes_once(self) -> None:
+        tracker = Tracker()
+        mock_redis = AsyncMock()
+        mock_pipeline = AsyncMock()
+        mock_pipeline.zremrangebyscore = MagicMock()
+        mock_redis.pipeline = MagicMock(return_value=mock_pipeline)
+        mock_redis.get.return_value = None
+        tracker.redis = mock_redis
+        event = VehicleRedisSchema(
+            longitude=-71.0589,
+            latitude=42.3601,
+            direction_id=0,
+            current_status="IN_TRANSIT_TO",
+            id="vehicle-123",
+            action="update",
+            route="Red",
+            update_time=datetime.now(UTC),
+            speed=25.0,
+        )
+
+        with patch(
+            "schedule_tracker.get_shapes",
+            new=AsyncMock(return_value=RouteShapes(lines={"Red": [self.RED_SHAPE]})),
+        ) as get_shapes_mock:
+            await tracker.process_event(event)
+            await tracker.process_event(event)
+
+        assert get_shapes_mock.await_count == 1
+        assert tracker.route_shapes == {"Red": [self.RED_SHAPE]}
 
 
 if __name__ == "__main__":

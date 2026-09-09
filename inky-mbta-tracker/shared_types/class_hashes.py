@@ -116,7 +116,7 @@ VEHICLERESOURCE_HASH = (
     "7e8aedebb8d5f16427dd6ab720b20eccd2ab3754b0e0cedafc3fd87a88f9ae35"
 )
 VEHICLESPEEDHISTORY_HASH = (
-    "252a7c26611fe30fdf61bde80e903f845fa4522c9e71f1584a768f71affed3b5"
+    "2ef786da2070db1ca084788af002d18205fdb2828468a2aa55f38c16bbf159e6"
 )
 VEHICLES_HASH = "cf7ddcdceea75bc762fe2762da79e1741c7a8cc495fa785b86428a72fd92e7df"
 WEBHOOKREDISENTRY_HASH = (
@@ -182,7 +182,7 @@ CLASS_HASHES = {
     "VehicleRedisSchema": "db7f231fe50bb4e98b38e54fbbee8a5bb32a1014fea4ff745467d9fa79ccb0f8",
     "VehicleRelationships": "078e29a43ecfa68fb47a3a8ff3e5a9ed5a340a3fed4da34896c4b84475a61a9d",
     "VehicleResource": "7e8aedebb8d5f16427dd6ab720b20eccd2ab3754b0e0cedafc3fd87a88f9ae35",
-    "VehicleSpeedHistory": "252a7c26611fe30fdf61bde80e903f845fa4522c9e71f1584a768f71affed3b5",
+    "VehicleSpeedHistory": "2ef786da2070db1ca084788af002d18205fdb2828468a2aa55f38c16bbf159e6",
     "Vehicles": "cf7ddcdceea75bc762fe2762da79e1741c7a8cc495fa785b86428a72fd92e7df",
     "WebhookRedisEntry": "08f839b3facddeaab83b99d17b87d3d26786a3c2ade5fb9b1ecd9771ddfe1d89",
 }
