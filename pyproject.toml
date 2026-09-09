@@ -11,7 +11,7 @@ dependencies = [
     "aiosignal==1.4.0",
     "aiosseclient==0.1.8",
     "annotated-types==0.8.0",
-    "anyio==4.15.0",
+    "anyio==4.15.1",
     "async-lru>=2.0.5",
     "attrs==26.1.0",
     "brotli==1.2.0",
