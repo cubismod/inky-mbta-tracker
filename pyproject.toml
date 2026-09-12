@@ -30,7 +30,7 @@ dependencies = [
     "markupsafe==3.0.3",
     "mdurl==0.1.2",
     "metaphone>=0.6",
-    "multidict==6.7.1",
+    "multidict==6.8.0",
     "orjson>=3.10.0",
     "packaging==26.3",
     "paho-mqtt==2.1.0",
