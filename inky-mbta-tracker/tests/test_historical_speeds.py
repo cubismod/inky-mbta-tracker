@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from api.models import HistoricalVehicleSpeedsResponse
 from api.services.historical import fetch_historical_vehicle_speeds
-from fastapi.routing import APIRoute
+from fastapi.routing import APIRoute, iter_route_contexts
 from redis.asyncio import Redis
 
 
@@ -142,7 +142,7 @@ def test_api_server_registers_historical_speeds_route(
     app = create_app()
 
     assert any(
-        route.path == "/historical/vehicles/speeds"
-        for route in app.routes
-        if isinstance(route, APIRoute)
+        ctx.path == "/historical/vehicles/speeds"
+        for ctx in iter_route_contexts(app.routes)
+        if isinstance(ctx.original_route, APIRoute)
     )

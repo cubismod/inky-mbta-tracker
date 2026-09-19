@@ -5,7 +5,7 @@ import pytest
 from aiohttp import ClientSession
 from api.services.alerts import AlertsResult, fetch_alerts_with_retry, fetch_bus_alerts
 from config import Config
-from fastapi.routing import APIRoute
+from fastapi.routing import APIRoute, iter_route_contexts
 from geojson_utils import collect_alerts
 from redis.asyncio import Redis
 
@@ -150,7 +150,9 @@ def test_api_server_registers_alerts_route(monkeypatch: pytest.MonkeyPatch) -> N
     app = create_app()
 
     assert any(
-        route.path == "/alerts" for route in app.routes if isinstance(route, APIRoute)
+        ctx.path == "/alerts"
+        for ctx in iter_route_contexts(app.routes)
+        if isinstance(ctx.original_route, APIRoute)
     )
 
 
@@ -215,9 +217,9 @@ def test_api_server_registers_bus_alerts_route(
     app = create_app()
 
     assert any(
-        route.path == "/alerts/bus/{route_id}"
-        for route in app.routes
-        if isinstance(route, APIRoute)
+        ctx.path == "/alerts/bus/{route_id}"
+        for ctx in iter_route_contexts(app.routes)
+        if isinstance(ctx.original_route, APIRoute)
     )
 
 

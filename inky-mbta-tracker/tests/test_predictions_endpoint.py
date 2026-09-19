@@ -6,7 +6,7 @@ import pytest
 from aiohttp import ClientSession
 from api.services import predictions
 from api.services.predictions import MBTAUpstreamError, fetch_predictions
-from fastapi.routing import APIRoute
+from fastapi.routing import APIRoute, iter_route_contexts
 from redis.asyncio import Redis
 
 PREDICTIONS_BODY = """
@@ -144,9 +144,9 @@ def test_api_server_registers_predictions_route(
     app = create_app()
 
     assert any(
-        route.path == "/predictions"
-        for route in app.routes
-        if isinstance(route, APIRoute)
+        ctx.path == "/predictions"
+        for ctx in iter_route_contexts(app.routes)
+        if isinstance(ctx.original_route, APIRoute)
     )
 
 
@@ -160,7 +160,7 @@ def test_api_server_registers_departures_route(
     app = create_app()
 
     assert any(
-        route.path == "/predictions/departures"
-        for route in app.routes
-        if isinstance(route, APIRoute)
+        ctx.path == "/predictions/departures"
+        for ctx in iter_route_contexts(app.routes)
+        if isinstance(ctx.original_route, APIRoute)
     )
