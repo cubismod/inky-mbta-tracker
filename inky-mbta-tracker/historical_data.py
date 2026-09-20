@@ -52,6 +52,6 @@ async def run(r_client: Redis, key: str, config: Config, tg: TaskGroup):
                 orjson.dumps(vehicles).decode("utf-8"),
                 ex=5 * DAY,
             )  # pyright: ignore
-            await sleep(20 * 60)
+            await sleep(10 * 60)
         except (ConnectionError, TimeoutError) as err:
             logger.error(f"Redis error: {err}")
