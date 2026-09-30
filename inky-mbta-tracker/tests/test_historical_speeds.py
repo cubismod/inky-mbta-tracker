@@ -3,7 +3,10 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from api.models import HistoricalVehicleSpeedsResponse
-from api.services.historical import fetch_historical_vehicle_speeds
+from api.services.historical import (
+    fetch_historical_vehicle_counts,
+    fetch_historical_vehicle_speeds,
+)
 from fastapi.routing import APIRoute, iter_route_contexts
 from redis.asyncio import Redis
 
@@ -105,6 +108,27 @@ async def test_speeds_group_mattapan_separately_from_red() -> None:
     assert set(lines) == {"MT", "RL"}
     assert lines["MT"].avg_speed == 20
     assert lines["RL"].avg_speed == 30
+
+
+@pytest.mark.anyio("asyncio")
+async def test_historical_counts_include_ferry_routes() -> None:
+    redis = _redis_for(
+        {
+            "100.0": _snapshot(
+                {
+                    "v1": _feature("Boat-F1", None),
+                    "v2": _feature("Boat-F4", None),
+                }
+            )
+        }
+    )
+
+    result = await fetch_historical_vehicle_counts(cast(Redis, redis))
+
+    counts = result.snapshots[0].counts
+    assert counts.ferry.F == 2
+    assert counts.ferry.total == 2
+    assert result.snapshots[0].totals_by_line.F == 2
 
 
 @pytest.mark.anyio("asyncio")

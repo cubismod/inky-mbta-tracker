@@ -51,6 +51,8 @@ def _redis_for(vehicles: list[VehicleRedisSchema]) -> Any:
         ("SL1", "SL", "bus"),
         ("741", "SL", "bus"),
         ("749", "SL", "bus"),
+        ("Boat-F1", "F", "ferry"),
+        ("Boat-F4", "F", "ferry"),
     ],
 )
 def test_classify_route_buckets_known_lines(
@@ -92,6 +94,20 @@ async def test_get_vehicle_route_counts_tallies_by_route() -> None:
     assert totals.GL == 1
     assert totals.SL == 1
     assert totals.total == 3
+
+
+@pytest.mark.anyio("asyncio")
+async def test_get_vehicle_route_counts_tallies_ferries() -> None:
+    redis = _redis_for([_vehicle("f1", "Boat-F1"), _vehicle("f4", "Boat-F4")])
+
+    counts, totals = await get_vehicle_route_counts(
+        cast(Redis, redis), Config(vehicles_by_route=["Boat-F1", "Boat-F4"])
+    )
+
+    assert counts.ferry.F == 2
+    assert counts.ferry.total == 2
+    assert totals.F == 2
+    assert totals.total == 2
 
 
 @pytest.mark.anyio("asyncio")

@@ -8,9 +8,9 @@ from pydantic import BaseModel
 #
 # These models describe the typed JSON response for the "vehicle counts"
 # endpoint. The UI expects counts grouped by vehicle type (light rail,
-# heavy rail, regional rail, bus) across MBTA line groups:
+# heavy rail, regional rail, bus, ferry) across MBTA line groups:
 # RL (Red Line), MT (Mattapan Line), GL (Green Line), BL (Blue Line),
-# OL (Orange Line), SL (Silver Line), CR (Commuter Rail).
+# OL (Orange Line), SL (Silver Line), CR (Commuter Rail), F (all ferry routes).
 # ``
 # Each VehicleLineTotals holds counts for each line plus a row total.
 # VehicleCountsByType groups those rows by vehicle type. TotalsByLine
@@ -28,6 +28,7 @@ class VehicleLineTotals(BaseModel):
     OL: int = 0
     SL: int = 0
     CR: int = 0
+    F: int = 0
     total: int = 0
 
 
@@ -38,6 +39,7 @@ class VehicleCountsByType(BaseModel):
     heavy_rail: VehicleLineTotals
     regional_rail: VehicleLineTotals
     bus: VehicleLineTotals
+    ferry: VehicleLineTotals
 
 
 class TotalsByLine(BaseModel):
@@ -50,6 +52,7 @@ class TotalsByLine(BaseModel):
     OL: int = 0
     SL: int = 0
     CR: int = 0
+    F: int = 0
     total: int = 0
 
 

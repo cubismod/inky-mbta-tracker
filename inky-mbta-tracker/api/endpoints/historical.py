@@ -75,7 +75,7 @@ async def get_historical_vehicles(request: Request, commons: GET_DI) -> Response
     summary="Get historical vehicle counts by MBTA line and vehicle type",
     description=(
         "Return vehicle counts grouped by vehicle type (light rail, heavy rail, "
-        "regional rail, bus) across main line groups (RL, MT, GL, BL, OL, SL, CR) for "
+        "regional rail, bus, ferry) across main line groups (RL, MT, GL, BL, OL, SL, CR, F) for "
         "each historical snapshot, sorted by recording timestamp."
     ),
     response_model=HistoricalVehicleCountsResponse,

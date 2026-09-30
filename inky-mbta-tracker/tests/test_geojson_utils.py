@@ -10,13 +10,14 @@ from geojson import Feature, Point
 from geojson_utils import (
     calculate_bearing,
     calculate_stop_eta,
+    get_shapes_features,
     get_vehicle_features,
     light_get_alerts_batch,
     lookup_vehicle_color,
     vehicle_display_point,
 )
 from redis_lock.exceptions import LockNotOwnedError
-from shared_types.shared_types import LightStop, VehicleRedisSchema
+from shared_types.shared_types import LightStop, RouteShapes, VehicleRedisSchema
 
 
 class MockResp:
@@ -464,6 +465,67 @@ async def test_get_vehicle_features_missing_stop_omits_stop_coordinates(
     assert props["stop-coordinates"] == (None, None)
     assert props["stop"] is None
     assert props["marker-symbol"] == "rail"
+
+
+@pytest.mark.anyio("asyncio")
+@patch("geojson_utils.RedisLock")
+@patch("geojson_utils.light_get_stops")
+async def test_get_vehicle_features_styles_ferries(
+    mock_light_get_stops: AsyncMock,
+    mock_redis_lock: MagicMock,
+) -> None:
+    vehicle = VehicleRedisSchema(
+        action="add",
+        id="RUTH E HUGHES",
+        current_status="IN_TRANSIT_TO",
+        direction_id=1,
+        latitude=42.3558,
+        longitude=-71.0476,
+        speed=None,
+        bearing=271,
+        stop="Boat-Rowes",
+        route="Boat-F1",
+        update_time=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+    redis = MagicMock()
+    redis.get = AsyncMock(return_value=None)
+    redis.smembers = AsyncMock(return_value={b"vehicle:RUTH E HUGHES"})
+    redis.mget = AsyncMock(return_value=[vehicle.model_dump_json().encode()])
+    redis.set = AsyncMock()
+    mock_light_get_stops.return_value = {}
+
+    features = await get_vehicle_features(
+        redis,
+        Config(vehicles_by_route=["Boat-F1"]),
+        cast(Any, MagicMock(start_soon=lambda *_a, **_kw: None)),
+    )
+
+    props = features["RUTH E HUGHES"]["properties"]
+    assert props["route"] == "Boat-F1"
+    assert props["marker-symbol"] == "ferry"
+    assert props["marker-color"] == "#008EAA"
+
+
+@pytest.mark.anyio("asyncio")
+@patch("geojson_utils.get_shapes")
+async def test_get_shapes_features_excludes_ferry_routes(
+    mock_get_shapes: AsyncMock,
+) -> None:
+    redis = MagicMock()
+    session = cast(ClientSession, MagicMock())
+    mock_get_shapes.return_value = RouteShapes(
+        lines={"Red": [[(-71.0, 42.0), (-71.1, 42.1)]]}
+    )
+
+    features = await get_shapes_features(
+        Config(vehicles_by_route=["Red", "Boat-F1"]),
+        cast(Any, redis),
+        None,
+        session,
+    )
+
+    mock_get_shapes.assert_awaited_once_with(redis, ["Red"], session, None)
+    assert [feature["properties"]["route"] for feature in features] == ["Red"]
 
 
 @pytest.mark.anyio("asyncio")

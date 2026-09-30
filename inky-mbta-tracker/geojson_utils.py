@@ -198,6 +198,8 @@ def lookup_vehicle_color(vehicle: VehicleRedisSchema) -> str:
 
 
 def lookup_route_color(route: str) -> str:
+    if route.lower().startswith("boat-"):
+        return "#008EAA"
     if route.startswith("Green"):
         return "#008150"
     if route.startswith("Blue"):
@@ -526,6 +528,8 @@ async def get_vehicle_features(
                 parent_stop_id = None
                 if vehicle_info.bearing:
                     vehicle_bearing = vehicle_info.bearing
+                if vehicle_info.route.lower().startswith("boat-"):
+                    route_icon = "ferry"
                 if vehicle_info.route:
                     if vehicle_info.stop:
                         stop = stops_lookup.get(vehicle_info.stop)
@@ -667,11 +671,13 @@ async def get_shapes_features(
     frequent_buses: bool = False,
 ) -> list[Feature]:
     """Get route shapes as GeoJSON features with geometric optimization"""
-    requested_routes = (
-        config.frequent_bus_lines
-        if frequent_buses and config.frequent_bus_lines
-        else config.vehicles_by_route
-    )
+    if frequent_buses:
+        requested_routes = config.frequent_bus_lines or []
+    else:
+        requested_routes = config.vehicles_by_route or []
+    requested_routes = [
+        route for route in requested_routes if not route.lower().startswith("boat-")
+    ]
     add_current_span_attributes(
         {
             "shapes.frequent_buses": frequent_buses,
@@ -681,10 +687,13 @@ async def get_shapes_features(
     )
     lines = list()
     shapes = None
-    if frequent_buses and config.frequent_bus_lines:
-        shapes = await get_shapes(redis_client, config.frequent_bus_lines, session, tg)
-    elif not frequent_buses and config.vehicles_by_route:
-        shapes = await get_shapes(redis_client, config.vehicles_by_route, session, None)
+    if requested_routes:
+        shapes = await get_shapes(
+            redis_client,
+            requested_routes,
+            session,
+            tg if frequent_buses else None,
+        )
 
     if shapes:
         # Iterate over the mapping of route -> list of line coordinate sequences
