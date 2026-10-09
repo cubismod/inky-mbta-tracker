@@ -38,7 +38,7 @@ dependencies = [
     "prometheus-client==0.26.0",
     "prometheus-fastapi-instrumentator>=7.1.0",
     "propcache==0.5.4",
-    "pycares==5.0.1",
+    "pycares==5.1.0",
     "pycparser==3.0",
     "pydantic>=2.11.7",
     "pydantic-core>=2.33.2",
