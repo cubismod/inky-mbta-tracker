@@ -189,7 +189,7 @@ async def light_get_stop(
     tg: TaskGroup,
     session: Optional[ClientSession] = None,
 ) -> Optional[LightStop]:
-    key = f"stop:{stop_id}:light"
+    key = f"stop:{stop_id}:light:v2"
     import mbta_client
 
     tracer = get_tracer(__name__) if is_otel_enabled() else None
@@ -263,6 +263,8 @@ async def light_get_stop(
                     lat=stop_resource.attributes.latitude,
                     mbta_stop_id=stop_resource.id,
                     parent_stop_id=parent_stop_id,
+                    platform_code=stop_resource.attributes.platform_code,
+                    platform_name=stop_resource.attributes.platform_name,
                 )
 
                 await write_cache(
@@ -286,7 +288,7 @@ async def fetch_route_stops(
 
     Returns a mapping of stop_id -> LightStop for the fetched route.
     """
-    key = f"route:{route_id}:stops_fetched"
+    key = f"route:{route_id}:stops_fetched:v2"
     cached = await get_cache(r_client, key)
     if cached:
         logger.debug("Route stops already fetched for %s; skipping", route_id)
@@ -352,6 +354,8 @@ async def fetch_route_stops(
                 lat=stop_resource.attributes.latitude,
                 mbta_stop_id=stop_resource.id,
                 parent_stop_id=parent_stop_id,
+                platform_code=stop_resource.attributes.platform_code,
+                platform_name=stop_resource.attributes.platform_name,
             )
 
         for stop_resource in stops_response.data:
@@ -361,7 +365,7 @@ async def fetch_route_stops(
             results[stop_resource.id] = ls
             await write_cache(
                 r_client,
-                f"stop:{stop_resource.id}:light",
+                f"stop:{stop_resource.id}:light:v2",
                 ls.model_dump_json(),
                 randint(TWO_MONTHS, YEAR),
             )
@@ -373,7 +377,7 @@ async def fetch_route_stops(
             results[stop_resource.id] = ls
             await write_cache(
                 r_client,
-                f"stop:{stop_resource.id}:light",
+                f"stop:{stop_resource.id}:light:v2",
                 ls.model_dump_json(),
                 randint(TWO_MONTHS, YEAR),
             )
@@ -425,7 +429,7 @@ async def _light_get_stops_impl(
     stop_list = list(stop_ids)
     pl = r_client.pipeline()
     for stop_id in stop_list:
-        await pl.get(f"stop:{stop_id}:light")
+        await pl.get(f"stop:{stop_id}:light:v2")
         redis_commands.labels("get").inc()
     results = await pl.execute()
     redis_commands.labels("execute").inc()

@@ -515,6 +515,8 @@ async def get_vehicle_features(
             for vehicle_info in validated:
                 vehicle_bearing = None
                 platform_prediction = None
+                platform_code = None
+                platform_name = None
 
                 point = Point((vehicle_info.longitude, vehicle_info.latitude))
                 stop = None
@@ -534,6 +536,8 @@ async def get_vehicle_features(
                     if vehicle_info.stop:
                         stop = stops_lookup.get(vehicle_info.stop)
                         if stop:
+                            platform_code = stop.platform_code
+                            platform_name = stop.platform_name
                             mbta_stop_id = stop.mbta_stop_id
                             stop_id = stop.stop_id
                             if stop.parent_stop_id:
@@ -606,6 +610,8 @@ async def get_vehicle_features(
                             ),
                             "carriages": vehicle_info.carriages,
                             "platform_prediction": platform_prediction,
+                            "platform_code": platform_code,
+                            "platform_name": platform_name,
                             "headsign": vehicle_info.headsign,
                             "short_name": vehicle_info.short_name,
                             "source": vehicle_info.source,

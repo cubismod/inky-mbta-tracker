@@ -75,6 +75,8 @@ class LightStop(BaseModel):
     long: Optional[float] = None
     lat: Optional[float] = None
     platform_prediction: Optional[str] = None
+    platform_code: Optional[str] = None
+    platform_name: Optional[str] = None
 
 
 class DiffApiResponse(BaseModel):

@@ -418,7 +418,7 @@ class TestLightGetStop:
         assert result.lat == 42.3967
         assert result.parent_stop_id is None
 
-        mock_get_cache.assert_called_once_with(mock_redis, "stop:place-davis:light")
+        mock_get_cache.assert_called_once_with(mock_redis, "stop:place-davis:light:v2")
         mock_write_cache.assert_not_called()
 
     @patch("mbta_client_extended.aiohttp.ClientSession")
@@ -480,7 +480,7 @@ class TestLightGetStops:
         async def fake_execute() -> list[Optional[bytes]]:
             return [
                 hit.model_dump_json().encode()
-                if key == "stop:place-davis:light"
+                if key == "stop:place-davis:light:v2"
                 else None
                 for key in queued
             ]
@@ -680,9 +680,9 @@ class TestFetchRouteStops:
             for call in mock_write_cache.call_args_list
             if call.args[1].startswith("stop:")
         ]
-        assert "stop:70061:light" in cached_ids
-        assert "stop:place-alfcl:light" in cached_ids
-        assert "stop:place-alfcl-entrance:light" not in cached_ids
+        assert "stop:70061:light:v2" in cached_ids
+        assert "stop:place-alfcl:light:v2" in cached_ids
+        assert "stop:place-alfcl-entrance:light:v2" not in cached_ids
 
     @patch("mbta_client_extended.get_cache", new_callable=AsyncMock)
     async def test_fetch_route_stops_skips_when_already_fetched(
