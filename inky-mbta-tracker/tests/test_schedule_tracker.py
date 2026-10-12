@@ -203,8 +203,9 @@ class TestTracker:
         )
 
         with (
-            patch(
-                "schedule_tracker.get_cache",
+            patch.object(
+                tracker.redis,
+                "get",
                 return_value=previous_event.model_dump_json(),
             ),
             patch.object(tracker, "write_vehicle_speed_history") as write_history,
@@ -240,8 +241,9 @@ class TestTracker:
         )
 
         with (
-            patch(
-                "schedule_tracker.get_cache",
+            patch.object(
+                tracker.redis,
+                "get",
                 return_value=previous_event.model_dump_json(),
             ),
             patch.object(tracker, "write_vehicle_speed_history") as write_history,
@@ -698,8 +700,9 @@ class TestApproximateSpeedGeometry:
         previous_event = self._history(-71.0590, 42.3601, previous_time)
         event = self._event(-71.0585, 42.3610, previous_time + timedelta(seconds=60))
 
-        with patch(
-            "schedule_tracker.get_cache",
+        with patch.object(
+            tracker.redis,
+            "get",
             return_value=previous_event.model_dump_json(),
         ):
             speed, approximate = await tracker.calculate_vehicle_speed(event)
@@ -731,8 +734,9 @@ class TestApproximateSpeedGeometry:
         previous_event = self._history(-71.0585, 42.3610, previous_time)
         event = self._event(-71.0590, 42.3601, previous_time + timedelta(seconds=60))
 
-        with patch(
-            "schedule_tracker.get_cache",
+        with patch.object(
+            tracker.redis,
+            "get",
             return_value=previous_event.model_dump_json(),
         ):
             speed, approximate = await tracker.calculate_vehicle_speed(event)
@@ -750,10 +754,11 @@ class TestApproximateSpeedGeometry:
         tracker = self._tracker()
         previous_time = datetime(2026, 1, 1, tzinfo=UTC)
         previous_event = self._history(-71.0590, 42.3601, previous_time)
-        event = self._event(-71.0588, 42.3601, previous_time + timedelta(seconds=60))
+        event = self._event(-71.05898, 42.3601, previous_time + timedelta(seconds=60))
 
-        with patch(
-            "schedule_tracker.get_cache",
+        with patch.object(
+            tracker.redis,
+            "get",
             return_value=previous_event.model_dump_json(),
         ):
             speed, approximate = await tracker.calculate_vehicle_speed(event)
@@ -770,8 +775,9 @@ class TestApproximateSpeedGeometry:
         previous_event = self._history(-71.0590, 42.3601, previous_time)
         event = self._event(-71.0540, 42.3610, previous_time + timedelta(seconds=60))
 
-        with patch(
-            "schedule_tracker.get_cache",
+        with patch.object(
+            tracker.redis,
+            "get",
             return_value=previous_event.model_dump_json(),
         ):
             speed, approximate = await tracker.calculate_vehicle_speed(event)
@@ -799,11 +805,12 @@ class TestApproximateSpeedGeometry:
             update_time=previous_time,
             recent_speeds=[10.0, 30.0],
         )
-        event = self._event(-71.0580, 42.3601, previous_time + timedelta(seconds=60))
+        event = self._event(-71.0586, 42.3601, previous_time + timedelta(seconds=60))
 
         with (
-            patch(
-                "schedule_tracker.get_cache",
+            patch.object(
+                tracker.redis,
+                "get",
                 return_value=previous_event.model_dump_json(),
             ),
             patch.object(tracker, "write_vehicle_speed_history") as write_history,
@@ -813,7 +820,7 @@ class TestApproximateSpeedGeometry:
         candidate = (
             distance(
                 self._history_point(-71.0600, 42.3601),
-                self._history_point(-71.0580, 42.3601),
+                self._history_point(-71.0586, 42.3601),
                 "m",
             )
             / 60
@@ -824,7 +831,7 @@ class TestApproximateSpeedGeometry:
         assert speed == pytest.approx(expected, rel=0.01)
         assert write_history.await_args is not None
         assert write_history.await_args.kwargs["recent_speeds"] == pytest.approx(
-            [10.0, 30.0, expected]
+            [10.0, 30.0, candidate]
         )
 
     @pytest.mark.anyio("asyncio")
@@ -836,8 +843,9 @@ class TestApproximateSpeedGeometry:
         event = self._event(-71.0582, 42.3609, previous_time + timedelta(seconds=60))
 
         with (
-            patch(
-                "schedule_tracker.get_cache",
+            patch.object(
+                tracker.redis,
+                "get",
                 return_value=previous_event.model_dump_json(),
             ),
             patch.object(tracker, "write_vehicle_speed_history") as write_history,
@@ -864,8 +872,9 @@ class TestApproximateSpeedGeometry:
         previous_event = self._history(-71.0600, 42.3601, previous_time)
         event = self._event(-71.0578, 42.3601, previous_time + timedelta(seconds=5))
 
-        with patch(
-            "schedule_tracker.get_cache",
+        with patch.object(
+            tracker.redis,
+            "get",
             return_value=previous_event.model_dump_json(),
         ):
             speed, approximate = await tracker.calculate_vehicle_speed(event)
@@ -884,11 +893,12 @@ class TestApproximateSpeedGeometry:
             update_time=previous_time,
             recent_speeds=[10.0, 30.0],
         )
-        event = self._event(-71.0588, 42.3601, previous_time + timedelta(seconds=60))
+        event = self._event(-71.05898, 42.3601, previous_time + timedelta(seconds=60))
 
         with (
-            patch(
-                "schedule_tracker.get_cache",
+            patch.object(
+                tracker.redis,
+                "get",
                 return_value=previous_event.model_dump_json(),
             ),
             patch.object(tracker, "write_vehicle_speed_history") as write_history,
@@ -898,6 +908,92 @@ class TestApproximateSpeedGeometry:
         assert write_history.await_args is not None
         assert write_history.await_args.args[2] == 0.0
         assert write_history.await_args.kwargs["recent_speeds"] == [10.0, 30.0, 0.0]
+
+    @pytest.mark.anyio("asyncio")
+    @pytest.mark.parametrize("use_shapes", [True, False])
+    @pytest.mark.parametrize("sample_seconds", [1, 2, 4])
+    async def test_frequent_updates_calculate_slow_movement(
+        self, use_shapes: bool, sample_seconds: int
+    ) -> None:
+        tracker = self._tracker()
+        mock_redis = AsyncMock()
+        tracker.redis = mock_redis
+        if not use_shapes:
+            tracker.route_shapes = {}
+        previous_time = datetime(2026, 1, 1, tzinfo=UTC)
+        history = self._history(-71.0590, 42.3601, previous_time)
+        mock_redis.get.return_value = history.model_dump_json().encode()
+        # About eight meters of movement: below the former 20-meter noise floor.
+        event = self._event(
+            -71.0589, 42.3601, previous_time + timedelta(seconds=sample_seconds)
+        )
+
+        speed, approximate = await tracker.calculate_vehicle_speed(event)
+
+        expected = (
+            distance(
+                Point((history.long, history.lat)), Point((-71.0589, 42.3601)), "m"
+            )
+            / sample_seconds
+            * METERS_PER_SECOND_TO_MPH
+        )
+        assert approximate is True
+        assert speed == pytest.approx(expected, rel=0.02)
+        mock_redis.get.assert_awaited_once_with("vehicle:speed:history:vehicle-123")
+        mock_redis.set.assert_awaited_once()
+
+    @pytest.mark.anyio("asyncio")
+    @pytest.mark.parametrize("sample_seconds", [0, 0.5])
+    @pytest.mark.parametrize("previous_speed", [0.0, 20.0])
+    async def test_duplicate_or_short_samples_preserve_displayed_speed(
+        self, sample_seconds: float, previous_speed: float
+    ) -> None:
+        tracker = self._tracker()
+        mock_redis = AsyncMock()
+        tracker.redis = mock_redis
+        previous_time = datetime(2026, 1, 1, tzinfo=UTC)
+        history = self._history(-71.0590, 42.3601, previous_time)
+        history.speed = previous_speed
+        history.recent_speeds = [previous_speed]
+        mock_redis.get.return_value = history.model_dump_json().encode()
+        event = self._event(
+            -71.0589, 42.3601, previous_time + timedelta(seconds=sample_seconds)
+        )
+
+        speed, approximate = await tracker.calculate_vehicle_speed(event)
+
+        assert speed == previous_speed
+        assert approximate is True
+        mock_redis.set.assert_not_awaited()
+
+    @pytest.mark.anyio("asyncio")
+    async def test_frequent_movement_recovers_from_zero_speed_history(self) -> None:
+        tracker = self._tracker()
+        mock_redis = AsyncMock()
+        tracker.redis = mock_redis
+        previous_time = datetime(2026, 1, 1, tzinfo=UTC)
+        history = self._history(-71.0595, 42.3601, previous_time)
+        history.recent_speeds = [0.0] * 4
+        speeds: list[float] = []
+        for sample in range(1, 6):
+            mock_redis.get.return_value = history.model_dump_json().encode()
+            event = self._event(
+                -71.0595 + sample * 0.0001,
+                42.3601,
+                previous_time + timedelta(seconds=sample),
+            )
+            speed, approximate = await tracker.calculate_vehicle_speed(event)
+            assert approximate is True
+            assert speed is not None
+            speeds.append(speed)
+            assert mock_redis.set.await_args is not None
+            history = VehicleSpeedHistory.model_validate_json(
+                mock_redis.set.await_args.kwargs["value"]
+            )
+
+        assert speeds[0] == 0.0
+        assert speeds[2] > 0.0
+        assert speeds[-1] == pytest.approx(18.4, rel=0.02)
 
     @pytest.mark.anyio("asyncio")
     async def test_load_route_shapes(self) -> None:

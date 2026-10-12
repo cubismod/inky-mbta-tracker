@@ -26,7 +26,6 @@ from pydantic import ValidationError
 from redis import ResponseError
 from redis.asyncio.client import Pipeline, Redis
 from redis.exceptions import RedisError
-from redis_cache import get_cache
 from redis_lock.asyncio import RedisLock
 from shared_types.shared_types import (
     LineRoute,
@@ -37,10 +36,10 @@ from shared_types.shared_types import (
 
 logger = logging.getLogger("schedule_tracker")
 SPEED_HISTORY_TTL_SECONDS = 300
-MIN_APPROXIMATE_SPEED_SAMPLE_SECONDS = 5
+MIN_APPROXIMATE_SPEED_SAMPLE_SECONDS = 1
 METERS_PER_SECOND_TO_MPH = 2.2369362921
 SNAP_MAX_CROSS_TRACK_M = 100.0
-SPEED_NOISE_FLOOR_M = 20.0
+SPEED_NOISE_FLOOR_M = 5.0
 SNAP_NOISE_RAW_MAX_M = 50.0
 RECENT_SPEEDS_WINDOW = 4
 
@@ -197,7 +196,8 @@ class Tracker:
                 await self.write_vehicle_speed_history(cache_id, event, 0, pipeline)
                 return None, False
 
-            last_event = await get_cache(self.redis, cache_id)
+            # Speed samples need the latest fix, without the shared read-cache TTL.
+            last_event = await self.redis.get(cache_id)
             redis_commands.labels("get").inc()
 
             if not last_event:
@@ -211,10 +211,10 @@ class Tracker:
             duration_seconds = (
                 event.update_time - last_event_validated.update_time
             ).total_seconds()
-            if duration_seconds <= 0:
+            if duration_seconds < 0:
                 logger.debug(
                     "Skipping speed calculation for %s vehicle %s: "
-                    "non-positive duration %s seconds",
+                    "out-of-order duration %s seconds",
                     event.route,
                     event.id,
                     duration_seconds,
@@ -222,7 +222,7 @@ class Tracker:
                 return None, False
 
             if duration_seconds < MIN_APPROXIMATE_SPEED_SAMPLE_SECONDS:
-                if last_event_validated.speed > 0:
+                if last_event_validated.speed > 0 or last_event_validated.recent_speeds:
                     return last_event_validated.speed, True
                 return None, False
 
@@ -282,8 +282,13 @@ class Tracker:
 
             distance_meters = distance(start, end, "m")
             if distance_meters == 0:
-                await self.write_vehicle_speed_history(cache_id, event, 0, pipeline)
-                return 0, True
+                recent = list((*last_event_validated.recent_speeds, 0.0))[
+                    -RECENT_SPEEDS_WINDOW:
+                ]
+                await self.write_vehicle_speed_history(
+                    cache_id, event, 0.0, pipeline, recent_speeds=recent
+                )
+                return 0.0, True
 
             speed, recent = self._smooth(
                 last_event_validated.recent_speeds,
@@ -343,7 +348,8 @@ class Tracker:
             speed = median([*recent_speeds, candidate])
         else:
             speed = candidate
-        recent = (*recent_speeds, speed)[-RECENT_SPEEDS_WINDOW:]
+        # Keep raw samples so repeated movement can overcome earlier zero readings.
+        recent = (*recent_speeds, candidate)[-RECENT_SPEEDS_WINDOW:]
         return speed, recent
 
     async def cleanup(self, pipeline: Pipeline) -> None:
