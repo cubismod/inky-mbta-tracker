@@ -14,7 +14,7 @@ dependencies = [
     "anyio==4.15.1",
     "async-lru>=2.0.5",
     "attrs==26.1.0",
-    "brotli==1.2.0",
+    "brotli==1.2.1",
     "certifi==2026.10.19",
     "cffi==2.1.1",
     "charset-normalizer==3.5.2",
