@@ -22,11 +22,33 @@ from shared_types.shared_types import (
 )
 
 
+class DummyLock:
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        pass
+
+    async def __aenter__(self) -> "DummyLock":
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: object | None,
+    ) -> None:
+        return None
+
+
 @pytest.fixture(autouse=True)
 def _reset_route_shapes() -> Iterator[None]:
     ROUTE_SHAPES.clear()
     yield
     ROUTE_SHAPES.clear()
+
+
+@pytest.fixture(autouse=True)
+def _stub_redis_lock() -> Iterator[None]:
+    with patch("schedule_tracker.RedisLock", DummyLock):
+        yield
 
 
 class TestDummyScheduleEvent:
