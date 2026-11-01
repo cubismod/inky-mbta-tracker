@@ -109,6 +109,21 @@ async def test_light_get_alerts_batch_success() -> None:
 
 
 @pytest.mark.anyio("asyncio")
+async def test_light_get_alerts_batch_keeps_informed_entity() -> None:
+    # The departures service filters on informed_entity, so the shared fetch
+    # must not trim it.
+    session = MockSession(200, build_alert_payload(True))
+    r_client = make_redis_client()
+
+    alerts = await light_get_alerts_batch(
+        "Red,Blue", cast(ClientSession, session), r_client
+    )
+
+    assert alerts is not None
+    assert alerts[0]["attributes"]["informed_entity"] == [{"route": "Red"}]
+
+
+@pytest.mark.anyio("asyncio")
 async def test_light_get_alerts_batch_rate_limited_returns_none() -> None:
     session = MockSession(429, build_alert_payload(True))
     r_client = make_redis_client()

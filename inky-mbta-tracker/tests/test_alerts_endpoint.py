@@ -109,6 +109,38 @@ async def test_collect_alerts_preserves_raw_mbta_fields(
 
 
 @pytest.mark.anyio("asyncio")
+async def test_collect_alerts_trims_response_only_attributes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    alert = make_alert(
+        "A1",
+        updated_at="2026-06-27T12:00:00-04:00",
+        banner="banner text",
+        lifecycle="NEW",
+    )
+
+    patch_batches(monkeypatch, [[alert]])
+
+    _, body = await collect_alerts(
+        Config(vehicles_by_route=["Red"]),
+        cast(ClientSession, FakeSession()),
+        cast(Redis, object()),
+    )
+
+    attrs = json.loads(body)["data"][0]["attributes"]
+    for trimmed in (
+        "banner",
+        "closed_timestamp",
+        "informed_entity",
+        "last_push_notification_timestamp",
+        "lifecycle",
+        "reminder_times",
+    ):
+        assert trimmed not in attrs
+    assert attrs["header"] == "Service delay"
+
+
+@pytest.mark.anyio("asyncio")
 async def test_collect_alerts_no_routes_returns_empty(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
