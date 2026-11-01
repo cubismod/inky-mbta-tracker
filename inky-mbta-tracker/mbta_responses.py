@@ -2,7 +2,7 @@
 # https://api-v3.mbta.com/docs/swagger/index.html#/Schedule/ApiWeb_ScheduleController_index
 from typing import Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class PageLinks(BaseModel):
@@ -120,7 +120,9 @@ class AlertAttributes(BaseModel):
     updated_at: str
     effect_name: Optional[str] = None
     active_period: list[ActivePeriod]
-    informed_entity: list[InformedEntity]
+    # Optional so one incomplete alert cannot fail the whole batch; an alert
+    # with no entities simply matches nothing.
+    informed_entity: list[InformedEntity] = Field(default_factory=list)
     severity: int
 
 

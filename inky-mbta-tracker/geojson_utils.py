@@ -42,6 +42,17 @@ logger = logging.getLogger("geojson_utils")
 STOPPED_VEHICLE_OFFSET_METERS = 4.0
 METERS_PER_LATITUDE_DEGREE = 111_320.0
 
+# Dropped from the /alerts response only. informed_entity stays in the shared
+# fetch because the departures service filters on it.
+RESPONSE_TRIMMED_ATTRIBUTES = (
+    "banner",
+    "closed_timestamp",
+    "informed_entity",
+    "last_push_notification_timestamp",
+    "lifecycle",
+    "reminder_times",
+)
+
 _STOP_NAME_SEP = re.compile(r"\s*-\s*")
 
 
@@ -175,18 +186,6 @@ async def _light_get_alerts_batch_impl(
             if span:
                 span.set_attribute("alerts.count", alerts_count)
 
-            for alert in data["data"]:
-                for key in [
-                    "banner",
-                    "closed_timestamp",
-                    "informed_entity",
-                    "last_push_notification_timestamp",
-                    "lifecycle",
-                    "reminder_times",
-                ]:
-                    if key in alert["attributes"]:
-                        alert["attributes"].pop(key)
-
             return list(data["data"])
     except ValidationError as err:
         logger.error("Unable to validate alerts response", exc_info=err)
@@ -245,6 +244,16 @@ def calculate_stop_eta(
 
 def calculate_bearing(start: Point, end: Point) -> float:
     return bearing(start, end)
+
+
+def _trim_response_attributes(alerts: list[dict[str, Any]]) -> None:
+    """Drop attributes the /alerts response does not need, in place."""
+    for alert in alerts:
+        attrs = alert.get("attributes")
+        if not isinstance(attrs, dict):
+            continue
+        for key in RESPONSE_TRIMMED_ATTRIBUTES:
+            attrs.pop(key, None)
 
 
 def _merge_alert_batch(
@@ -396,6 +405,7 @@ async def _collect_alerts_impl(
     logger.info(
         "Total alerts collected: %s from all route batches", len(collected_alerts)
     )
+    _trim_response_attributes(collected_alerts)
     return len(collected_alerts), orjson.dumps({"data": collected_alerts}).decode(
         "utf-8"
     )
