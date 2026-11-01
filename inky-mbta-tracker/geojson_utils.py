@@ -177,6 +177,19 @@ async def _light_get_alerts_batch_impl(
             logger.debug("Parsed %s alerts from response", alerts_count)
             if span:
                 span.set_attribute("alerts.count", alerts_count)
+
+            for alert in data["data"]:
+                for key in [
+                    "banner",
+                    "closed_timestamp",
+                    "informed_entity",
+                    "last_push_notification_timestamp",
+                    "lifecycle",
+                    "reminder_times",
+                ]:
+                    if key in alert["attributes"]:
+                        alert["attributes"].pop(key)
+
             return list(data["data"])
     except ValidationError as err:
         logger.error("Unable to validate alerts response", exc_info=err)
