@@ -28,15 +28,20 @@ PENDING_WEBHOOK_PREFIX = "webhook:pending"
 PENDING_WEBHOOK_LOCK_PREFIX = "webhook:pending:lock"
 PENDING_WEBHOOK_TTL = 10 * MINUTE
 PENDING_WEBHOOK_DELAY_RANGE = (5.0, 15.0)
-BATCH_WINDOW_SECONDS = 8 * MINUTE
-SHORT_BATCH_WINDOW_SECONDS = MINUTE
+# Alerts mostly arrive one at a time; the ones that belong together land within
+# ~2 minutes of each other. So a pending batch waits for a quiet period after
+# the last arrival rather than a fixed hold, and is capped at the window.
+BATCH_QUIET_SECONDS = 45.0
+BATCH_WINDOW_SECONDS = 2 * MINUTE
 BATCH_ENTRY_PREFIX = "webhook:batch:entry"
 ALERT_BATCH_PREFIX = "webhook:batch:alert"
 ALERT_DEDUP_KEY = "webhook:dedup"
 PENDING_BATCH_KEY = "webhook:pending:batch"
 PENDING_BATCH_LOCK_PREFIX = "webhook:pending:batch:lock"
 PENDING_BATCH_SENDER_KEY = "webhook:pending:batch:sender"
-PENDING_BATCH_TTL = 5 * MINUTE
+# Must outlive the longest possible hold, or the pending entry expires before
+# ready_at and the batch is dropped instead of posted.
+PENDING_BATCH_TTL = BATCH_WINDOW_SECONDS + 5 * MINUTE
 BATCH_ENTRY_TTL = DAY
 # Pointers for alerts with no finite end are never swept, so they must not
 # inherit the flat day: losing one strands its message permanently.
@@ -71,7 +76,15 @@ class PendingBatchEntry(BaseModel):
     ready_at: float
     items: list[PendingBatchItem]
     first_seen: Optional[float] = None
-    extended: bool = False
+
+
+def next_batch_ready_at(first_seen: float, now: float) -> float:
+    """When a pending batch holding an item first seen at ``first_seen`` sends.
+
+    Debounces on the newest arrival so a burst is collected while it is still
+    arriving, but never holds past ``BATCH_WINDOW_SECONDS`` from the first item.
+    """
+    return min(now + BATCH_QUIET_SECONDS, first_seen + BATCH_WINDOW_SECONDS)
 
 
 def _create_embeds_hash(webhook: DiscordWebhook) -> str:
