@@ -231,10 +231,7 @@ async def stale_key_cleanup_task(r_client: Redis) -> None:
 async def webhook_expiry_sweep_task(r_client: Redis, config: Config) -> None:
     """Delete Discord messages whose MBTA alerts have all elapsed.
 
-    Alerts are otherwise only removed on an SSE `remove` event, which is not
-    reliably delivered, so expired messages linger forever. Each pass runs
-    immediately on startup to catch messages whose alerts expired while the
-    worker was down, then every SWEEP_INTERVAL_SECONDS.
+    Runs once on startup, then every SWEEP_INTERVAL_SECONDS.
     """
     logger.info("Starting webhook expiry sweep task")
 
@@ -353,8 +350,6 @@ async def __main__() -> None:
             # Periodic stale key cleanup
             tg.start_soon(stale_key_cleanup_task, get_redis(redis_pool))
 
-            # Delete Discord messages whose alerts have all elapsed. Only useful
-            # when a webhook is configured: there is nothing to delete otherwise.
             if os.getenv("IMT_DISCORD_URL"):
                 tg.start_soon(webhook_expiry_sweep_task, get_redis(redis_pool), config)
 

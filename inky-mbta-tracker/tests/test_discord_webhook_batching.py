@@ -163,8 +163,7 @@ async def test_new_alert_rearms_quiet_period_but_not_past_the_cap():
     assert pending.ready_at == now + BATCH_QUIET_SECONDS
     assert pending.first_seen == now
 
-    # An alert arriving 30s later delays the send by a quiet period from that
-    # arrival, rather than jumping to the full window.
+    # A later arrival re-arms the quiet period instead of jumping to the window.
     now += 30
     with patch("webhook.discord_webhook.RedisLock", DummyLock):
         await enqueue_pending_batch(

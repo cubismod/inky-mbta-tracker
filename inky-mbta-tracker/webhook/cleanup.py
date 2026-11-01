@@ -1,15 +1,9 @@
 """Expiry-driven cleanup of Discord messages posted for MBTA alerts.
 
-Alerts are only ever removed from Discord today when the SSE stream emits a
-`remove` event for them, which is not reliably delivered: alerts that simply
-run past every `active_period`, and anything that disappears while the stream
-is reconnecting, leave their message behind forever.
-
-This module owns the fallback. Every posted message is registered in the
-`webhook:expiry` sorted set, scored by the moment its alert (or, for grouped
-messages, its first alert) runs out. The sweeper walks that set, deletes
-messages whose alerts have all elapsed and re-renders grouped messages that
-lost only some of their items.
+SSE `remove` events are not reliably delivered, so alerts that run past every
+`active_period` - or vanish while the stream reconnects - strand their message.
+Every posted message is registered in the `webhook:expiry` sorted set, scored
+by when its alert (for grouped messages, its first alert) runs out.
 """
 
 import logging
@@ -39,8 +33,7 @@ from webhook.discord_webhook import (
 logger = logging.getLogger(__name__)
 
 SWEEP_INTERVAL_SECONDS = 5 * 60
-# Bounded pass: deletes are rate limited per channel, so work through the due
-# members in chunks and let the next tick pick up the rest.
+# Deletes are rate limited per channel, so chunk the pass; the next tick finishes.
 SWEEP_BATCH_LIMIT = 100
 SWEEP_LOCK_KEY = "webhook:expiry:sweep:lock"
 
@@ -92,10 +85,8 @@ async def sweep_expired_webhooks(
 ) -> SweepResult:
     """Delete or trim messages whose alerts have all elapsed.
 
-    The work list is the `webhook:expiry` sorted set, so no MBTA API calls and
-    no keyspace scan on the steady-state path. Idempotent: every branch re-reads
-    the pointer under the lock, and keys are only cleared once Discord confirms
-    the change, so a failure or a crash mid-pass is retried on the next tick.
+    Idempotent: each branch re-reads the pointer under the lock and keys are
+    cleared only once Discord confirms, so a crash mid-pass retries next tick.
     """
     result = SweepResult()
     url = WEBHOOK_URL
@@ -128,8 +119,6 @@ async def sweep_expired_webhooks(
                         r_client, config, session, url, webhook_id, now
                     )
                 except RateLimitExceeded:
-                    # Leave the rest of the batch for the next pass rather than
-                    # hammering a rate limited channel.
                     result.rate_limited = True
                     logger.warning(
                         "Discord rate limited the webhook expiry sweep, "
@@ -165,7 +154,6 @@ async def _sweep_member(
 ) -> str:
     raw = await r_client.get(f"webhook:{webhook_id}")
     if not raw:
-        # Pointer already expired (or never written): nothing left to delete.
         await r_client.zrem(webhook_helpers.WEBHOOK_EXPIRY_INDEX_KEY, webhook_id)
         return PURGED
     try:
@@ -199,10 +187,9 @@ async def _sweep_single(
     entry: WebhookRedisEntry,
     now: float,
 ) -> str:
-    # Guards the delete-then-post race: a cached alert means MBTA touched this
-    # alert within the last couple of hours, so an end time may have been pushed
-    # out by an `update` event we have not processed yet. Re-arm instead of
-    # deleting a message that is about to be re-posted.
+    # Delete-then-post race: a cached alert means MBTA touched it recently, so an
+    # `update` may have pushed the end out. Re-arm rather than delete a message
+    # that is about to be re-posted.
     alert = await _load_cached_alert(r_client, webhook_id)
     if alert is not None:
         refreshed = webhook_helpers.alert_expiry_ts(alert)
@@ -234,8 +221,7 @@ async def _sweep_batch(
 ) -> str:
     batch = await _load_batch(r_client, batch_id)
     if not batch or not batch.items:
-        # Without the batch entry there is no way to render survivors, and the
-        # items are not recoverable from the message itself. Drop the message.
+        # No batch entry: survivors are unrecoverable, so drop the message.
         if not await delete_message(session, url, entry.message_id):
             return FAILED
         await clear_webhook_pointer(r_client, webhook_id, entry)
@@ -247,8 +233,7 @@ async def _sweep_batch(
     ]
 
     if len(survivors) == len(items):
-        # Nothing actually elapsed (the batch was extended since it was
-        # indexed); only the score needs correcting.
+        # Batch was extended since indexing; only the score needs correcting.
         await _store_batch(r_client, batch, now)
         await store_webhook_pointer(
             r_client,
@@ -263,8 +248,7 @@ async def _sweep_batch(
     if not survivors:
         if not await delete_message(session, url, entry.message_id):
             return FAILED
-        # Drop the per-alert pointers so a later update posts a fresh message
-        # instead of patching the one we just deleted.
+        # Drop per-alert pointers so a later update posts fresh.
         for item in items:
             await r_client.delete(webhook_helpers._alert_batch_key(item.webhook_id))
         await clear_webhook_pointer(r_client, webhook_id, entry)
@@ -273,7 +257,7 @@ async def _sweep_batch(
     grouped = webhook_helpers.build_grouped_webhook(survivors, config)
     if not await patch_message(session, url, entry.message_id, grouped):
         return FAILED
-    # Elapsed alerts must not keep the row pointer of the item just removed.
+    # Forget the rows just stripped from the message.
     for item in items:
         if item.webhook_id not in {survivor.webhook_id for survivor in survivors}:
             await r_client.delete(webhook_helpers._alert_batch_key(item.webhook_id))

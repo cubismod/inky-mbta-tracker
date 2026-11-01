@@ -28,9 +28,8 @@ PENDING_WEBHOOK_PREFIX = "webhook:pending"
 PENDING_WEBHOOK_LOCK_PREFIX = "webhook:pending:lock"
 PENDING_WEBHOOK_TTL = 10 * MINUTE
 PENDING_WEBHOOK_DELAY_RANGE = (5.0, 15.0)
-# Alerts mostly arrive one at a time; the ones that belong together land within
-# ~2 minutes of each other. So a pending batch waits for a quiet period after
-# the last arrival rather than a fixed hold, and is capped at the window.
+# Related alerts land within ~2 minutes of each other, so a batch waits for a
+# quiet period after the last arrival rather than a fixed hold, capped at the window.
 BATCH_QUIET_SECONDS = 45.0
 BATCH_WINDOW_SECONDS = 2 * MINUTE
 BATCH_ENTRY_PREFIX = "webhook:batch:entry"
@@ -39,17 +38,14 @@ ALERT_DEDUP_KEY = "webhook:dedup"
 PENDING_BATCH_KEY = "webhook:pending:batch"
 PENDING_BATCH_LOCK_PREFIX = "webhook:pending:batch:lock"
 PENDING_BATCH_SENDER_KEY = "webhook:pending:batch:sender"
-# Must outlive the longest possible hold, or the pending entry expires before
-# ready_at and the batch is dropped instead of posted.
+# Must outlive the longest possible hold, or the batch is dropped unposted.
 PENDING_BATCH_TTL = BATCH_WINDOW_SECONDS + 5 * MINUTE
 BATCH_ENTRY_TTL = DAY
-# Pointers for alerts with no finite end are never swept, so they must not
-# inherit the flat day: losing one strands its message permanently.
+# Open-ended alerts are never swept, so their pointer must outlive DAY.
 OPEN_ENDED_TTL = 30 * DAY
 BATCH_WEBHOOK_ID = "batch"
-# Sorted set of webhook ids scored by the moment they should be swept. The
-# member is the same id used for the `webhook:{id}` pointer key, so `batch:{id}`
-# members address grouped messages and bare alert ids address single messages.
+# Sorted set of webhook ids scored by sweep time; members are the ids used for
+# the `webhook:{id}` pointers, so `batch:{id}` means a grouped message.
 WEBHOOK_EXPIRY_INDEX_KEY = "webhook:expiry"
 
 
@@ -164,8 +160,6 @@ def display_route_label(route_id: str) -> str:
     if label is not None:
         return f"Silver Line {label}"
     if key in SILVER_LINE_LABELS:
-        # Already an SL short name (converted further upstream); keep it readable
-        # instead of leaking the bare code.
         return f"Silver Line {key}"
     return raw
 

@@ -670,9 +670,8 @@ async def delete_message(
 ) -> bool:
     """Delete one webhook message.
 
-    Returns True when the message is gone. Discord answers 404 for a message
-    that was already deleted, which counts as success so a partial delete
-    converges instead of orphaning the pointer forever.
+    Returns True when the message is gone; 404 counts as gone so a partial
+    delete converges instead of orphaning the pointer.
     """
     async with session.delete(f"{url}/messages/{message_id}") as response:
         if response.status == 429:
@@ -755,9 +754,7 @@ async def clear_webhook_pointer(
 @retry(
     wait=wait_exponential_jitter(initial=5, jitter=20, max=60),
     # Bounded: `remove` events await this inline in the alert stream, so an
-    # unbounded retry on a network outage stalls alert ingestion for the whole
-    # stream. A failed delete degrades to a logged miss; the sweeper retries
-    # from the expiry index.
+    # unbounded retry would stall ingestion. The sweeper retries a miss.
     stop=stop_after_delay(120),
     before_sleep=before_sleep_log(logger, logging.ERROR, exc_info=True),
     retry=retry_if_not_exception_type(CancelledError),

@@ -580,8 +580,7 @@ async def get_vehicle_features(
                         or vehicle_info.route.isdecimal()
                         or is_silver_line_route(vehicle_info.route)
                     ):
-                        # Silver Line is bus rapid transit, so a route id that has
-                        # already been converted to SL* still needs the bus icon.
+                        # Silver Line is BRT: SL* ids still need the bus icon.
                         route_icon = "bus"
                     if is_silver_line_route(vehicle_info.route):
                         vehicle_info.route = silver_line_lookup(vehicle_info.route)

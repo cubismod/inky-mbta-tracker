@@ -616,8 +616,7 @@ class _FakeSession:
     ("status", "expected"),
     [
         (204, True),
-        # Discord answers 404 for an already-deleted message: treat as gone so
-        # a partial delete converges instead of orphaning the pointer.
+        # 404 counts as gone so a partial delete converges.
         (404, True),
         (500, False),
     ],

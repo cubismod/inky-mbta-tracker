@@ -61,7 +61,7 @@ def test_display_route_label(route: str, expected: str) -> None:
 
 
 def test_display_route_labels_converts_every_silver_route() -> None:
-    # Comma-joined route ids used to break the lookup and leak the raw number.
+    # Comma-joined route ids must not leak raw numbers.
     assert display_route_labels(["741", "751"]) == "Silver Line SL1, Silver Line SL4"
 
 
@@ -122,8 +122,7 @@ def test_already_converted_sl_code_stays_readable(route_id: str) -> None:
 
 
 def test_silver_line_predicate_is_exact_not_prefix_based() -> None:
-    # MBTA bus routes 74 and 75 are not Silver Line, so the old
-    # startswith("74")/("75") sniffing was wrong in principle even when harmless.
+    # Bus routes 74 and 75 are not Silver Line.
     assert is_silver_line_route("751")
     assert is_silver_line_route("SL4")
     assert not is_silver_line_route("74")

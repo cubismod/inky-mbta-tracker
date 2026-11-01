@@ -13,13 +13,9 @@ LIVE_NEGATIVE_CACHE_KEY = "live_negative_cache"
 VEHICLE_STREAM_KEY = "vehicle_stream_diff"
 HISTORICAL_V_DATA = "historical_vehicle_data"
 
-# The MBTA addresses its Silver Line bus routes by numeric route id, but every
-# human-facing surface ("Silver Line SL4 Alert", map labels) reads the SL short
-# name. This dict is the single source of truth for that mapping so no surface
-# can drift and leak a bare number. Grouping by MBTA line id, per
-# https://api-v3.mbta.com/routes/<id> relationships.line:
-#   741/742/743/746 -> line-SLWaterfront
-#   749/751         -> line-SLWashington
+# Silver Line bus routes are addressed by numeric route id, but every
+# human-facing surface reads the SL short name. Single source of truth for that
+# mapping; grouping per relationships.line on api-v3.mbta.com/routes/<id>.
 SILVER_LINE_ROUTES: dict[str, str] = {
     "741": "SL1",
     "742": "SL2",
@@ -28,9 +24,9 @@ SILVER_LINE_ROUTES: dict[str, str] = {
     "749": "SL5",
     "751": "SL4",
 }
-# Reverse membership: an id that is already an SL short name.
+# SL short names, for callers that already hold a label.
 SILVER_LINE_LABELS = frozenset(SILVER_LINE_ROUTES.values())
-# SL short name -> numeric route id, for callers that only know the readable form.
+# SL short name -> numeric route id.
 SILVER_LINE_IDS: dict[str, str] = {
     label: route_id for route_id, label in SILVER_LINE_ROUTES.items()
 }
