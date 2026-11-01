@@ -14,7 +14,6 @@ import orjson
 from anyio.abc import TaskGroup
 from config import Config
 from exceptions import RateLimitExceeded
-from mbta_client_extended import silver_line_lookup
 from mbta_responses import AlertResource
 from opentelemetry.trace import Span
 from otel_config import get_tracer, is_otel_enabled
@@ -101,7 +100,7 @@ def create_webhook_object(
         description=alert.attributes.header,
         timestamp=alert.attributes.updated_at,
         author=DiscordEmbedAuthor(
-            name=f"{format_route_names(', '.join(routes))} Alert",
+            name=f"{webhook_helpers.display_route_labels(routes) or 'MBTA'} Alert",
             url="https://bostontraintracker.com",
         ),
         color=color,
@@ -111,7 +110,9 @@ def create_webhook_object(
     if len(routes) > 1:
         embed.fields = [
             DiscordEmbedField(
-                name="Lines", value=format_route_names(", ".join(routes)), inline=False
+                name="Lines",
+                value=webhook_helpers.display_route_labels(routes),
+                inline=False,
             )
         ]
     avatar_url = None
@@ -371,15 +372,6 @@ async def send_batch_entry(
             kind="batch",
             batch_id=batch_id,
         )
-
-
-def format_route_names(payload: str) -> str:
-    new_payload: list[str] = []
-    for i in payload.split():
-        if i.startswith("CR-"):
-            i = f"{i.replace('CR-', '')} Line"
-        new_payload.append(silver_line_lookup(i))
-    return " ".join(new_payload)
 
 
 async def _send_webhook_payload(

@@ -124,6 +124,41 @@ def determine_alert_color(routes: list[str]) -> int:
     return 5793266
 
 
+_GREEN_BRANCH_ROUTES = frozenset({"Green-B", "Green-C", "Green-D", "Green-E"})
+# Heavy-rail route ids that are a line name once " Line" is appended.
+_LINE_NAME_ROUTES = frozenset({"Red", "Orange", "Blue", "Mattapan"})
+
+
+def display_route_label(route_id: str) -> str:
+    """Render one MBTA route id the way it should read in a webhook embed.
+
+    Silver Line routes are numeric (741, 742, 743, 746, 749, 751) and must
+    never reach a reader as a bare number, so they always render as their
+    SL* short name under the line name the API itself uses for them
+    ("Silver Line SL4/SL5"). Subway routes gain the " Line" suffix.
+    """
+    # Import locally to avoid circular import at module import time
+    from mbta_client_extended import silver_line_lookup
+
+    raw = route_id.strip()
+    if not raw:
+        return ""
+    if raw in _GREEN_BRANCH_ROUTES:
+        return "Green Line"
+    if raw in _LINE_NAME_ROUTES:
+        return f"{raw} Line"
+    if raw.startswith("CR-"):
+        return f"{raw.removeprefix('CR-')} Line"
+    label = silver_line_lookup(raw)
+    return f"Silver Line {label}" if label.startswith("SL") else label
+
+
+def display_route_labels(routes: list[str]) -> str:
+    """Comma-join route labels for display, dropping duplicates."""
+    labels = dict.fromkeys(label for label in map(display_route_label, routes) if label)
+    return ", ".join(labels)
+
+
 def _pending_key(webhook_id: str) -> str:
     return f"{PENDING_WEBHOOK_PREFIX}:{webhook_id}"
 
@@ -348,7 +383,7 @@ def build_grouped_webhook(
             continue
         embed = webhook.embeds[0]
         header = embed.description or "Alert"
-        route_label = ", ".join(item.routes) if item.routes else ""
+        route_label = display_route_labels(item.routes)
         if not route_label and embed.fields:
             for field in embed.fields:
                 if field.name == "Lines":
