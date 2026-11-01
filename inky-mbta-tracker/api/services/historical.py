@@ -13,7 +13,7 @@ from api.models import (
     HistoricalVehiclesResponse,
     LineSpeedStats,
 )
-from consts import HISTORICAL_V_DATA
+from consts import HISTORICAL_V_DATA, is_silver_line_route
 from mbta_client_extended import silver_line_lookup
 from opentelemetry import trace
 from otel_utils import add_span_attributes, add_transaction_ids_to_span
@@ -97,7 +97,7 @@ def _speed_stats_by_line(
         if not isinstance(speed, (int, float)) or speed <= 0:
             continue
         route = str(properties.get("route") or "")
-        if route.startswith("74") or route.startswith("75"):
+        if is_silver_line_route(route):
             route = silver_line_lookup(route)
         line, _ = _classify_route(route)
         if not line:

@@ -14,12 +14,12 @@ from exceptions import WatcherRefreshRequested
 from mbta_client import (
     MBTAApi,
     occupancy_status_human_readable,
-    silver_line_lookup,
 )
 from mbta_client_extended import (
     fetch_route_stops,
     light_get_stop,
     light_get_stops,
+    silver_line_lookup,
     watch_mbta_server_side_events,
 )
 from mbta_responses import (

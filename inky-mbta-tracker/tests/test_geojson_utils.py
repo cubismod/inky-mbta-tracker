@@ -170,8 +170,12 @@ def test_lookup_vehicle_color_mapping() -> None:
     assert lookup_vehicle_color(mk("Red")) == "#FA2D27"
     assert lookup_vehicle_color(mk("Mattapan")) == "#FA2D27"
     assert lookup_vehicle_color(mk("Orange")) == "#FD8A03"
-    assert lookup_vehicle_color(mk("74")) == "#9A9C9D"
+    assert lookup_vehicle_color(mk("749")) == "#9A9C9D"
+    assert lookup_vehicle_color(mk("751")) == "#9A9C9D"
     assert lookup_vehicle_color(mk("SL3")) == "#9A9C9D"
+    # Bus 74 is Local Bus line-7475, not Silver Line; the old prefix check
+    # mis-colored it gray alongside the real 74x Silver routes.
+    assert lookup_vehicle_color(mk("74")) == "#FFFF00"
     assert lookup_vehicle_color(mk("32")) == "#FFFF00"
     assert lookup_vehicle_color(mk("X-Unknown")) == ""
 

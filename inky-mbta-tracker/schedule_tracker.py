@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 import humanize
 from aiohttp import ClientError, ClientSession
 from anyio import to_thread
-from consts import HOUR, MBTA_V3_ENDPOINT
+from consts import HOUR, MBTA_V3_ENDPOINT, is_silver_line_route
 from geo_math import SnapResult, distance, snap_to_routes
 from geojson import Feature, Point
 from mbta_client_extended import get_shapes
@@ -150,7 +150,9 @@ class Tracker:
             return True
         if line == "Blue" and speed <= 50:
             return True
-        if (line.startswith("7") or line.isnumeric()) and speed <= 66:
+        if (
+            line.startswith("7") or line.isnumeric() or is_silver_line_route(line)
+        ) and (speed <= 66):
             return True
         if (line.startswith("Green") or line == "Mattapan") and speed <= 40:
             return True
@@ -460,7 +462,7 @@ class Tracker:
                 if route.startswith("CR"):
                     route = "Commuter Rail"
                     exp_min = 10
-                if route.startswith("7"):
+                if is_silver_line_route(route):
                     route = "Silver Line"
                 if route.startswith("Green"):
                     route = "Green"

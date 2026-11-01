@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from typing import Callable, Optional
 
 from config import Config
-from consts import DAY, MINUTE
+from consts import DAY, MINUTE, SILVER_LINE_LABELS, SILVER_LINE_ROUTES
 from mbta_responses import AlertResource
 from pydantic import BaseModel, Field, ValidationError
 from redis import ResponseError
@@ -137,9 +137,6 @@ def display_route_label(route_id: str) -> str:
     SL* short name under the line name the API itself uses for them
     ("Silver Line SL4/SL5"). Subway routes gain the " Line" suffix.
     """
-    # Import locally to avoid circular import at module import time
-    from mbta_client_extended import silver_line_lookup
-
     raw = route_id.strip()
     if not raw:
         return ""
@@ -149,8 +146,15 @@ def display_route_label(route_id: str) -> str:
         return f"{raw} Line"
     if raw.startswith("CR-"):
         return f"{raw.removeprefix('CR-')} Line"
-    label = silver_line_lookup(raw)
-    return f"Silver Line {label}" if label.startswith("SL") else label
+    key = raw.upper()
+    label = SILVER_LINE_ROUTES.get(key)
+    if label is not None:
+        return f"Silver Line {label}"
+    if key in SILVER_LINE_LABELS:
+        # Already an SL short name (converted further upstream); keep it readable
+        # instead of leaking the bare code.
+        return f"Silver Line {key}"
+    return raw
 
 
 def display_route_labels(routes: list[str]) -> str:

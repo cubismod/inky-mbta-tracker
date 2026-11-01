@@ -24,9 +24,10 @@ from consts import (
     TWO_MONTHS,
     WEEK,
     YEAR,
+    is_silver_line_route,
+    silver_line_label,
 )
 from exceptions import RateLimitExceeded, WatcherRefreshRequested
-from mbta_client_extended import silver_line_lookup
 from mbta_rate_limiter import rate_limited_get
 from mbta_responses import (
     AlertResource,
@@ -232,7 +233,7 @@ class MBTAApi:
                 if weekday == 7:
                     service_start = "06:00"
                     service_end = "00:52"
-            if "SL" in silver_line_lookup(self.route):
+            if is_silver_line_route(self.route):
                 service_start = "04:21"
                 service_end = "01:18"
                 if weekday == 5 or weekday == 6:
@@ -314,7 +315,7 @@ class MBTAApi:
                     if not failtime:
                         failtime = now + timedelta(seconds=hc_fail_threshold)
         if self.route:
-            if "CR" in self.route or self.route == "746":
+            if "CR" in self.route or silver_line_label(self.route) == "SLW":
                 hc_fail_threshold = 90 * MINUTE
         r = Redis(
             host=os.environ.get("IMT_REDIS_ENDPOINT") or "",

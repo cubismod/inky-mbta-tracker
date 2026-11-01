@@ -6,6 +6,7 @@ from typing import Optional
 import orjson
 from api.models import TotalsByLine, VehicleCountsByType, VehicleLineTotals
 from config import Config
+from consts import is_silver_line_route
 from mbta_client_extended import silver_line_lookup
 from prometheus import redis_commands
 from redis.asyncio import Redis
@@ -14,8 +15,6 @@ from shared_types.shared_types import VehicleRedisSchema
 logger = logging.getLogger(__name__)
 
 LINES = ("RL", "MT", "GL", "BL", "OL", "SL", "CR", "F")
-
-_SILVER_NUMERIC_PREFIXES = ("741", "742", "743", "746", "749", "751")
 
 
 def _classify_route(route: str) -> tuple[Optional[str], Optional[str]]:
@@ -37,7 +36,7 @@ def _classify_route(route: str) -> tuple[Optional[str], Optional[str]]:
     elif (
         route_lower.startswith("sl")
         or "silver" in route_lower
-        or any(route_lower.startswith(p) for p in _SILVER_NUMERIC_PREFIXES)
+        or is_silver_line_route(route_lower)
     ):
         line = "SL"
     elif (
@@ -63,7 +62,7 @@ def _classify_route(route: str) -> tuple[Optional[str], Optional[str]]:
     elif (
         route_lower.startswith("sl")
         or "silver" in route_lower
-        or any(route_lower.startswith(p) for p in _SILVER_NUMERIC_PREFIXES)
+        or is_silver_line_route(route_lower)
         or route_lower.isdecimal()
         or route_lower.startswith("7")
     ):
@@ -105,7 +104,7 @@ def _totals_by_line(counts: VehicleCountsByType) -> TotalsByLine:
 def count_routes(routes: Iterable[str]) -> tuple[VehicleCountsByType, TotalsByLine]:
     counts = _empty_counts()
     for route in routes:
-        if route.startswith("74") or route.startswith("75"):
+        if is_silver_line_route(route):
             route = silver_line_lookup(route)
         line, vtype = _classify_route(route)
         if not line or not vtype:

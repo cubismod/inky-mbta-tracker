@@ -18,6 +18,7 @@ from consts import (
     SSE_INACTIVITY_TIMEOUT,
     TWO_MONTHS,
     YEAR,
+    silver_line_label,
 )
 from exceptions import RateLimitExceeded, WatcherRefreshRequested
 from mbta_rate_limiter import rate_limited_get
@@ -165,21 +166,13 @@ async def _get_shapes_impl(
 
 
 def silver_line_lookup(route_id: str) -> str:
-    match route_id:
-        case "741":
-            return "SL1"
-        case "742":
-            return "SL2"
-        case "743":
-            return "SL3"
-        case "746":
-            return "SLW"
-        case "749":
-            return "SL5"
-        case "751":
-            return "SL4"
-        case _:
-            return route_id
+    """Map a numeric Silver Line route id to its SL short name.
+
+    Thin alias over :func:`consts.silver_line_label`; kept because callers and
+    tests import it from here. The mapping itself lives in ``consts`` so every
+    display surface shares one source of truth.
+    """
+    return silver_line_label(route_id)
 
 
 # retrieves a rail/bus stop from Redis & returns the stop ID with optional coordinates

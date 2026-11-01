@@ -12,13 +12,10 @@ from aiohttp import ClientSession
 from anyio import sleep
 from anyio.abc import TaskGroup
 from config import Config
-from consts import DAY
+from consts import DAY, is_silver_line_route
 from geo_math import bearing, distance
 from geojson import Feature, LineString, Point
-from mbta_client import (
-    silver_line_lookup,
-)
-from mbta_client_extended import get_shapes, light_get_stops
+from mbta_client_extended import get_shapes, light_get_stops, silver_line_lookup
 from mbta_rate_limiter import rate_limited_get
 from opentelemetry.trace import Span
 from otel_config import get_tracer, is_otel_enabled
@@ -223,7 +220,7 @@ def lookup_route_color(route: str) -> str:
         return "#FA2D27"
     if route.startswith("Orange"):
         return "#FD8A03"
-    if route.startswith("74") or route.startswith("SL"):
+    if is_silver_line_route(route):
         return "#9A9C9D"
     elif route.isdecimal():
         return "#FFFF00"
@@ -581,11 +578,12 @@ async def get_vehicle_features(
                     if (
                         vehicle_info.route.startswith("7")
                         or vehicle_info.route.isdecimal()
+                        or is_silver_line_route(vehicle_info.route)
                     ):
+                        # Silver Line is bus rapid transit, so a route id that has
+                        # already been converted to SL* still needs the bus icon.
                         route_icon = "bus"
-                    if vehicle_info.route.startswith(
-                        "74"
-                    ) or vehicle_info.route.startswith("75"):
+                    if is_silver_line_route(vehicle_info.route):
                         vehicle_info.route = silver_line_lookup(vehicle_info.route)
                     feature = Feature(
                         geometry=vehicle_display_point(
@@ -718,7 +716,7 @@ async def get_shapes_features(
         # Iterate over the mapping of route -> list of line coordinate sequences
         for k, v in shapes.lines.items():
             for line in v:
-                if k.startswith("74") or k.startswith("75"):
+                if is_silver_line_route(k):
                     k = silver_line_lookup(k)
 
                 # Optimize geometry based on route type

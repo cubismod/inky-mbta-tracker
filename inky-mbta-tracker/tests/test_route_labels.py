@@ -1,6 +1,14 @@
 import pytest
 from config import Config
+from consts import (
+    SILVER_LINE_ROUTES,
+    is_silver_line_route,
+    silver_line_label,
+    silver_line_route_id,
+)
+from geojson_utils import lookup_route_color
 from mbta_responses import ActivePeriod, AlertAttributes, AlertResource, InformedEntity
+from vehicle_counting import _classify_route, count_routes
 from webhook.discord_webhook import create_webhook_object
 from webhook.helpers import (
     PendingBatchItem,
@@ -97,3 +105,69 @@ def test_grouped_rows_use_converted_labels() -> None:
     fields = grouped.embeds[0].fields
     assert fields
     assert "Silver Line SL4" in fields[0].name
+
+
+@pytest.mark.parametrize("route_id", sorted(SILVER_LINE_ROUTES))
+def test_no_silver_route_reaches_a_reader_as_a_number(route_id: str) -> None:
+    """Guard the whole 74x range: every id renders as its SL short name."""
+    label = display_route_label(route_id)
+    assert label == f"Silver Line {SILVER_LINE_ROUTES[route_id]}"
+    assert route_id not in label
+
+
+@pytest.mark.parametrize("route_id", sorted(SILVER_LINE_ROUTES))
+def test_already_converted_sl_code_stays_readable(route_id: str) -> None:
+    sl = SILVER_LINE_ROUTES[route_id]
+    assert display_route_label(sl) == f"Silver Line {sl}"
+
+
+def test_silver_line_predicate_is_exact_not_prefix_based() -> None:
+    # MBTA bus routes 74 and 75 are not Silver Line, so the old
+    # startswith("74")/("75") sniffing was wrong in principle even when harmless.
+    assert is_silver_line_route("751")
+    assert is_silver_line_route("SL4")
+    assert not is_silver_line_route("74")
+    assert not is_silver_line_route("75")
+    assert not is_silver_line_route("7501")
+    assert not is_silver_line_route("")
+
+
+@pytest.mark.parametrize("route_id", sorted(SILVER_LINE_ROUTES))
+def test_sl_labels_resolve_back_to_numeric_ids(route_id: str) -> None:
+    """A reader holding the published label can round-trip to the MBTA id."""
+    sl = SILVER_LINE_ROUTES[route_id]
+    assert silver_line_route_id(sl) == route_id
+    assert silver_line_label(route_id) == sl
+
+
+def test_unknown_label_has_no_route_id() -> None:
+    assert silver_line_route_id("SL9") is None
+    assert silver_line_route_id("Red") is None
+    assert silver_line_route_id("") is None
+
+
+@pytest.mark.parametrize("route_id", sorted(SILVER_LINE_ROUTES))
+def test_counted_silver_routes_land_in_the_sl_bucket(route_id: str) -> None:
+    """Vehicle counting resolves 74x ids to the SL line, not an unknown bucket."""
+    counts, totals = count_routes([route_id])
+    assert totals.SL == 1
+    assert totals.total == 1
+    assert counts.bus.SL == 1
+    assert _classify_route(route_id) == ("SL", "bus")
+
+
+@pytest.mark.parametrize("route_id", sorted(SILVER_LINE_ROUTES))
+def test_silver_routes_use_the_silver_line_color(route_id: str) -> None:
+    """The old color check tested startswith(\"74\") with no \"75\" branch.
+
+    751 (SL4) therefore fell through to the numeric-bus branch and rendered
+    bus yellow, while 749 matched \"74\" and happened to come out right.
+    """
+    assert lookup_route_color(route_id) == "#9A9C9D"
+    assert lookup_route_color(SILVER_LINE_ROUTES[route_id]) == "#9A9C9D"
+
+
+@pytest.mark.parametrize("bus", ["7", "71", "74", "75", "77", "79"])
+def test_buses_around_the_silver_range_keep_the_bus_color(bus: str) -> None:
+    """Bus 74 and 75 were mis-colored gray by the old prefix check."""
+    assert lookup_route_color(bus) == "#FFFF00"
