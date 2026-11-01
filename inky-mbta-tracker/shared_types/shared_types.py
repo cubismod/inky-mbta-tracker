@@ -160,3 +160,11 @@ class DiscordWebhook(BaseModel):
 class WebhookRedisEntry(BaseModel):
     message_id: str
     message_hash: str
+    # Unix timestamp at which the expiry sweeper should remove this message.
+    # None means the message is never swept (the alert has no finite end).
+    expires_at: Optional[float] = None
+    # "single" for one alert per message, "batch" for a grouped message.
+    kind: str = "single"
+    # Only set when kind == "batch": the batch entry holding the per-alert
+    # items rendered into this message.
+    batch_id: Optional[str] = None

@@ -23,6 +23,7 @@ from mbta_client_extended import (
     watch_mbta_server_side_events,
 )
 from mbta_responses import (
+    AlertResource,
     CarriageStatus,
     PredictionAttributes,
     TripAttributes,
@@ -1007,6 +1008,89 @@ async def test_stalled_sse_stream_writes_no_heartbeat(
             )
 
     cast(Any, api.r_client.set).assert_not_awaited()
+
+
+def _alert_json(alert_id: str, route: str = "Red") -> bytes:
+    return (
+        AlertResource.model_validate(
+            {
+                "type": "alert",
+                "id": alert_id,
+                "attributes": {
+                    "cause": "CONSTRUCTION",
+                    "created_at": "2026-10-01T10:00:00+00:00",
+                    "header": "Red Line delay",
+                    "short_header": "Red delay",
+                    "updated_at": "2026-10-01T10:05:00+00:00",
+                    "effect": "DELAY",
+                    "active_period": [{"start": None, "end": None}],
+                    "informed_entity": [{"route": route}],
+                    "severity": 5,
+                },
+            }
+        )
+        .model_dump_json()
+        .encode()
+    )
+
+
+@pytest.mark.anyio("asyncio")
+async def test_alert_remove_deletes_webhook_even_without_cached_alert() -> None:
+    """A `remove` event is authoritative; the 2 h alert cache is not a gate.
+
+    Open-ended alerts (`end: null`) are never swept by expiry, so the SSE path
+    is their only cleanup. Gating it on the cache stranded their messages.
+    """
+    r = MagicMock()
+    r.get = AsyncMock(return_value=None)
+    r.delete = AsyncMock()
+    api = MBTAApi(cast(RedisClient, r))
+    delete = AsyncMock(return_value=True)
+
+    with patch("mbta_client.delete_webhook", delete):
+        await api._process_alert_remove(
+            TypeAndID(type="alert", id="alert-cold"),  # type: ignore[call-arg]
+        )
+
+    delete.assert_awaited_once_with("alert-cold", r)
+    r.delete.assert_awaited_once_with("alert:alert-cold")
+
+
+@pytest.mark.anyio("asyncio")
+async def test_alert_remove_still_clears_memberships_when_cached() -> None:
+    r = MagicMock()
+    r.get = AsyncMock(return_value=_alert_json("alert-warm"))
+    r.delete = AsyncMock()
+    r.srem = AsyncMock()
+    r.expire = AsyncMock()
+    api = MBTAApi(cast(RedisClient, r))
+
+    with patch("mbta_client.delete_webhook", AsyncMock(return_value=True)):
+        await api._process_alert_remove(
+            TypeAndID(type="alert", id="alert-warm"),  # type: ignore[call-arg]
+        )
+
+    r.srem.assert_awaited_once_with("alerts:route:Red", "alert-warm")
+    r.delete.assert_awaited_once_with("alert:alert-warm")
+
+
+@pytest.mark.anyio("asyncio")
+async def test_alert_remove_survives_a_failed_delete() -> None:
+    """A failed Discord delete must not stop membership cleanup or key expiry."""
+    r = MagicMock()
+    r.get = AsyncMock(return_value=None)
+    r.delete = AsyncMock()
+    api = MBTAApi(cast(RedisClient, r))
+
+    with patch(
+        "mbta_client.delete_webhook",
+        AsyncMock(side_effect=RuntimeError("discord down")),
+    ):
+        await api._process_alert_remove(
+            TypeAndID(type="alert", id="alert-boom"),  # type: ignore[call-arg]
+        )
+
+    r.delete.assert_awaited_once_with("alert:alert-boom")
 
 
 if __name__ == "__main__":

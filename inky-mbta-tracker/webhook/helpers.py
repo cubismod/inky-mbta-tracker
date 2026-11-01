@@ -38,7 +38,14 @@ PENDING_BATCH_LOCK_PREFIX = "webhook:pending:batch:lock"
 PENDING_BATCH_SENDER_KEY = "webhook:pending:batch:sender"
 PENDING_BATCH_TTL = 5 * MINUTE
 BATCH_ENTRY_TTL = DAY
+# Pointers for alerts with no finite end are never swept, so they must not
+# inherit the flat day: losing one strands its message permanently.
+OPEN_ENDED_TTL = 30 * DAY
 BATCH_WEBHOOK_ID = "batch"
+# Sorted set of webhook ids scored by the moment they should be swept. The
+# member is the same id used for the `webhook:{id}` pointer key, so `batch:{id}`
+# members address grouped messages and bare alert ids address single messages.
+WEBHOOK_EXPIRY_INDEX_KEY = "webhook:expiry"
 
 
 class PendingWebhookEntry(BaseModel):
@@ -54,6 +61,9 @@ class PendingBatchItem(BaseModel):
     updated_at: float
     created_at: Optional[str] = None
     routes: list[str] = Field(default_factory=list)
+    # Unix timestamp at which every active period of this alert has ended.
+    # None means the alert is open-ended and never swept.
+    expires_at: Optional[float] = None
 
 
 class PendingBatchEntry(BaseModel):
@@ -206,16 +216,59 @@ def _upsert_batch_items(
 def _alert_is_expired(
     alert: AlertResource, clock: Callable[[], float] = time.time
 ) -> bool:
-    now = datetime.fromtimestamp(clock(), tz=timezone.utc)
-    if not alert.attributes.active_period:
-        return False
-    for period in alert.attributes.active_period:
+    expiry = alert_expiry_ts(alert)
+    return expiry is not None and expiry <= clock()
+
+
+def alert_expiry_ts(alert: AlertResource) -> Optional[float]:
+    """Unix timestamp at which every active period of the alert has ended.
+
+    Returns None when the alert can never be considered elapsed: an empty
+    ``active_period`` list, a period with ``end: None``, or an unparseable
+    timestamp. This is the single source of truth for both the EXPIRED footer
+    and the sweeper, so the two can never disagree.
+    """
+    periods = alert.attributes.active_period
+    if not periods:
+        return None
+    latest: Optional[float] = None
+    for period in periods:
         if period.end is None:
-            return False
-        end = _parse_iso_datetime(period.end)
-        if not end or end > now:
-            return False
-    return True
+            return None
+        parsed = _parse_iso_datetime(period.end)
+        if parsed is None:
+            return None
+        end_ts = parsed.timestamp()
+        latest = end_ts if latest is None else max(latest, end_ts)
+    return latest
+
+
+def batch_sweep_ts(items: list[PendingBatchItem]) -> Optional[float]:
+    """Earliest moment a batch message needs another look.
+
+    Uses the minimum (not the maximum) of the item expiries: expired rows are
+    dropped from the shared embed while live ones stay, so the first item to
+    die is the interesting one. Items that never expire are ignored; a batch
+    whose items are all open-ended returns None and is never swept.
+    """
+    scored = [item.expires_at for item in items if item.expires_at is not None]
+    if not scored:
+        return None
+    return min(scored)
+
+
+def entry_ttl(expires_at: Optional[float], now: float) -> int:
+    """TTL that keeps a webhook pointer alive until its sweep is due.
+
+    The pointer must outlive the alert it points at, otherwise a multi-day
+    shutdown alert loses the message id and can never be deleted. Open-ended
+    pointers are never swept, so they get their own long TTL instead of the
+    flat day: they are exactly the messages no `remove` event cleans up, and
+    dropping the pointer turns them into unrecoverable orphans.
+    """
+    if expires_at is None:
+        return OPEN_ENDED_TTL
+    return int(max(expires_at - now, 0)) + DAY
 
 
 def _webhook_updated_at(
