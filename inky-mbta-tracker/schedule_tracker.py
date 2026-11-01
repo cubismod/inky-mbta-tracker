@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 import humanize
 from aiohttp import ClientError, ClientSession
 from anyio import to_thread
-from consts import HOUR, MBTA_V3_ENDPOINT
+from consts import HOUR, MBTA_V3_ENDPOINT, is_silver_line_route
 from geo_math import SnapResult, distance, snap_to_routes
 from geojson import Feature, Point
 from mbta_client_extended import get_shapes
@@ -150,7 +150,9 @@ class Tracker:
             return True
         if line == "Blue" and speed <= 50:
             return True
-        if (line.startswith("7") or line.isnumeric()) and speed <= 66:
+        if (
+            line.startswith("7") or line.isnumeric() or is_silver_line_route(line)
+        ) and (speed <= 66):
             return True
         if (line.startswith("Green") or line == "Mattapan") and speed <= 40:
             return True
@@ -186,61 +188,106 @@ class Tracker:
         try:
             cache_id = f"vehicle:speed:history:{event.id}"
 
-            if event.speed is not None:
-                await self.write_vehicle_speed_history(
-                    cache_id, event, event.speed, pipeline
+            async with RedisLock(self.redis, f"lock:{cache_id}", 45, 30):
+                if event.speed is not None:
+                    await self.write_vehicle_speed_history(
+                        cache_id, event, event.speed, pipeline
+                    )
+                    return event.speed, False
+
+                if event.current_status == "STOPPED_AT":
+                    await self.write_vehicle_speed_history(cache_id, event, 0, pipeline)
+                    return None, False
+
+                # Speed samples need the latest fix, without the shared read-cache TTL.
+                last_event = await self.redis.get(cache_id)
+                redis_commands.labels("get").inc()
+
+                if not last_event:
+                    await self.write_vehicle_speed_history(cache_id, event, 0, pipeline)
+                    return None, False
+
+                last_event_validated = VehicleSpeedHistory.model_validate_json(
+                    last_event, strict=False
                 )
-                return event.speed, False
 
-            if event.current_status == "STOPPED_AT":
-                await self.write_vehicle_speed_history(cache_id, event, 0, pipeline)
-                return None, False
+                duration_seconds = (
+                    event.update_time - last_event_validated.update_time
+                ).total_seconds()
+                if duration_seconds < 0:
+                    logger.debug(
+                        "Skipping speed calculation for %s vehicle %s: "
+                        "out-of-order duration %s seconds",
+                        event.route,
+                        event.id,
+                        duration_seconds,
+                    )
+                    return None, False
 
-            # Speed samples need the latest fix, without the shared read-cache TTL.
-            last_event = await self.redis.get(cache_id)
-            redis_commands.labels("get").inc()
+                if duration_seconds < MIN_APPROXIMATE_SPEED_SAMPLE_SECONDS:
+                    if (
+                        last_event_validated.speed > 0
+                        or last_event_validated.recent_speeds
+                    ):
+                        return last_event_validated.speed, True
+                    return None, False
 
-            if not last_event:
-                await self.write_vehicle_speed_history(cache_id, event, 0, pipeline)
-                return None, False
-
-            last_event_validated = VehicleSpeedHistory.model_validate_json(
-                last_event, strict=False
-            )
-
-            duration_seconds = (
-                event.update_time - last_event_validated.update_time
-            ).total_seconds()
-            if duration_seconds < 0:
-                logger.debug(
-                    "Skipping speed calculation for %s vehicle %s: "
-                    "out-of-order duration %s seconds",
-                    event.route,
-                    event.id,
-                    duration_seconds,
+                current_point = Point((event.longitude, event.latitude))
+                previous_point = Point(
+                    (last_event_validated.long, last_event_validated.lat)
                 )
-                return None, False
 
-            if duration_seconds < MIN_APPROXIMATE_SPEED_SAMPLE_SECONDS:
-                if last_event_validated.speed > 0 or last_event_validated.recent_speeds:
-                    return last_event_validated.speed, True
-                return None, False
+                snapped = self._snap_interval(event, previous_point, current_point)
+                if snapped is not None:
+                    prev_snap, curr_snap, raw_distance_meters = snapped
+                    track_distance = abs(
+                        curr_snap.distance_along_m - prev_snap.distance_along_m
+                    )
+                    if (
+                        track_distance < SPEED_NOISE_FLOOR_M
+                        and raw_distance_meters < SNAP_NOISE_RAW_MAX_M
+                    ):
+                        recent = list((*last_event_validated.recent_speeds, 0.0))[
+                            -RECENT_SPEEDS_WINDOW:
+                        ]
+                        await self.write_vehicle_speed_history(
+                            cache_id, event, 0.0, pipeline, recent_speeds=recent
+                        )
+                        return 0.0, True
 
-            current_point = Point((event.longitude, event.latitude))
-            previous_point = Point(
-                (last_event_validated.long, last_event_validated.lat)
-            )
+                    speed, recent = self._smooth(
+                        last_event_validated.recent_speeds,
+                        track_distance / duration_seconds * METERS_PER_SECOND_TO_MPH,
+                    )
+                    if not self.is_speed_reasonable(speed, event.route):
+                        logger.debug(
+                            "Rejecting speed calculation for %s vehicle %s: "
+                            "speed %s mph is unreasonable",
+                            event.route,
+                            event.id,
+                            speed,
+                        )
+                        if last_event_validated.speed > 0:
+                            return (last_event_validated.speed, True)
+                        return None, False
 
-            snapped = self._snap_interval(event, previous_point, current_point)
-            if snapped is not None:
-                prev_snap, curr_snap, raw_distance_meters = snapped
-                track_distance = abs(
-                    curr_snap.distance_along_m - prev_snap.distance_along_m
-                )
-                if (
-                    track_distance < SPEED_NOISE_FLOOR_M
-                    and raw_distance_meters < SNAP_NOISE_RAW_MAX_M
-                ):
+                    snapped_long, snapped_lat = curr_snap.snapped
+                    await self.write_vehicle_speed_history(
+                        cache_id,
+                        event,
+                        speed,
+                        pipeline,
+                        long=snapped_long,
+                        lat=snapped_lat,
+                        recent_speeds=list(recent),
+                    )
+                    return speed, True
+
+                start = Feature(geometry=previous_point)
+                end = Feature(geometry=current_point)
+
+                distance_meters = distance(start, end, "m")
+                if distance_meters == 0:
                     recent = list((*last_event_validated.recent_speeds, 0.0))[
                         -RECENT_SPEEDS_WINDOW:
                     ]
@@ -251,66 +298,25 @@ class Tracker:
 
                 speed, recent = self._smooth(
                     last_event_validated.recent_speeds,
-                    track_distance / duration_seconds * METERS_PER_SECOND_TO_MPH,
+                    distance_meters / duration_seconds * METERS_PER_SECOND_TO_MPH,
                 )
+
                 if not self.is_speed_reasonable(speed, event.route):
                     logger.debug(
-                        "Rejecting speed calculation for %s vehicle %s: "
-                        "speed %s mph is unreasonable",
+                        "Rejecting speed calculation for %s vehicle %s: speed %s mph is unreasonable",
                         event.route,
                         event.id,
                         speed,
                     )
+                    # throw out insane predictions
                     if last_event_validated.speed > 0:
                         return (last_event_validated.speed, True)
                     return None, False
 
-                snapped_long, snapped_lat = curr_snap.snapped
                 await self.write_vehicle_speed_history(
-                    cache_id,
-                    event,
-                    speed,
-                    pipeline,
-                    long=snapped_long,
-                    lat=snapped_lat,
-                    recent_speeds=list(recent),
+                    cache_id, event, speed, pipeline, recent_speeds=list(recent)
                 )
                 return speed, True
-
-            start = Feature(geometry=previous_point)
-            end = Feature(geometry=current_point)
-
-            distance_meters = distance(start, end, "m")
-            if distance_meters == 0:
-                recent = list((*last_event_validated.recent_speeds, 0.0))[
-                    -RECENT_SPEEDS_WINDOW:
-                ]
-                await self.write_vehicle_speed_history(
-                    cache_id, event, 0.0, pipeline, recent_speeds=recent
-                )
-                return 0.0, True
-
-            speed, recent = self._smooth(
-                last_event_validated.recent_speeds,
-                distance_meters / duration_seconds * METERS_PER_SECOND_TO_MPH,
-            )
-
-            if not self.is_speed_reasonable(speed, event.route):
-                logger.debug(
-                    "Rejecting speed calculation for %s vehicle %s: speed %s mph is unreasonable",
-                    event.route,
-                    event.id,
-                    speed,
-                )
-                # throw out insane predictions
-                if last_event_validated.speed > 0:
-                    return (last_event_validated.speed, True)
-                return None, False
-
-            await self.write_vehicle_speed_history(
-                cache_id, event, speed, pipeline, recent_speeds=list(recent)
-            )
-            return speed, True
         except ResponseError as err:
             logger.error("unable to get redis event", exc_info=err)
         except ValidationError as err:
@@ -456,7 +462,7 @@ class Tracker:
                 if route.startswith("CR"):
                     route = "Commuter Rail"
                     exp_min = 10
-                if route.startswith("7"):
+                if is_silver_line_route(route):
                     route = "Silver Line"
                 if route.startswith("Green"):
                     route = "Green"

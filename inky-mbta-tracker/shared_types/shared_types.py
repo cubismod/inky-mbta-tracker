@@ -160,3 +160,8 @@ class DiscordWebhook(BaseModel):
 class WebhookRedisEntry(BaseModel):
     message_id: str
     message_hash: str
+    # Sweep time; None means the alert has no finite end and is never swept.
+    expires_at: Optional[float] = None
+    kind: str = "single"  # "single" | "batch"
+    # Batch entry holding the items rendered into a grouped message.
+    batch_id: Optional[str] = None

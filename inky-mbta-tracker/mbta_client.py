@@ -24,9 +24,10 @@ from consts import (
     TWO_MONTHS,
     WEEK,
     YEAR,
+    is_silver_line_route,
+    silver_line_label,
 )
 from exceptions import RateLimitExceeded, WatcherRefreshRequested
-from mbta_client_extended import silver_line_lookup
 from mbta_rate_limiter import rate_limited_get
 from mbta_responses import (
     AlertResource,
@@ -232,7 +233,7 @@ class MBTAApi:
                 if weekday == 7:
                     service_start = "06:00"
                     service_end = "00:52"
-            if "SL" in silver_line_lookup(self.route):
+            if is_silver_line_route(self.route):
                 service_start = "04:21"
                 service_end = "01:18"
                 if weekday == 5 or weekday == 6:
@@ -314,7 +315,7 @@ class MBTAApi:
                     if not failtime:
                         failtime = now + timedelta(seconds=hc_fail_threshold)
         if self.route:
-            if "CR" in self.route or self.route == "746":
+            if "CR" in self.route or silver_line_label(self.route) == "SLW":
                 hc_fail_threshold = 90 * MINUTE
         r = Redis(
             host=os.environ.get("IMT_REDIS_ENDPOINT") or "",
@@ -525,26 +526,42 @@ class MBTAApi:
             logger.debug("Alert: %s | %s", self.route, alert.attributes.header)
 
     async def _process_alert_remove(self, type_and_id: TypeAndID) -> None:
+        """Handle an SSE `remove` event for an alert.
+
+        `delete_webhook` runs unconditionally: a `remove` event is authoritative,
+        and gating the delete on the 2 h `alert:{id}` cache meant every alert
+        whose cache had gone cold kept its Discord message forever. That is
+        every open-ended alert (`end: null`, so never swept by expiry) and
+        anything the stream missed while reconnecting. The cached alert is only
+        needed to clean up route/trip membership sets.
+        """
         try:
+            try:
+                await delete_webhook(type_and_id.id, self.r_client)
+            except Exception as exc:
+                logger.error(
+                    f"Failed to delete webhook message for removed alert {type_and_id.id}",
+                    exc_info=exc,
+                )
             cached = await get_cache(self.r_client, f"alert:{type_and_id.id}")
-            if cached:
-                try:
-                    alert = AlertResource.model_validate_json(cached, strict=False)
-                    await delete_webhook(type_and_id.id, self.r_client)
-                    for ent in alert.attributes.informed_entity:
-                        if ent.route:
-                            await self.r_client.srem(
-                                f"alerts:route:{ent.route}",
-                                type_and_id.id,
-                            )  # type: ignore[misc]
-                        if ent.trip:
-                            await self.r_client.srem(
-                                f"alerts:trip:{ent.trip}",
-                                type_and_id.id,
-                            )  # type: ignore[misc]
-                            await self.r_client.expire(f"alerts:trip:{ent.trip}", WEEK)
-                except ValidationError:
-                    pass
+            if not cached:
+                return
+            try:
+                alert = AlertResource.model_validate_json(cached, strict=False)
+            except ValidationError:
+                return
+            for ent in alert.attributes.informed_entity:
+                if ent.route:
+                    await self.r_client.srem(
+                        f"alerts:route:{ent.route}",
+                        type_and_id.id,
+                    )  # type: ignore[misc]
+                if ent.trip:
+                    await self.r_client.srem(
+                        f"alerts:trip:{ent.trip}",
+                        type_and_id.id,
+                    )  # type: ignore[misc]
+                    await self.r_client.expire(f"alerts:trip:{ent.trip}", WEEK)
         finally:
             await self.r_client.delete(f"alert:{type_and_id.id}")  # type: ignore[misc]
 

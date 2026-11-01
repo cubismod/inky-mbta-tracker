@@ -245,3 +245,52 @@ async def test_get_bus_alerts_rejects_non_numeric_route_id() -> None:
     request = Request(scope)
     response = await get_bus_alerts(request, "Red", cast(Any, object()))  # type: ignore[arg-type]
     assert response.status_code == 400
+
+
+def test_resolve_route_id_passes_numbers_and_rejects_junk() -> None:
+    from api.endpoints.alerts import resolve_route_id
+    from consts import SILVER_LINE_IDS
+
+    assert resolve_route_id("751") == "751"
+    assert resolve_route_id("77") == "77"
+    for label, route_id in SILVER_LINE_IDS.items():
+        assert resolve_route_id(label) == route_id
+        assert resolve_route_id(label.lower()) == route_id
+    assert resolve_route_id("Red") is None
+    assert resolve_route_id("SL9") is None
+    assert resolve_route_id("") is None
+
+
+@pytest.mark.anyio("asyncio")
+async def test_get_bus_alerts_translates_sl_label_before_lookup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The published label must reach Redis as the numeric id the watcher uses."""
+    import api.endpoints.alerts as alerts_endpoint
+    from api.services.alerts import AlertsResult
+    from starlette.requests import Request
+
+    seen: list[str] = []
+
+    async def fake_fetch(_r_client: object, route_id: str) -> AlertsResult:
+        seen.append(route_id)
+        return AlertsResult(body='{"data": []}', count=0)
+
+    monkeypatch.setattr(alerts_endpoint, "fetch_bus_alerts", fake_fetch)
+
+    scope: dict[str, object] = {
+        "type": "http",
+        "method": "GET",
+        "path": "/alerts/bus/SL4",
+        "headers": [],
+        "query_string": b"",
+        "server": ("testserver", 80),
+        "client": ("127.0.0.1", 1234),
+        "scheme": "http",
+    }
+    commons = type("Commons", (), {"r_client": object()})()
+    response = await alerts_endpoint.get_bus_alerts(
+        Request(scope), "SL4", cast(Any, commons)
+    )
+    assert response.status_code == 200
+    assert seen == ["751"]

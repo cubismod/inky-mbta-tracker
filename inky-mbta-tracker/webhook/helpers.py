@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from typing import Callable, Optional
 
 from config import Config
-from consts import DAY, MINUTE
+from consts import DAY, MINUTE, SILVER_LINE_LABELS, SILVER_LINE_ROUTES
 from mbta_responses import AlertResource
 from pydantic import BaseModel, Field, ValidationError
 from redis import ResponseError
@@ -28,17 +28,25 @@ PENDING_WEBHOOK_PREFIX = "webhook:pending"
 PENDING_WEBHOOK_LOCK_PREFIX = "webhook:pending:lock"
 PENDING_WEBHOOK_TTL = 10 * MINUTE
 PENDING_WEBHOOK_DELAY_RANGE = (5.0, 15.0)
-BATCH_WINDOW_SECONDS = 4 * MINUTE
-SHORT_BATCH_WINDOW_SECONDS = MINUTE
+# Related alerts land within ~2 minutes of each other, so a batch waits for a
+# quiet period after the last arrival rather than a fixed hold, capped at the window.
+BATCH_QUIET_SECONDS = 45.0
+BATCH_WINDOW_SECONDS = 2 * MINUTE
 BATCH_ENTRY_PREFIX = "webhook:batch:entry"
 ALERT_BATCH_PREFIX = "webhook:batch:alert"
 ALERT_DEDUP_KEY = "webhook:dedup"
 PENDING_BATCH_KEY = "webhook:pending:batch"
 PENDING_BATCH_LOCK_PREFIX = "webhook:pending:batch:lock"
 PENDING_BATCH_SENDER_KEY = "webhook:pending:batch:sender"
-PENDING_BATCH_TTL = 5 * MINUTE
+# Must outlive the longest possible hold, or the batch is dropped unposted.
+PENDING_BATCH_TTL = BATCH_WINDOW_SECONDS + 5 * MINUTE
 BATCH_ENTRY_TTL = DAY
+# Open-ended alerts are never swept, so their pointer must outlive DAY.
+OPEN_ENDED_TTL = 30 * DAY
 BATCH_WEBHOOK_ID = "batch"
+# Sorted set of webhook ids scored by sweep time; members are the ids used for
+# the `webhook:{id}` pointers, so `batch:{id}` means a grouped message.
+WEBHOOK_EXPIRY_INDEX_KEY = "webhook:expiry"
 
 
 class PendingWebhookEntry(BaseModel):
@@ -54,6 +62,9 @@ class PendingBatchItem(BaseModel):
     updated_at: float
     created_at: Optional[str] = None
     routes: list[str] = Field(default_factory=list)
+    # Unix timestamp at which every active period of this alert has ended.
+    # None means the alert is open-ended and never swept.
+    expires_at: Optional[float] = None
 
 
 class PendingBatchEntry(BaseModel):
@@ -61,7 +72,15 @@ class PendingBatchEntry(BaseModel):
     ready_at: float
     items: list[PendingBatchItem]
     first_seen: Optional[float] = None
-    extended: bool = False
+
+
+def next_batch_ready_at(first_seen: float, now: float) -> float:
+    """When a pending batch holding an item first seen at ``first_seen`` sends.
+
+    Debounces on the newest arrival so a burst is collected while it is still
+    arriving, but never holds past ``BATCH_WINDOW_SECONDS`` from the first item.
+    """
+    return min(now + BATCH_QUIET_SECONDS, first_seen + BATCH_WINDOW_SECONDS)
 
 
 def _create_embeds_hash(webhook: DiscordWebhook) -> str:
@@ -112,6 +131,43 @@ def determine_alert_color(routes: list[str]) -> int:
     if routes and len(routes) > 0:
         return hex_color_to_int(lookup_route_color(routes[0]))
     return 5793266
+
+
+_GREEN_BRANCH_ROUTES = frozenset({"Green-B", "Green-C", "Green-D", "Green-E"})
+# Heavy-rail route ids that are a line name once " Line" is appended.
+_LINE_NAME_ROUTES = frozenset({"Red", "Orange", "Blue", "Mattapan"})
+
+
+def display_route_label(route_id: str) -> str:
+    """Render one MBTA route id the way it should read in a webhook embed.
+
+    Silver Line routes are numeric (741, 742, 743, 746, 749, 751) and must
+    never reach a reader as a bare number, so they always render as their
+    SL* short name under the line name the API itself uses for them
+    ("Silver Line SL4/SL5"). Subway routes gain the " Line" suffix.
+    """
+    raw = route_id.strip()
+    if not raw:
+        return ""
+    if raw in _GREEN_BRANCH_ROUTES:
+        return "Green Line"
+    if raw in _LINE_NAME_ROUTES:
+        return f"{raw} Line"
+    if raw.startswith("CR-"):
+        return f"{raw.removeprefix('CR-')} Line"
+    key = raw.upper()
+    label = SILVER_LINE_ROUTES.get(key)
+    if label is not None:
+        return f"Silver Line {label}"
+    if key in SILVER_LINE_LABELS:
+        return f"Silver Line {key}"
+    return raw
+
+
+def display_route_labels(routes: list[str]) -> str:
+    """Comma-join route labels for display, dropping duplicates."""
+    labels = dict.fromkeys(label for label in map(display_route_label, routes) if label)
+    return ", ".join(labels)
 
 
 def _pending_key(webhook_id: str) -> str:
@@ -206,16 +262,59 @@ def _upsert_batch_items(
 def _alert_is_expired(
     alert: AlertResource, clock: Callable[[], float] = time.time
 ) -> bool:
-    now = datetime.fromtimestamp(clock(), tz=timezone.utc)
-    if not alert.attributes.active_period:
-        return False
-    for period in alert.attributes.active_period:
+    expiry = alert_expiry_ts(alert)
+    return expiry is not None and expiry <= clock()
+
+
+def alert_expiry_ts(alert: AlertResource) -> Optional[float]:
+    """Unix timestamp at which every active period of the alert has ended.
+
+    Returns None when the alert can never be considered elapsed: an empty
+    ``active_period`` list, a period with ``end: None``, or an unparseable
+    timestamp. This is the single source of truth for both the EXPIRED footer
+    and the sweeper, so the two can never disagree.
+    """
+    periods = alert.attributes.active_period
+    if not periods:
+        return None
+    latest: Optional[float] = None
+    for period in periods:
         if period.end is None:
-            return False
-        end = _parse_iso_datetime(period.end)
-        if not end or end > now:
-            return False
-    return True
+            return None
+        parsed = _parse_iso_datetime(period.end)
+        if parsed is None:
+            return None
+        end_ts = parsed.timestamp()
+        latest = end_ts if latest is None else max(latest, end_ts)
+    return latest
+
+
+def batch_sweep_ts(items: list[PendingBatchItem]) -> Optional[float]:
+    """Earliest moment a batch message needs another look.
+
+    Uses the minimum (not the maximum) of the item expiries: expired rows are
+    dropped from the shared embed while live ones stay, so the first item to
+    die is the interesting one. Items that never expire are ignored; a batch
+    whose items are all open-ended returns None and is never swept.
+    """
+    scored = [item.expires_at for item in items if item.expires_at is not None]
+    if not scored:
+        return None
+    return min(scored)
+
+
+def entry_ttl(expires_at: Optional[float], now: float) -> int:
+    """TTL that keeps a webhook pointer alive until its sweep is due.
+
+    The pointer must outlive the alert it points at, otherwise a multi-day
+    shutdown alert loses the message id and can never be deleted. Open-ended
+    pointers are never swept, so they get their own long TTL instead of the
+    flat day: they are exactly the messages no `remove` event cleans up, and
+    dropping the pointer turns them into unrecoverable orphans.
+    """
+    if expires_at is None:
+        return OPEN_ENDED_TTL
+    return int(max(expires_at - now, 0)) + DAY
 
 
 def _webhook_updated_at(
@@ -295,7 +394,7 @@ def build_grouped_webhook(
             continue
         embed = webhook.embeds[0]
         header = embed.description or "Alert"
-        route_label = ", ".join(item.routes) if item.routes else ""
+        route_label = display_route_labels(item.routes)
         if not route_label and embed.fields:
             for field in embed.fields:
                 if field.name == "Lines":

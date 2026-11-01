@@ -35,6 +35,7 @@ from shared_types.schema_versioner import schema_versioner
 from shared_types.shared_types import TaskType
 from utils import create_redis_url, get_redis
 from vehicle_stream_diff import run_vehicle_stream_diff
+from webhook.cleanup import SWEEP_INTERVAL_SECONDS, sweep_expired_webhooks
 from webhook.ntfy import notify_startup, service_start_stop_watcher
 
 load_dotenv()
@@ -227,6 +228,36 @@ async def stale_key_cleanup_task(r_client: Redis) -> None:
                 logger.error("Failed to prune stale pos-data keys", exc_info=exc)
 
 
+async def webhook_expiry_sweep_task(r_client: Redis, config: Config) -> None:
+    """Delete Discord messages whose MBTA alerts have all elapsed.
+
+    Runs once on startup, then every SWEEP_INTERVAL_SECONDS.
+    """
+    logger.info("Starting webhook expiry sweep task")
+
+    while True:
+        with tracer.start_as_current_span("main.webhook_expiry_sweep") as span:
+            try:
+                result = await sweep_expired_webhooks(r_client, config)
+                add_span_attributes(
+                    span,
+                    {
+                        "webhook_sweep.examined": result.examined,
+                        "webhook_sweep.deleted": result.deleted,
+                        "webhook_sweep.repatched": result.repatched,
+                        "webhook_sweep.rearmed": result.rearmed,
+                        "webhook_sweep.purged": result.purged,
+                        "webhook_sweep.failed": result.failed,
+                        "webhook_sweep.rate_limited": result.rate_limited,
+                    },
+                )
+            except Exception as exc:
+                set_span_error(span, exc)
+                logger.error("Failed to sweep expired webhooks", exc_info=exc)
+
+        await sleep(SWEEP_INTERVAL_SECONDS)
+
+
 async def __main__() -> None:
     config = load_config()
 
@@ -318,6 +349,9 @@ async def __main__() -> None:
 
             # Periodic stale key cleanup
             tg.start_soon(stale_key_cleanup_task, get_redis(redis_pool))
+
+            if os.getenv("IMT_DISCORD_URL"):
+                tg.start_soon(webhook_expiry_sweep_task, get_redis(redis_pool), config)
 
             # Background cache warmer for GeoJSON vehicle features
             # tg.start_soon(background_refresh, get_redis(redis_pool), config, tg)

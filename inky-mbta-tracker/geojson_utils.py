@@ -12,13 +12,10 @@ from aiohttp import ClientSession
 from anyio import sleep
 from anyio.abc import TaskGroup
 from config import Config
-from consts import DAY
+from consts import DAY, is_silver_line_route
 from geo_math import bearing, distance
 from geojson import Feature, LineString, Point
-from mbta_client import (
-    silver_line_lookup,
-)
-from mbta_client_extended import get_shapes, light_get_stops
+from mbta_client_extended import get_shapes, light_get_stops, silver_line_lookup
 from mbta_rate_limiter import rate_limited_get
 from opentelemetry.trace import Span
 from otel_config import get_tracer, is_otel_enabled
@@ -177,6 +174,19 @@ async def _light_get_alerts_batch_impl(
             logger.debug("Parsed %s alerts from response", alerts_count)
             if span:
                 span.set_attribute("alerts.count", alerts_count)
+
+            for alert in data["data"]:
+                for key in [
+                    "banner",
+                    "closed_timestamp",
+                    "informed_entity",
+                    "last_push_notification_timestamp",
+                    "lifecycle",
+                    "reminder_times",
+                ]:
+                    if key in alert["attributes"]:
+                        alert["attributes"].pop(key)
+
             return list(data["data"])
     except ValidationError as err:
         logger.error("Unable to validate alerts response", exc_info=err)
@@ -210,7 +220,7 @@ def lookup_route_color(route: str) -> str:
         return "#FA2D27"
     if route.startswith("Orange"):
         return "#FD8A03"
-    if route.startswith("74") or route.startswith("SL"):
+    if is_silver_line_route(route):
         return "#9A9C9D"
     elif route.isdecimal():
         return "#FFFF00"
@@ -568,11 +578,11 @@ async def get_vehicle_features(
                     if (
                         vehicle_info.route.startswith("7")
                         or vehicle_info.route.isdecimal()
+                        or is_silver_line_route(vehicle_info.route)
                     ):
+                        # Silver Line is BRT: SL* ids still need the bus icon.
                         route_icon = "bus"
-                    if vehicle_info.route.startswith(
-                        "74"
-                    ) or vehicle_info.route.startswith("75"):
+                    if is_silver_line_route(vehicle_info.route):
                         vehicle_info.route = silver_line_lookup(vehicle_info.route)
                     feature = Feature(
                         geometry=vehicle_display_point(
@@ -705,7 +715,7 @@ async def get_shapes_features(
         # Iterate over the mapping of route -> list of line coordinate sequences
         for k, v in shapes.lines.items():
             for line in v:
-                if k.startswith("74") or k.startswith("75"):
+                if is_silver_line_route(k):
                     k = silver_line_lookup(k)
 
                 # Optimize geometry based on route type

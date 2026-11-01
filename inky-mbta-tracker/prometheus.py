@@ -101,6 +101,12 @@ vehicle_stream_subsribers = Gauge(
 
 running_tasks = Gauge("imt_tasks", "Number of anyio tasks", multiprocess_mode="livesum")
 
+webhook_expiry_actions = Counter(
+    "imt_webhook_expiry_actions",
+    "Actions taken by the webhook expiry sweeper",
+    ["action"],
+)
+
 
 async def watch_running_tasks():
     running_tasks.set(len(get_running_tasks()))

@@ -3,6 +3,7 @@ import re
 
 from api.core import GET_DI
 from api.middleware.cache_middleware import cache_ttl
+from consts import silver_line_route_id
 from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import RedirectResponse
 from mbta_responses import Alerts
@@ -19,6 +20,19 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
 ROUTE_ID_PATTERN = re.compile(r"^[0-9]+$")
+
+
+def resolve_route_id(route_id: str) -> str | None:
+    """Canonical MBTA route id for a caller-supplied value, or None when invalid.
+
+    Numeric ids pass through unchanged and Silver Line short names map to the
+    numeric id MBTA uses internally, so a caller holding the label we publish
+    ("Silver Line SL4") can still query by ``SL4``. Anything else is rejected,
+    which keeps the value safe to interpolate into the ``alerts:route:`` key.
+    """
+    if ROUTE_ID_PATTERN.fullmatch(route_id):
+        return route_id
+    return silver_line_route_id(route_id)
 
 
 @router.get(
@@ -96,7 +110,8 @@ async def get_alerts_json(request: Request) -> RedirectResponse:
 @limiter.limit("100/minute")
 @cache_ttl(60)
 async def get_bus_alerts(request: Request, route_id: str, commons: GET_DI) -> Response:
-    if not ROUTE_ID_PATTERN.fullmatch(route_id):
+    canonical_route_id = resolve_route_id(route_id)
+    if canonical_route_id is None:
         return Response(
             content='{"detail": "Invalid route_id"}',
             status_code=400,
@@ -109,14 +124,14 @@ async def get_bus_alerts(request: Request, route_id: str, commons: GET_DI) -> Re
             span,
             {
                 "api.endpoint": "alerts/bus",
-                "route.id": route_id,
+                "route.id": canonical_route_id,
                 "route.type": "bus",
                 "response.format": "json",
             },
         )
 
         try:
-            result = await fetch_bus_alerts(commons.r_client, route_id)
+            result = await fetch_bus_alerts(commons.r_client, canonical_route_id)
 
             span.set_attribute("alerts.count", result.count)
             add_span_attributes(
@@ -156,10 +171,11 @@ async def get_bus_alerts(request: Request, route_id: str, commons: GET_DI) -> Re
 )
 @limiter.limit("100/minute")
 async def get_bus_alerts_json(request: Request, route_id: str) -> Response:
-    if not ROUTE_ID_PATTERN.fullmatch(route_id):
+    canonical_route_id = resolve_route_id(route_id)
+    if canonical_route_id is None:
         return Response(
             content='{"detail": "Invalid route_id"}',
             status_code=400,
             media_type="application/json",
         )
-    return RedirectResponse(url=f"/alerts/bus/{route_id}", status_code=302)
+    return RedirectResponse(url=f"/alerts/bus/{canonical_route_id}", status_code=302)

@@ -11,8 +11,9 @@ from shared_types.shared_types import (
 from webhook import helpers as webhook_helpers
 from webhook.discord_webhook import (
     BATCH_ENTRY_TTL,
+    BATCH_QUIET_SECONDS,
     BATCH_WINDOW_SECONDS,
-    SHORT_BATCH_WINDOW_SECONDS,
+    PENDING_BATCH_TTL,
     PendingBatchEntry,
     PendingBatchItem,
     _get_batch_entry,
@@ -133,8 +134,15 @@ def test_grouped_webhook_dedupes_items():
     assert len(grouped.embeds[0].fields) == 1
 
 
+def test_pending_batch_ttl_outlives_the_batch_window() -> None:
+    """If the pending key expires before ready_at, the batch is dropped instead
+    of posted — the sender wakes up, finds nothing, and the alerts are lost."""
+    assert PENDING_BATCH_TTL > BATCH_WINDOW_SECONDS
+    assert PENDING_BATCH_TTL > BATCH_WINDOW_SECONDS + BATCH_QUIET_SECONDS
+
+
 @pytest.mark.asyncio
-async def test_batch_short_circuit_extends_to_full_window():
+async def test_new_alert_rearms_quiet_period_but_not_past_the_cap():
     r_client = InMemoryRedis()
     now = 1_000.0
     webhook = DiscordWebhook(embeds=[DiscordEmbed(description="A")])
@@ -152,27 +160,44 @@ async def test_batch_short_circuit_extends_to_full_window():
     assert batch_id is None
     pending = await _get_pending_batch_entry(r_client)  # type: ignore[arg-type]
     assert pending
-    assert pending.ready_at == now + SHORT_BATCH_WINDOW_SECONDS
+    assert pending.ready_at == now + BATCH_QUIET_SECONDS
     assert pending.first_seen == now
-    assert pending.extended is False
 
+    # A later arrival re-arms the quiet period instead of jumping to the window.
     now += 30
-    webhook_b = DiscordWebhook(embeds=[DiscordEmbed(description="B")])
     with patch("webhook.discord_webhook.RedisLock", DummyLock):
-        scheduled, batch_id = await enqueue_pending_batch(
+        await enqueue_pending_batch(
             "b",
-            webhook_b,
+            DiscordWebhook(embeds=[DiscordEmbed(description="B")]),
             ["Red"],
-            "2024-01-01T00:00:10Z",
+            "2024-01-01T00:00:30Z",
             r_client,  # type: ignore[arg-type]
             clock=lambda: now,
         )
-    assert batch_id is None
     pending = await _get_pending_batch_entry(r_client)  # type: ignore[arg-type]
     assert pending
-    assert pending.first_seen is not None
-    assert pending.ready_at == pending.first_seen + BATCH_WINDOW_SECONDS
-    assert pending.extended is True
+    first_seen = pending.first_seen
+    assert first_seen is not None
+    assert pending.ready_at == 1_000.0 + 30 + BATCH_QUIET_SECONDS
+    assert pending.ready_at < first_seen + BATCH_WINDOW_SECONDS
+
+    # A steady stream of arrivals cannot hold the batch past the window cap.
+    for offset in (100.0, 115.0):
+        now = 1_000.0 + offset
+        with patch("webhook.discord_webhook.RedisLock", DummyLock):
+            await enqueue_pending_batch(
+                f"c{offset}",
+                DiscordWebhook(embeds=[DiscordEmbed(description=f"C{offset}")]),
+                ["Red"],
+                "2024-01-01T00:02:00Z",
+                r_client,  # type: ignore[arg-type]
+                clock=lambda: now,
+            )
+    pending = await _get_pending_batch_entry(r_client)  # type: ignore[arg-type]
+    assert pending
+    first_seen = pending.first_seen
+    assert first_seen is not None
+    assert pending.ready_at == first_seen + BATCH_WINDOW_SECONDS
 
 
 @pytest.mark.asyncio
