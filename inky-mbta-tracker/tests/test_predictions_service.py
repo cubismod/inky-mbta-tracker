@@ -298,6 +298,22 @@ async def test_fetch_stop_departures_marks_alerting_for_matching_route(
 
 
 @pytest.mark.anyio
+async def test_fetch_stop_departures_tolerates_alert_without_informed_entity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stripped = _alert("a1", [])
+    del stripped["attributes"]["informed_entity"]
+    _departures_patch(monkeypatch, [stripped, _alert("a2", [{"route": "Red"}])])
+
+    result = await predictions.fetch_stop_departures(
+        cast(ClientSession, FakeSession()), cast(Redis, None), stop="place-pktrm"
+    )
+
+    # An alert missing the field must not discard the rest of the batch.
+    assert result.departures[0].alerting is True
+
+
+@pytest.mark.anyio
 async def test_fetch_stop_departures_marks_alerting_for_matching_trip(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
