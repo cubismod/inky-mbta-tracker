@@ -42,12 +42,12 @@ logger = logging.getLogger("geojson_utils")
 STOPPED_VEHICLE_OFFSET_METERS = 4.0
 METERS_PER_LATITUDE_DEGREE = 111_320.0
 
-# Dropped from the /alerts response only. informed_entity stays in the shared
-# fetch because the departures service filters on it.
+# Dropped from the /alerts response only. informed_entity is deliberately kept:
+# the map's alerts menu filters and labels alerts from it, and the departures
+# service matches on the same entities.
 RESPONSE_TRIMMED_ATTRIBUTES = (
     "banner",
     "closed_timestamp",
-    "informed_entity",
     "last_push_notification_timestamp",
     "lifecycle",
     "reminder_times",

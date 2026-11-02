@@ -117,6 +117,9 @@ async def test_collect_alerts_trims_response_only_attributes(
         updated_at="2026-06-27T12:00:00-04:00",
         banner="banner text",
         lifecycle="NEW",
+        closed_timestamp="2026-06-28T00:00:00-04:00",
+        last_push_notification_timestamp="2026-06-27T12:05:00-04:00",
+        reminder_times=["2026-06-27T13:00:00-04:00"],
     )
 
     patch_batches(monkeypatch, [[alert]])
@@ -131,13 +134,36 @@ async def test_collect_alerts_trims_response_only_attributes(
     for trimmed in (
         "banner",
         "closed_timestamp",
-        "informed_entity",
         "last_push_notification_timestamp",
         "lifecycle",
         "reminder_times",
     ):
         assert trimmed not in attrs
     assert attrs["header"] == "Service delay"
+
+
+@pytest.mark.anyio("asyncio")
+async def test_collect_alerts_keeps_attributes_the_map_alert_menu_reads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # bostontrainspa's alerts modal builds its route filter, chips and sort keys
+    # from these attributes, so none of them may be trimmed.
+    alert = make_alert("A1", updated_at="2026-06-27T12:00:00-04:00")
+
+    patch_batches(monkeypatch, [[alert]])
+
+    _, body = await collect_alerts(
+        Config(vehicles_by_route=["Red"]),
+        cast(ClientSession, FakeSession()),
+        cast(Redis, object()),
+    )
+
+    attrs = json.loads(body)["data"][0]["attributes"]
+    assert attrs["informed_entity"] == [{"route": "Red"}]
+    assert attrs["header"] == "Service delay"
+    assert attrs["effect"] == "DELAY"
+    assert attrs["severity"] == 5
+    assert attrs["updated_at"] == "2026-06-27T12:00:00-04:00"
 
 
 @pytest.mark.anyio("asyncio")
