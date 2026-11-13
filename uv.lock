@@ -3,8 +3,8 @@ revision = 5
 requires-python = ">=3.13"
 resolution-markers = [
     "python_full_version >= '3.14' and sys_platform != 'win32'",
-    "python_full_version < '3.14' and sys_platform != 'win32'",
     "python_full_version >= '3.14' and sys_platform == 'win32'",
+    "python_full_version < '3.14' and sys_platform != 'win32'",
     "python_full_version < '3.14' and sys_platform == 'win32'",
 ]
 
@@ -1012,7 +1012,7 @@ requires-dist = [
     { name = "orjson", specifier = ">=3.10.0" },
     { name = "packaging", specifier = "==26.3" },
     { name = "paho-mqtt", specifier = "==2.2.0" },
-    { name = "polyline", specifier = "==2.0.4" },
+    { name = "polyline", specifier = "==2.0.5" },
     { name = "prometheus-client", specifier = "==0.26.0" },
     { name = "prometheus-fastapi-instrumentator", specifier = ">=7.1.0" },
     { name = "propcache", specifier = "==0.5.4" },
@@ -1620,11 +1620,11 @@ wheels = [
 
 [[package]]
 name = "polyline"
-version = "2.0.4"
+version = "2.0.5"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/2c/c1/1a6ee4f9f02a55b2a9241bbadd342970160f7e42423307f21ee8f5530d4e/polyline-2.0.4.tar.gz", hash = "sha256:f05ade694522bf1720febebe1672f820f43a13c6a1664751e7769d47e8ca9b1b", size = 8261, upload-time = "2025-12-02T17:55:22.735Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/6e/5e/2bee886001291f0235fe070cc8a7c498260db2b6cd483e94951423311bca/polyline-2.0.5.tar.gz", hash = "sha256:92deedee05d52918e83cf7607011ba1cc52907932e7228ba6e28f4a0a8c6370d", size = 6675, upload-time = "2026-11-09T18:41:11.388Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/34/a8/4ebd3cb31d380e018efb1c8bf92664b196a41aba19506015b682af2587b9/polyline-2.0.4-py3-none-any.whl", hash = "sha256:a4e0c15b8ecb32915559f8cf210f1f8c2f5cc53d3cd32c91d7c1668d6e936e10", size = 7167, upload-time = "2025-12-02T17:55:20.323Z" },
+    { url = "https://files.pythonhosted.org/packages/48/40/2440f2e5dc845fc6b980c8c1b956f8bb19ffa8454bd2fef86fae93b7ef90/polyline-2.0.5-py3-none-any.whl", hash = "sha256:dc3f4dbd83bbd7b2e6aec3d2980757f262c300fb739d68d43984da663d72bcc9", size = 6217, upload-time = "2026-11-09T18:41:09.852Z" },
 ]
 
 [[package]]
