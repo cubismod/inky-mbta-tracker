@@ -121,6 +121,7 @@ def create_app() -> FastAPI:
                 "/shapes*",
                 "/vehicles*",
                 "/stop",
+                "/stops/*",
             },
             exclude_paths={"/vehicles/stream"},
         )

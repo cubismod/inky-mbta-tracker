@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel
 
@@ -69,6 +69,29 @@ class ErrorResponse(BaseModel):
     """Error body returned by HTTPException-raise validators (matches FastAPI's {detail: ...} shape)."""
 
     detail: str
+
+
+class RouteStopAttributes(BaseModel):
+    """Public MBTA stop attributes returned for a route."""
+
+    name: str
+    latitude: float | None = None
+    vehicle_type: int | None = None
+    longitude: float | None = None
+    wheelchair_boarding: int
+    description: str | None = None
+    platform_name: str | None = None
+    platform_code: str | None = None
+
+
+class RouteStop(BaseModel):
+    id: str
+    type: Literal["stop"] = "stop"
+    attributes: RouteStopAttributes
+
+
+class RouteStopsResponse(BaseModel):
+    data: list[RouteStop]
 
 
 class GeoJSONFeatureCollection(BaseModel):
