@@ -34,7 +34,7 @@ dependencies = [
     "orjson>=3.10.0",
     "packaging==26.3",
     "paho-mqtt==2.2.0",
-    "polyline==2.0.4",
+    "polyline==2.0.5",
     "prometheus-client==0.26.0",
     "prometheus-fastapi-instrumentator>=7.1.0",
     "propcache==0.5.4",
