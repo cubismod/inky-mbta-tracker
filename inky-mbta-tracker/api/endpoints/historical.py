@@ -1,4 +1,5 @@
 import logging
+from datetime import datetime, timedelta
 
 from api.core import GET_DI
 from api.limits import limiter
@@ -14,7 +15,7 @@ from api.services.historical import (
     fetch_historical_vehicle_counts,
     fetch_historical_vehicle_speeds,
 )
-from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi import APIRouter, HTTPException, Query, Request, Response
 from opentelemetry import trace
 from otel_utils import add_span_attributes, add_transaction_ids_to_span, set_span_error
 from redis.exceptions import RedisError
@@ -29,7 +30,8 @@ tracer = trace.get_tracer(__name__)
     summary="Get historical vehicle snapshots",
     description=(
         "Snapshot history of vehicle positions recorded by the worker, returned "
-        "as a time series sorted by recording timestamp."
+        "as a time series sorted by recording timestamp. Request at most one hour "
+        "per call; the end timestamp is exclusive."
     ),
     response_model=HistoricalVehiclesResponse,
     responses={
@@ -38,7 +40,16 @@ tracer = trace.get_tracer(__name__)
 )
 @limiter.limit("70/minute")
 @cache_ttl(15 * 60)
-async def get_historical_vehicles(request: Request, commons: GET_DI) -> Response:
+async def get_historical_vehicles(
+    request: Request,
+    commons: GET_DI,
+    start: datetime = Query(
+        description="Inclusive start timestamp in ISO 8601 format with timezone."
+    ),
+    end: datetime = Query(
+        description="Exclusive end timestamp in ISO 8601 format with timezone."
+    ),
+) -> Response:
     with tracer.start_as_current_span("api.historical.get_historical_vehicles") as span:
         add_transaction_ids_to_span(span)
         add_span_attributes(
@@ -50,7 +61,23 @@ async def get_historical_vehicles(request: Request, commons: GET_DI) -> Response
         )
 
         try:
-            result = await fetch_historical_snapshots(commons.r_client)
+            if start.tzinfo is None or start.utcoffset() is None:
+                raise HTTPException(
+                    status_code=422,
+                    detail="start must include a timezone",
+                )
+            if end.tzinfo is None or end.utcoffset() is None:
+                raise HTTPException(
+                    status_code=422,
+                    detail="end must include a timezone",
+                )
+            if end <= start or end - start > timedelta(hours=1):
+                raise HTTPException(
+                    status_code=422,
+                    detail="start must precede end and the range cannot exceed one hour",
+                )
+
+            result = await fetch_historical_snapshots(commons.r_client, start, end)
             add_span_attributes(
                 span,
                 {

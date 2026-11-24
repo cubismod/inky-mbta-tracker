@@ -1,13 +1,16 @@
+from datetime import UTC, datetime
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from api.models import HistoricalVehicleSpeedsResponse
 from api.services.historical import (
+    fetch_historical_snapshots,
     fetch_historical_vehicle_counts,
     fetch_historical_vehicle_speeds,
 )
 from fastapi.routing import APIRoute, iter_route_contexts
+from historical_data import _store_snapshot
 from redis.asyncio import Redis
 
 
@@ -29,6 +32,69 @@ def _redis_for(snapshots: dict[str, bytes]) -> Any:
     raw = {ts.encode(): body for ts, body in snapshots.items()}
     redis.hgetall = AsyncMock(return_value=raw)
     return redis
+
+
+@pytest.mark.anyio("asyncio")
+async def test_store_snapshot_adds_time_index_entry() -> None:
+    redis = MagicMock()
+    redis.hsetex = AsyncMock()
+    redis.zadd = AsyncMock()
+    redis.expire = AsyncMock()
+
+    await _store_snapshot(cast(Redis, redis), "historical_vehicle_data", 3600.0, {})
+
+    redis.hsetex.assert_awaited_once_with(
+        "historical_vehicle_data", "3600.0", "{}", ex=432000
+    )
+    redis.zadd.assert_awaited_once_with(
+        "historical_vehicle_data:index", {"3600.0": 3600.0}
+    )
+    redis.expire.assert_awaited_once_with("historical_vehicle_data:index", 432000)
+
+
+@pytest.mark.anyio("asyncio")
+async def test_vehicle_snapshots_fetch_only_requested_time_range() -> None:
+    redis = MagicMock()
+    redis.zrangebyscore = AsyncMock(return_value=[b"3600.0", b"7199.0"])
+    redis.hmget = AsyncMock(
+        return_value=[
+            _snapshot({"v1": _feature("Red", 20)}),
+            _snapshot({"v2": _feature("Blue", 10)}),
+        ]
+    )
+
+    result = await fetch_historical_snapshots(
+        cast(Redis, redis),
+        datetime.fromtimestamp(3600, tz=UTC),
+        datetime.fromtimestamp(7200, tz=UTC),
+    )
+
+    assert [snapshot.timestamp for snapshot in result.snapshots] == [
+        "1970-01-01T01:00:00.000Z",
+        "1970-01-01T01:59:59.000Z",
+    ]
+    redis.zrangebyscore.assert_awaited_once_with(
+        "historical_vehicle_data:index", min=3600.0, max="(7200.0"
+    )
+    redis.hmget.assert_awaited_once_with(
+        "historical_vehicle_data", [b"3600.0", b"7199.0"]
+    )
+
+
+@pytest.mark.anyio("asyncio")
+async def test_vehicle_snapshots_empty_range_skips_value_fetch() -> None:
+    redis = MagicMock()
+    redis.zrangebyscore = AsyncMock(return_value=[])
+    redis.hmget = AsyncMock()
+
+    result = await fetch_historical_snapshots(
+        cast(Redis, redis),
+        datetime.fromtimestamp(3600, tz=UTC),
+        datetime.fromtimestamp(7200, tz=UTC),
+    )
+
+    assert result.snapshots == []
+    redis.hmget.assert_not_awaited()
 
 
 @pytest.mark.anyio("asyncio")
@@ -170,3 +236,6 @@ def test_api_server_registers_historical_speeds_route(
         for ctx in iter_route_contexts(app.routes)
         if isinstance(ctx.original_route, APIRoute)
     )
+    parameters = app.openapi()["paths"]["/historical/vehicles"]["get"]["parameters"]
+    assert {parameter["name"] for parameter in parameters} == {"start", "end"}
+    assert all(parameter["required"] for parameter in parameters)
