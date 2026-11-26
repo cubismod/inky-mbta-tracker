@@ -8,6 +8,7 @@ from api.models import (
     ErrorResponse,
     HistoricalVehicleCountsResponse,
     HistoricalVehiclesEarliestResponse,
+    HistoricalVehiclesLatestResponse,
     HistoricalVehicleSpeedsResponse,
     HistoricalVehiclesResponse,
 )
@@ -16,6 +17,7 @@ from api.services.historical import (
     fetch_historical_snapshots,
     fetch_historical_vehicle_counts,
     fetch_historical_vehicle_speeds,
+    fetch_latest_historical_vehicle_timestamp,
 )
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 from opentelemetry import trace
@@ -65,6 +67,51 @@ async def get_earliest_historical_vehicle_timestamp(
         except RedisError as exc:
             logger.error(
                 "Error getting earliest historical timestamp due to Redis error",
+                exc_info=exc,
+            )
+            set_span_error(span, exc)
+            add_span_attributes(span, {"error.type": "redis"})
+            raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.get(
+    "/historical/vehicles/latest",
+    summary="Get the latest available vehicle snapshot timestamp",
+    description=(
+        "Return the latest vehicle snapshot still retained in Redis for use as "
+        "a timelapse upper bound. latest_timestamp is an ISO 8601 UTC timestamp "
+        "with fractional seconds preserved, or null when no history is available. "
+        "Snapshot range end times are exclusive; use an end after this timestamp."
+    ),
+    response_model=HistoricalVehiclesLatestResponse,
+    responses={500: {"model": ErrorResponse, "description": "Internal server error"}},
+)
+@limiter.limit("70/minute")
+async def get_latest_historical_vehicle_timestamp(
+    request: Request, commons: GET_DI
+) -> Response:
+    with tracer.start_as_current_span(
+        "api.historical.get_latest_historical_vehicle_timestamp"
+    ) as span:
+        add_transaction_ids_to_span(span)
+        add_span_attributes(
+            span,
+            {
+                "api.endpoint": "historical.vehicles.latest",
+                "response.format": "json",
+            },
+        )
+        try:
+            result = await fetch_latest_historical_vehicle_timestamp(commons.r_client)
+            span.set_attribute("api.response.success", True)
+            return Response(
+                content=result.model_dump_json(),
+                media_type="application/json",
+                headers={"Cache-Control": "no-store"},
+            )
+        except RedisError as exc:
+            logger.error(
+                "Error getting latest historical timestamp due to Redis error",
                 exc_info=exc,
             )
             set_span_error(span, exc)

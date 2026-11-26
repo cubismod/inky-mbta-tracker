@@ -152,6 +152,12 @@ class HistoricalVehiclesEarliestResponse(BaseModel):
     earliest_timestamp: AwareDatetime | None
 
 
+class HistoricalVehiclesLatestResponse(BaseModel):
+    """Latest retained vehicle snapshot, or null when history is empty."""
+
+    latest_timestamp: AwareDatetime | None
+
+
 class HistoricalVehicleCountSnapshot(BaseModel):
     """Vehicle counts computed from a single historical snapshot."""
 

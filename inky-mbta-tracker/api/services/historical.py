@@ -9,6 +9,7 @@ from api.models import (
     HistoricalVehicleCountSnapshot,
     HistoricalVehicleCountsResponse,
     HistoricalVehiclesEarliestResponse,
+    HistoricalVehiclesLatestResponse,
     HistoricalVehicleSpeedSnapshot,
     HistoricalVehicleSpeedsResponse,
     HistoricalVehiclesResponse,
@@ -52,6 +53,31 @@ async def fetch_earliest_historical_vehicle_timestamp(
                 datetime.fromtimestamp(earliest, tz=UTC)
                 if earliest is not None
                 else None
+            )
+        )
+
+
+async def fetch_latest_historical_vehicle_timestamp(
+    r_client: Redis,
+) -> HistoricalVehiclesLatestResponse:
+    with tracer.start_as_current_span(
+        "api.services.fetch_latest_historical_vehicle_timestamp"
+    ) as span:
+        add_transaction_ids_to_span(span)
+        # Hash fields expire individually, while the index can retain stale entries.
+        # Read only retained timestamps, without loading vehicle snapshot payloads.
+        fields = await r_client.hkeys(HISTORICAL_V_DATA)  # type: ignore[misc]
+        latest = max((float(field) for field in fields), default=None)
+        add_span_attributes(
+            span,
+            {
+                "historical.snapshots.count": len(fields),
+                "historical.fetch.status": "success",
+            },
+        )
+        return HistoricalVehiclesLatestResponse(
+            latest_timestamp=(
+                datetime.fromtimestamp(latest, tz=UTC) if latest is not None else None
             )
         )
 
