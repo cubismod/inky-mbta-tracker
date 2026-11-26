@@ -61,6 +61,6 @@ async def run(r_client: Redis, key: str, config: Config, tg: TaskGroup):
             )
             ts_key = datetime.now().timestamp()
             await _store_snapshot(r_client, key, ts_key, vehicles)
-            await sleep(10 * 60)
+            await sleep(60)
         except (ConnectionError, TimeoutError) as err:
             logger.error(f"Redis error: {err}")

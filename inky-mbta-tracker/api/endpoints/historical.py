@@ -132,7 +132,7 @@ async def get_latest_historical_vehicle_timestamp(
         500: {"model": ErrorResponse, "description": "Internal server error"},
     },
 )
-@limiter.limit("70/minute")
+@limiter.limit("500/minute")
 @cache_ttl(15 * 60)
 async def get_historical_vehicles(
     request: Request,
