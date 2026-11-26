@@ -123,7 +123,7 @@ def create_app() -> FastAPI:
                 "/stop",
                 "/stops/*",
             },
-            exclude_paths={"/vehicles/stream"},
+            exclude_paths={"/vehicles/stream", "/historical/vehicles/earliest"},
         )
     )
     app.add_middleware(GZipMiddleware)
