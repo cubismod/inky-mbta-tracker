@@ -5,7 +5,7 @@ import orjson
 from anyio import sleep
 from anyio.abc import TaskGroup
 from config import Config
-from consts import DAY
+from consts import DAY, HISTORICAL_V_INDEX
 from geojson import Feature
 from geojson_utils import get_vehicle_features
 from redis.asyncio import Redis
@@ -38,6 +38,20 @@ def _strip_response_fields(vehicles: dict[str, Feature]) -> dict[str, Feature]:
     }
 
 
+async def _store_snapshot(
+    r_client: Redis, key: str, timestamp: float, vehicles: dict[str, Feature]
+) -> None:
+    timestamp_field = str(timestamp)
+    await r_client.hsetex(
+        key,
+        timestamp_field,
+        orjson.dumps(vehicles).decode("utf-8"),
+        ex=5 * DAY,
+    )  # pyright: ignore
+    await r_client.zadd(HISTORICAL_V_INDEX, {timestamp_field: timestamp})  # type: ignore[misc]
+    await r_client.expire(HISTORICAL_V_INDEX, 5 * DAY)  # type: ignore[misc]
+
+
 async def run(r_client: Redis, key: str, config: Config, tg: TaskGroup):
     await sleep(60)
     while True:
@@ -46,12 +60,7 @@ async def run(r_client: Redis, key: str, config: Config, tg: TaskGroup):
                 await get_vehicle_features(r_client, config, tg)
             )
             ts_key = datetime.now().timestamp()
-            await r_client.hsetex(
-                key,
-                str(ts_key),
-                orjson.dumps(vehicles).decode("utf-8"),
-                ex=5 * DAY,
-            )  # pyright: ignore
-            await sleep(10 * 60)
+            await _store_snapshot(r_client, key, ts_key, vehicles)
+            await sleep(60)
         except (ConnectionError, TimeoutError) as err:
             logger.error(f"Redis error: {err}")

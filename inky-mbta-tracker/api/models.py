@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel
+from pydantic import AwareDatetime, BaseModel
 
 # ------------------------------------------------------------------------
 # Vehicle counts models
@@ -144,6 +144,18 @@ class HistoricalVehiclesResponse(BaseModel):
     """Typed response for GET /historical/vehicles."""
 
     snapshots: list[HistoricalSnapshot]
+
+
+class HistoricalVehiclesEarliestResponse(BaseModel):
+    """Earliest retained vehicle snapshot, or null when history is empty."""
+
+    earliest_timestamp: AwareDatetime | None
+
+
+class HistoricalVehiclesLatestResponse(BaseModel):
+    """Latest retained vehicle snapshot, or null when history is empty."""
+
+    latest_timestamp: AwareDatetime | None
 
 
 class HistoricalVehicleCountSnapshot(BaseModel):

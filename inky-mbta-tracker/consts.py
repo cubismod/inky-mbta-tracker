@@ -12,6 +12,7 @@ ALERTS_SET_KEY = "alerts:stats"
 LIVE_NEGATIVE_CACHE_KEY = "live_negative_cache"
 VEHICLE_STREAM_KEY = "vehicle_stream_diff"
 HISTORICAL_V_DATA = "historical_vehicle_data"
+HISTORICAL_V_INDEX = "historical_vehicle_data:index"
 
 # Silver Line bus routes are addressed by numeric route id, but every
 # human-facing surface reads the SL short name. Single source of truth for that
