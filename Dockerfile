@@ -1,5 +1,5 @@
 FROM ghcr.io/astral-sh/uv:0.13.6@sha256:af22a52f5eafef3d78e551599d405c02df61919d18028f0cea8eda93bc9986d0 AS uv
-FROM python:3.14-slim@sha256:22eafb370920ad8b429e0aec3fff433e0669968519f5d60469d83729c138b28b AS build
+FROM python:3.14-slim@sha256:f57c4c23b985d95deea5bc5249e2f9c8a512b4cc9d5d3fd31900cbd2f5f0a604 AS build
 COPY --from=uv /uv /uvx /bin/
 
 WORKDIR /app
@@ -27,7 +27,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 	--mount=type=cache,target=/root/.cache/uv \
 	uv sync --link-mode=copy --frozen --no-dev && uv lock --check
 
-FROM python:3.14-slim@sha256:22eafb370920ad8b429e0aec3fff433e0669968519f5d60469d83729c138b28b AS main
+FROM python:3.14-slim@sha256:f57c4c23b985d95deea5bc5249e2f9c8a512b4cc9d5d3fd31900cbd2f5f0a604 AS main
 
 WORKDIR /app
 
