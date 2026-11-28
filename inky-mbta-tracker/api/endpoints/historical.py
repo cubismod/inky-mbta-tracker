@@ -124,7 +124,7 @@ async def get_latest_historical_vehicle_timestamp(
     summary="Get historical vehicle snapshots",
     description=(
         "Snapshot history of vehicle positions recorded by the worker, returned "
-        "as a time series sorted by recording timestamp. Request at most one hour "
+        "as a time series sorted by recording timestamp. Request at most 90 minutes "
         "per call; the end timestamp is exclusive."
     ),
     response_model=HistoricalVehiclesResponse,
@@ -166,10 +166,10 @@ async def get_historical_vehicles(
                     status_code=400,
                     detail="end must include a timezone",
                 )
-            if end <= start or end - start > timedelta(hours=1):
+            if end <= start or end - start > timedelta(minutes=90):
                 raise HTTPException(
                     status_code=400,
-                    detail="start must precede end and the range cannot exceed one hour",
+                    detail="start must precede end and the range cannot exceed 90 minutes",
                 )
 
             result = await fetch_historical_snapshots(commons.r_client, start, end)

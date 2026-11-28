@@ -37,7 +37,7 @@ def app(monkeypatch: pytest.MonkeyPatch) -> FastAPI:
         ("2026-01-01T00:00:00Z", "2026-01-01T01:00:00", "end must include a timezone"),
         ("2026-01-01T01:00:00Z", "2026-01-01T00:00:00Z", None),
         ("2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z", None),
-        ("2026-01-01T00:00:00Z", "2026-01-01T01:00:01Z", None),
+        ("2026-01-01T00:00:00Z", "2026-01-01T01:30:01Z", None),
     ],
 )
 async def test_invalid_range_returns_bad_request(
@@ -48,7 +48,7 @@ async def test_invalid_range_returns_bad_request(
     assert status == 400
     assert body == {
         "detail": detail
-        or "start must precede end and the range cannot exceed one hour"
+        or "start must precede end and the range cannot exceed 90 minutes"
     }
     app.state.r_client.zrangebyscore.assert_not_awaited()
 
@@ -72,10 +72,12 @@ async def test_invalid_query_returns_validation_response(
 
 
 @pytest.mark.anyio
-async def test_valid_range_returns_snapshots(app: FastAPI) -> None:
-    status, body = await _get(
-        app, {"start": "2026-01-01T00:00:00Z", "end": "2026-01-01T01:00:00Z"}
-    )
+@pytest.mark.parametrize(
+    "end",
+    ["2026-01-01T01:00:00Z", "2026-01-01T01:00:01Z", "2026-01-01T01:30:00Z"],
+)
+async def test_valid_range_returns_snapshots(app: FastAPI, end: str) -> None:
+    status, body = await _get(app, {"start": "2026-01-01T00:00:00Z", "end": end})
 
     assert status == 200
     assert body == {"snapshots": []}
