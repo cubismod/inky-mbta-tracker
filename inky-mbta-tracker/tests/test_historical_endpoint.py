@@ -1,46 +1,18 @@
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
-from urllib.parse import urlencode
 
 import orjson
 import pytest
 from api.endpoints.historical import router
 from fastapi import FastAPI
 from redis.exceptions import RedisError
-from starlette.types import Message
+
+from tests.asgi_helpers import get_response
 
 
 async def _get(app: FastAPI, params: dict[str, str]) -> tuple[int, Any]:
-    messages: list[Message] = []
-
-    async def receive() -> Message:
-        return {"type": "http.request", "body": b"", "more_body": False}
-
-    async def send(message: Message) -> None:
-        messages.append(message)
-
-    await app(
-        {
-            "type": "http",
-            "asgi": {"version": "3.0"},
-            "http_version": "1.1",
-            "method": "GET",
-            "scheme": "http",
-            "path": "/historical/vehicles",
-            "raw_path": b"/historical/vehicles",
-            "query_string": urlencode(params).encode(),
-            "headers": [],
-            "client": ("127.0.0.1", 1234),
-            "server": ("testserver", 80),
-        },
-        receive,
-        send,
-    )
-    status = next(m["status"] for m in messages if m["type"] == "http.response.start")
-    body = b"".join(
-        m.get("body", b"") for m in messages if m["type"] == "http.response.body"
-    )
-    return status, orjson.loads(body)
+    response = await get_response(app, "/historical/vehicles", params)
+    return response.status_code, orjson.loads(response.body)
 
 
 @pytest.fixture
