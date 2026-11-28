@@ -129,6 +129,7 @@ async def get_latest_historical_vehicle_timestamp(
     ),
     response_model=HistoricalVehiclesResponse,
     responses={
+        400: {"model": ErrorResponse, "description": "Invalid timestamp range"},
         500: {"model": ErrorResponse, "description": "Internal server error"},
     },
 )
@@ -157,17 +158,17 @@ async def get_historical_vehicles(
         try:
             if start.tzinfo is None or start.utcoffset() is None:
                 raise HTTPException(
-                    status_code=422,
+                    status_code=400,
                     detail="start must include a timezone",
                 )
             if end.tzinfo is None or end.utcoffset() is None:
                 raise HTTPException(
-                    status_code=422,
+                    status_code=400,
                     detail="end must include a timezone",
                 )
             if end <= start or end - start > timedelta(minutes=90):
                 raise HTTPException(
-                    status_code=422,
+                    status_code=400,
                     detail="start must precede end and the range cannot exceed 90 minutes",
                 )
 

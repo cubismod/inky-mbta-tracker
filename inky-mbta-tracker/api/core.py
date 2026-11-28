@@ -28,13 +28,22 @@ class DIParams(AsyncContextManagerMixin):
 
     @asynccontextmanager
     async def __asynccontextmanager__(self) -> AsyncGenerator[Self, None]:
-        async with create_task_group() as tg:
-            self.tg = tg
-            self.config = load_config()
-            try:
-                yield self
-            finally:
-                self.tg = None
+        try:
+            async with create_task_group() as tg:
+                self.tg = tg
+                self.config = load_config()
+                try:
+                    yield self
+                finally:
+                    self.tg = None
+        except BaseExceptionGroup as exc:
+            # AnyIO groups errors raised through the dependency's yield, including
+            # HTTPException and RequestValidationError. Restore singleton errors
+            # so FastAPI can dispatch them to their registered exception handlers.
+            error: BaseException = exc
+            while isinstance(error, BaseExceptionGroup) and len(error.exceptions) == 1:
+                error = error.exceptions[0]
+            raise error
 
 
 async def get_di(request: Request):

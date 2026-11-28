@@ -55,7 +55,7 @@ async def test_historical_vehicles_rejects_invalid_ranges(duration: timedelta) -
             end=start + duration,
         )
 
-    assert error.value.status_code == 422
+    assert error.value.status_code == 400
     assert error.value.detail == (
         "start must precede end and the range cannot exceed 90 minutes"
     )
